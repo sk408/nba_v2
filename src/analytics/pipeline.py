@@ -1,0 +1,482 @@
+"""Simplified 6-step pipeline orchestrator.
+
+Steps: backup -> sync -> precompute -> optimize_fundamentals -> optimize_sharp -> backtest
+
+No disabled steps, no dead code. Each step receives (callback, is_cancelled) and
+returns a result dict. Pipeline state is persisted to data/pipeline_state.json
+with timing, result, and status for each step.
+"""
+
+import json
+import logging
+import os
+import threading
+import time
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from src.database import db
+
+logger = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────────────────────
+# State persistence
+# ──────────────────────────────────────────────────────────────
+
+PIPELINE_STATE_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "data", "pipeline_state.json"
+)
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy types gracefully."""
+
+    def default(self, obj):
+        import numpy as np
+
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
+def _load_pipeline_state() -> Dict:
+    if os.path.exists(PIPELINE_STATE_PATH):
+        try:
+            with open(PIPELINE_STATE_PATH) as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning("Failed to load pipeline state: %s", e)
+    return {}
+
+
+def _save_pipeline_state(state: Dict):
+    os.makedirs(os.path.dirname(PIPELINE_STATE_PATH) or ".", exist_ok=True)
+    with open(PIPELINE_STATE_PATH, "w") as f:
+        json.dump(state, f, indent=2, cls=NumpyEncoder)
+
+
+# ──────────────────────────────────────────────────────────────
+# Cancellation
+# ──────────────────────────────────────────────────────────────
+
+_cancel_event = threading.Event()
+
+
+def request_cancel():
+    """Request pipeline cancellation (thread-safe)."""
+    _cancel_event.set()
+
+
+def clear_cancel():
+    """Clear cancellation flag."""
+    _cancel_event.clear()
+
+
+def is_cancelled() -> bool:
+    """Check if cancellation has been requested."""
+    return _cancel_event.is_set()
+
+
+# ──────────────────────────────────────────────────────────────
+# Freshness tracking via sync_meta table
+# ──────────────────────────────────────────────────────────────
+
+def _is_fresh(step_name: str, max_age_hours: float = 24) -> bool:
+    """Check if a step is fresh enough to skip."""
+    row = db.fetch_one(
+        "SELECT last_synced_at FROM sync_meta WHERE step_name = ?",
+        (step_name,),
+    )
+    if not row or not row["last_synced_at"]:
+        return False
+
+    from datetime import datetime
+
+    try:
+        last = datetime.fromisoformat(row["last_synced_at"])
+        return (datetime.now() - last).total_seconds() < max_age_hours * 3600
+    except Exception as e:
+        logger.warning("Freshness check parse error for %s: %s", step_name, e)
+        return False
+
+
+def _mark_step_done(step_name: str):
+    """Mark a step as completed in sync_meta."""
+    from src.analytics.memory_store import InMemoryDataStore
+
+    store = InMemoryDataStore()
+    count, last_date = store.get_game_count_and_last_date()
+
+    db.execute(
+        """
+        INSERT INTO sync_meta (step_name, last_synced_at, game_count_at_sync, last_game_date_at_sync)
+        VALUES (?, datetime('now'), ?, ?)
+        ON CONFLICT(step_name) DO UPDATE SET
+            last_synced_at = excluded.last_synced_at,
+            game_count_at_sync = excluded.game_count_at_sync,
+            last_game_date_at_sync = excluded.last_game_date_at_sync
+        """,
+        (step_name, count, last_date),
+    )
+
+
+# ──────────────────────────────────────────────────────────────
+# Pipeline step functions
+# ──────────────────────────────────────────────────────────────
+
+def backup_snapshot(callback=None, is_cancelled=None) -> Dict:
+    """Step 1: Snapshot current weights before pipeline modifies them."""
+    from src.analytics.weight_config import save_snapshot
+
+    path = save_snapshot("pre_pipeline", notes="Automatic pre-pipeline backup")
+    if callback:
+        callback(f"Backup saved: {os.path.basename(path)}")
+    return {"snapshot_path": path}
+
+
+def run_data_sync(callback=None, is_cancelled=None) -> Dict:
+    """Step 2: Full data sync (teams, players, stats, odds, injuries)."""
+    from src.data.sync_service import full_sync
+
+    result = full_sync(force=False, callback=callback)
+    return {"sync_result": result}
+
+
+def run_precompute(callback=None, is_cancelled=None) -> Dict:
+    """Step 3: Build GameInput objects for all historical games (disk+memory cached)."""
+    from src.analytics.prediction import precompute_all_games
+
+    games = precompute_all_games(callback=callback)
+    if callback:
+        callback(f"Precomputed {len(games)} games")
+    return {"game_count": len(games)}
+
+
+def run_optimize_fundamentals(callback=None, is_cancelled=None) -> Dict:
+    """Step 4: Optimize fundamental-only weights (3000 Optuna trials)."""
+    from src.analytics.prediction import precompute_all_games
+    from src.analytics.optimizer import optimize_weights
+
+    games = precompute_all_games()  # uses cache from step 3
+    result = optimize_weights(
+        games,
+        n_trials=3000,
+        include_sharp=False,
+        callback=callback,
+        is_cancelled=is_cancelled,
+    )
+    _mark_step_done("optimize_fundamentals")
+    return result
+
+
+def run_optimize_sharp(callback=None, is_cancelled=None) -> Dict:
+    """Step 5: Optimize fundamentals + sharp money weights (3000 Optuna trials)."""
+    from src.analytics.prediction import precompute_all_games
+    from src.analytics.optimizer import optimize_weights
+
+    games = precompute_all_games()  # uses cache
+    result = optimize_weights(
+        games,
+        n_trials=3000,
+        include_sharp=True,
+        callback=callback,
+        is_cancelled=is_cancelled,
+    )
+    _mark_step_done("optimize_sharp")
+    return result
+
+
+def run_backtest_and_compare(callback=None, is_cancelled=None) -> Dict:
+    """Step 6: Run A/B backtest (fundamentals vs sharp) with fresh data."""
+    from src.analytics.backtester import run_backtest, invalidate_backtest_cache
+
+    invalidate_backtest_cache()  # force recompute after optimization
+    result = run_backtest(callback=callback)
+    _mark_step_done("backtest")
+    return result
+
+
+# ──────────────────────────────────────────────────────────────
+# Pipeline definition
+# ──────────────────────────────────────────────────────────────
+
+StepFunc = Callable[[Optional[Callable], Optional[Callable]], Dict]
+
+PIPELINE_STEPS: List[Tuple[str, StepFunc]] = [
+    ("backup", backup_snapshot),
+    ("sync", run_data_sync),
+    ("precompute", run_precompute),
+    ("optimize_fundamentals", run_optimize_fundamentals),
+    ("optimize_sharp", run_optimize_sharp),
+    ("backtest", run_backtest_and_compare),
+]
+
+
+# ──────────────────────────────────────────────────────────────
+# Main pipeline runner
+# ──────────────────────────────────────────────────────────────
+
+def run_pipeline(
+    callback: Optional[Callable] = None,
+    is_cancelled_fn: Optional[Callable[[], bool]] = None,
+) -> Dict[str, Any]:
+    """Run the full pipeline: backup -> sync -> precompute -> optimize x2 -> backtest.
+
+    Args:
+        callback: Optional function receiving progress messages (str).
+        is_cancelled_fn: Optional function returning True if pipeline should stop.
+                         Defaults to the module-level is_cancelled() if not provided.
+
+    Returns:
+        Dict with per-step results, timing, and overall summary.
+    """
+    clear_cancel()
+    start_time = time.time()
+    state = _load_pipeline_state()
+    results: Dict[str, Any] = {}
+    step_timings: Dict[str, float] = {}
+
+    cancel_check = is_cancelled_fn or is_cancelled
+
+    def emit(msg: str):
+        if callback:
+            callback(msg)
+        logger.info(msg)
+
+    total_steps = len(PIPELINE_STEPS)
+
+    try:
+        for idx, (step_name, step_func) in enumerate(PIPELINE_STEPS, 1):
+            # Check cancellation before each step
+            if cancel_check():
+                emit("Pipeline cancelled.")
+                results["cancelled"] = True
+                break
+
+            emit(f"[Step {idx}/{total_steps}] {step_name}...")
+            step_start = time.time()
+
+            try:
+                step_result = step_func(
+                    callback=lambda msg, _sn=step_name: emit(f"  [{_sn}] {msg}"),
+                    is_cancelled=cancel_check,
+                )
+                step_elapsed = time.time() - step_start
+                step_timings[step_name] = round(step_elapsed, 1)
+
+                # Store result (strip bulky per_game lists from state file)
+                results[step_name] = step_result
+                state[f"step_{step_name}"] = {
+                    "status": "completed",
+                    "elapsed_seconds": round(step_elapsed, 1),
+                    "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+
+                emit(f"  {step_name} completed in {step_elapsed:.1f}s")
+
+            except Exception as e:
+                step_elapsed = time.time() - step_start
+                logger.exception("Pipeline step '%s' failed: %s", step_name, e)
+                emit(f"  {step_name} FAILED: {e}")
+
+                results[step_name] = {"error": str(e)}
+                state[f"step_{step_name}"] = {
+                    "status": "error",
+                    "error": str(e),
+                    "elapsed_seconds": round(step_elapsed, 1),
+                    "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                # Continue to next step even on failure
+
+            # Save state after each step
+            _save_pipeline_state(state)
+
+        # Overall summary
+        elapsed = time.time() - start_time
+        results["elapsed_seconds"] = round(elapsed, 1)
+        results["step_timings"] = step_timings
+
+        state["last_run"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        state["elapsed_seconds"] = round(elapsed, 1)
+
+        # Save a clean summary (exclude bulky data)
+        summary = {}
+        for k, v in results.items():
+            if k in ("sync",):
+                continue  # sync result can be huge
+            if isinstance(v, dict) and "per_game" in v:
+                # Strip per-game lists from backtest results
+                summary[k] = {sk: sv for sk, sv in v.items() if sk != "per_game"}
+            elif isinstance(v, dict):
+                # Strip per_game from nested dicts (backtest has fundamentals/sharp)
+                cleaned = {}
+                for sk, sv in v.items():
+                    if isinstance(sv, dict) and "per_game" in sv:
+                        cleaned[sk] = {
+                            nk: nv for nk, nv in sv.items() if nk != "per_game"
+                        }
+                    else:
+                        cleaned[sk] = sv
+                summary[k] = cleaned
+            else:
+                summary[k] = v
+        state["results_summary"] = summary
+        _save_pipeline_state(state)
+
+        emit(f"\nPipeline complete in {elapsed:.0f}s")
+        return results
+
+    except Exception as e:
+        logger.exception("Pipeline error: %s", e)
+        emit(f"Pipeline error: {e}")
+        results["error"] = str(e)
+        return results
+
+
+# ──────────────────────────────────────────────────────────────
+# Overnight loop
+# ──────────────────────────────────────────────────────────────
+
+def run_overnight(
+    max_hours: float = 8.0,
+    reset_weights: bool = False,
+    callback: Optional[Callable] = None,
+) -> Dict[str, Any]:
+    """Run full pipeline once, then loop optimization steps until time runs out.
+
+    Pass 1: full 6-step pipeline (backup, sync, precompute, optimize x2, backtest)
+    Pass 2+: optimize_fundamentals -> optimize_sharp -> backtest
+    Each pass uses fresh random seeds. Precomputed games are reused across passes.
+    """
+    clear_cancel()
+    overall_start = time.time()
+    deadline = overall_start + max_hours * 3600
+
+    def emit(msg: str):
+        if callback:
+            callback(msg)
+        logger.info(msg)
+
+    def time_left():
+        return max(0, deadline - time.time())
+
+    def fmt_elapsed(secs):
+        h, m = int(secs // 3600), int((secs % 3600) // 60)
+        return f"{h}h {m}m" if h else f"{m}m {int(secs % 60)}s"
+
+    emit(f"=== Overnight Optimization: {max_hours}h budget ===")
+
+    if reset_weights:
+        from src.analytics.weight_config import clear_all_weights
+
+        clear_all_weights()
+        emit("Weights reset to defaults.")
+
+    # Pass 1: Full pipeline
+    emit("\n--- Pass 1: Full Pipeline ---")
+    pass1_start = time.time()
+    results = run_pipeline(callback=callback)
+
+    if results.get("error") or results.get("cancelled") or is_cancelled():
+        return results
+
+    pass1_elapsed = time.time() - pass1_start
+    emit(f"Pass 1 complete in {fmt_elapsed(pass1_elapsed)} | "
+         f"{fmt_elapsed(time_left())} remaining")
+
+    # Track best backtest across all passes
+    best_bt = results.get("backtest", {})
+    pass_num = 1
+    loop_times: List[float] = []
+
+    # Pass 2+: optimization loops
+    while time_left() > 0 and not is_cancelled():
+        pass_num += 1
+        loop_start = time.time()
+
+        # Estimate if we have time for another loop
+        avg_loop = (
+            sum(loop_times) / len(loop_times) if loop_times else pass1_elapsed * 0.6
+        )
+        if time_left() < avg_loop * 0.5:
+            emit(f"\n~{fmt_elapsed(time_left())} remaining, not enough for another pass.")
+            break
+
+        emit(f"\n--- Pass {pass_num}: Optimization Loop "
+             f"({fmt_elapsed(time_left())} remaining) ---")
+
+        try:
+            # Optimize fundamentals
+            emit(f"[Loop {pass_num}] Optimizing fundamentals (3000 trials)...")
+            fund_result = run_optimize_fundamentals(
+                callback=lambda msg: emit(f"  {msg}"),
+                is_cancelled=is_cancelled,
+            )
+            if is_cancelled():
+                break
+            improved = "IMPROVED" if fund_result.get("improved") else "no change"
+            emit(f"  Fundamentals: {improved}")
+
+            # Optimize sharp
+            emit(f"[Loop {pass_num}] Optimizing sharp (3000 trials)...")
+            sharp_result = run_optimize_sharp(
+                callback=lambda msg: emit(f"  {msg}"),
+                is_cancelled=is_cancelled,
+            )
+            if is_cancelled():
+                break
+            improved = "IMPROVED" if sharp_result.get("improved") else "no change"
+            emit(f"  Sharp: {improved}")
+
+            # Backtest
+            emit(f"[Loop {pass_num}] Backtest...")
+            bt = run_backtest_and_compare(
+                callback=lambda msg: emit(f"  {msg}"),
+                is_cancelled=is_cancelled,
+            )
+
+            loop_elapsed = time.time() - loop_start
+            loop_times.append(loop_elapsed)
+
+            # Compare winner% to best
+            fund = bt.get("fundamentals", {})
+            cur_winner = fund.get("winner_pct", 0)
+            best_winner = best_bt.get("fundamentals", {}).get("winner_pct", 0)
+            if cur_winner > best_winner:
+                best_bt = bt
+                emit(f"  NEW BEST! Winner={cur_winner:.1f}%, "
+                     f"Upset={fund.get('upset_accuracy', 0):.0f}% @ "
+                     f"{fund.get('upset_rate', 0):.0f}% rate, "
+                     f"ML ROI={fund.get('ml_roi', 0):+.1f}%")
+            else:
+                emit(f"  No improvement ({cur_winner:.1f}% vs best {best_winner:.1f}%)")
+
+            emit(f"  Pass {pass_num} took {fmt_elapsed(loop_elapsed)} | "
+                 f"avg {fmt_elapsed(sum(loop_times) / len(loop_times))}/pass")
+
+        except Exception as e:
+            logger.exception("Overnight loop %d error: %s", pass_num, e)
+            emit(f"  Loop error: {e}")
+            continue
+
+    total_elapsed = time.time() - overall_start
+    emit(f"\n{'=' * 60}")
+    emit(f"Overnight complete: {pass_num} passes in {fmt_elapsed(total_elapsed)}")
+    if best_bt:
+        f_met = best_bt.get("fundamentals", {})
+        emit(f"Best: Winner={f_met.get('winner_pct', 0):.1f}%, "
+             f"Upset acc={f_met.get('upset_accuracy', 0):.0f}% @ "
+             f"{f_met.get('upset_rate', 0):.0f}%, "
+             f"ML ROI={f_met.get('ml_roi', 0):+.1f}%")
+    emit(f"{'=' * 60}")
+
+    return {
+        "passes": pass_num,
+        "elapsed_seconds": round(total_elapsed, 1),
+        "backtest": best_bt,
+    }
