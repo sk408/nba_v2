@@ -1,0 +1,6 @@
+data/nba_analytics.db
+data/cache/
+data/app_settings.json
+__pycache__/
+*.pyc
+.env
