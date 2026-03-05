@@ -66,13 +66,23 @@ def clear_sync_cache():
     db.execute("DELETE FROM sync_meta")
     db.execute("DELETE FROM player_sync_cache")
     # Invalidate compute caches (NOT precompute — it's incremental & independent)
-    from src.analytics.prediction import invalidate_residual_cache, invalidate_elo_cache
-    from src.analytics.stats_engine import invalidate_stats_caches
-    from src.analytics.prediction_quality import invalidate_odds_cache
-    invalidate_residual_cache()
-    invalidate_elo_cache()
-    invalidate_stats_caches()
-    invalidate_odds_cache()
+    # These modules may not exist yet during first-boot; skip gracefully.
+    try:
+        from src.analytics.prediction import invalidate_residual_cache, invalidate_elo_cache
+        invalidate_residual_cache()
+        invalidate_elo_cache()
+    except (ImportError, ModuleNotFoundError):
+        pass
+    try:
+        from src.analytics.stats_engine import invalidate_stats_caches
+        invalidate_stats_caches()
+    except (ImportError, ModuleNotFoundError):
+        pass
+    try:
+        from src.analytics.prediction_quality import invalidate_odds_cache
+        invalidate_odds_cache()
+    except (ImportError, ModuleNotFoundError):
+        pass
     logger.info("Cleared sync freshness caches (precompute cache preserved)")
 
 
