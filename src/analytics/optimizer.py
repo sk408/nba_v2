@@ -689,3 +689,205 @@ def compare_modes(
                  f"net contribution: {net_contribution:+.2f}% winner")
 
     return comparison
+
+
+def coordinate_descent(
+    games: List[GameInput],
+    params: Optional[List[str]] = None,
+    steps: int = 100,
+    max_rounds: int = 10,
+    convergence_threshold: float = 0.005,
+    include_sharp: bool = False,
+    callback: Optional[Callable] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
+    save: bool = True,
+) -> Dict[str, Any]:
+    """Grid-search refinement of individual parameters after Optuna TPE.
+
+    For each parameter, evaluates `steps` equally-spaced values across the
+    CD_RANGES bounds.  Accepts a new value only when it improves training loss.
+    Repeats for up to `max_rounds` until convergence.
+
+    Save gate: validation winner_pct must beat both favorites_pct and the
+    baseline winner_pct (same gate as optimize_weights).
+    """
+    # Walk-forward split (same as Optuna)
+    sorted_games = sorted(games, key=lambda g: g.game_date)
+    split_idx = int(len(sorted_games) * WALK_FORWARD_SPLIT)
+    train_games = sorted_games[:split_idx]
+    val_games = sorted_games[split_idx:]
+
+    if not train_games or not val_games:
+        if callback:
+            callback("Not enough games for walk-forward split")
+        return {"improved": False, "rounds": 0}
+
+    vg_train = VectorizedGames(train_games)
+    vg_val = VectorizedGames(val_games)
+
+    if callback:
+        callback(f"CD: {len(train_games)} train, {len(val_games)} validation")
+
+    # Select ranges and parameters
+    ranges = CD_SHARP_RANGES if include_sharp else CD_RANGES
+    if params is None:
+        params = list(ranges.keys())
+
+    if callback:
+        callback(f"CD: {len(params)} parameters, {steps} steps/param, "
+                 f"max {max_rounds} rounds")
+
+    # Load current weights as starting point
+    w = get_weight_config()
+    w_dict = w.to_dict()
+
+    # Baseline evaluation
+    baseline_train = vg_train.evaluate(w, include_sharp=include_sharp)
+    baseline_val = vg_val.evaluate(w, include_sharp=include_sharp)
+    current_train_loss = baseline_train["loss"]
+
+    if callback:
+        callback(f"CD baseline (train): Winner={baseline_train['winner_pct']:.1f}%, "
+                 f"Loss={baseline_train['loss']:.3f}")
+        callback(f"CD baseline (valid): Winner={baseline_val['winner_pct']:.1f}%, "
+                 f"Favorites={baseline_val['favorites_pct']:.1f}%")
+
+    best_w_dict = w_dict.copy()
+    history = []
+    all_changes = {}
+    prev_val_loss = baseline_val["loss"]
+
+    for round_num in range(1, max_rounds + 1):
+        if is_cancelled and is_cancelled():
+            if callback:
+                callback("CD cancelled by user.")
+            break
+
+        accepted_count = 0
+
+        if callback:
+            callback(f"--- Round {round_num}/{max_rounds} ---")
+
+        for p_idx, param_name in enumerate(params):
+            if is_cancelled and is_cancelled():
+                break
+
+            lo, hi = ranges.get(param_name, (0, 1))
+            grid = np.linspace(lo, hi, steps)
+
+            best_param_loss = current_train_loss
+            best_param_val = w_dict[param_name]
+
+            for val in grid:
+                test_dict = {**w_dict, param_name: float(val)}
+                test_w = WeightConfig.from_dict(test_dict)
+                result = vg_train.evaluate(test_w, include_sharp=include_sharp)
+                if result["loss"] < best_param_loss:
+                    best_param_loss = result["loss"]
+                    best_param_val = float(val)
+
+            # Accept if training loss improved
+            if best_param_loss < current_train_loss:
+                old_val = w_dict[param_name]
+                w_dict[param_name] = best_param_val
+                current_train_loss = best_param_loss
+                best_w_dict = w_dict.copy()
+                accepted_count += 1
+                all_changes[param_name] = {
+                    "before": old_val,
+                    "after": best_param_val,
+                }
+                if callback:
+                    callback(f"  {param_name}: {old_val:.4f} -> "
+                             f"{best_param_val:.4f} "
+                             f"(loss {current_train_loss:.4f}) KEPT")
+            else:
+                if callback and p_idx % 5 == 0:
+                    callback(f"  [{p_idx + 1}/{len(params)}] {param_name}: no improvement")
+
+        # End-of-round: evaluate on validation
+        round_w = WeightConfig.from_dict(best_w_dict)
+        round_val = vg_val.evaluate(round_w, include_sharp=include_sharp)
+        round_train = vg_train.evaluate(round_w, include_sharp=include_sharp)
+
+        round_info = {
+            "round": round_num,
+            "accepted": accepted_count,
+            "train_loss": round_train["loss"],
+            "train_winner_pct": round_train["winner_pct"],
+            "val_loss": round_val["loss"],
+            "val_winner_pct": round_val["winner_pct"],
+            "val_favorites_pct": round_val["favorites_pct"],
+        }
+        history.append(round_info)
+
+        if callback:
+            callback(f"Round {round_num} summary: "
+                     f"{accepted_count}/{len(params)} params accepted, "
+                     f"val Winner={round_val['winner_pct']:.1f}% "
+                     f"(fav={round_val['favorites_pct']:.1f}%), "
+                     f"train_loss={round_train['loss']:.3f}")
+
+        # Convergence checks
+        if accepted_count == 0:
+            if callback:
+                callback("No parameters improved this round. Stopping.")
+            break
+
+        val_improvement = abs(prev_val_loss - round_val["loss"])
+        if round_num >= 2 and val_improvement < convergence_threshold:
+            if callback:
+                callback(f"Converged (improvement {val_improvement:.4f} "
+                         f"< threshold {convergence_threshold}). Stopping.")
+            break
+
+        prev_val_loss = round_val["loss"]
+
+    # Final evaluation
+    final_w = WeightConfig.from_dict(best_w_dict)
+    final_val = vg_val.evaluate(final_w, include_sharp=include_sharp)
+    final_train = vg_train.evaluate(final_w, include_sharp=include_sharp)
+
+    # Save gate: same as optimize_weights
+    baseline_winner_pct = baseline_val.get("winner_pct", 0)
+    favorites_pct = final_val.get("favorites_pct", 0)
+    best_winner_pct = final_val.get("winner_pct", 0)
+    save_ok = best_winner_pct > max(favorites_pct, baseline_winner_pct)
+
+    if callback:
+        callback("--- CD Final ---")
+        callback(f"  Train:  Winner={final_train['winner_pct']:.1f}%, "
+                 f"Loss={final_train['loss']:.3f}")
+        callback(f"  Valid:  Winner={best_winner_pct:.1f}% "
+                 f"(was {baseline_winner_pct:.1f}%), "
+                 f"Favorites={favorites_pct:.1f}%")
+
+    if save and save_ok:
+        save_weight_config(final_w)
+        invalidate_weight_cache()
+        if callback:
+            callback(f"CD saved improved weights "
+                     f"({baseline_winner_pct:.1f}% -> {best_winner_pct:.1f}%)")
+    elif save:
+        reason = ""
+        if best_winner_pct <= favorites_pct:
+            reason = f" (winner {best_winner_pct:.1f}% <= favorites {favorites_pct:.1f}%)"
+        elif best_winner_pct <= baseline_winner_pct:
+            reason = f" (winner {best_winner_pct:.1f}% <= baseline {baseline_winner_pct:.1f}%)"
+        if callback:
+            callback(f"CD: validation winner% did not improve{reason} "
+                     f"- keeping current weights")
+
+    return {
+        "weights": best_w_dict,
+        "history": history,
+        "changes": all_changes,
+        "rounds": len(history),
+        "improved": save_ok,
+        "initial_winner_pct": baseline_winner_pct,
+        "final_winner_pct": best_winner_pct,
+        "initial_loss": baseline_val["loss"],
+        "final_loss": final_val["loss"],
+        "favorites_pct": favorites_pct,
+        **final_val,
+    }
