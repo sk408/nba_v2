@@ -10,9 +10,11 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QGridLayout, QScrollArea, QSlider, QSpinBox,
     QRadioButton, QButtonGroup, QGroupBox, QSizePolicy,
-    QMessageBox,
+    QMessageBox, QTextEdit, QTableWidget, QTableWidgetItem,
+    QHeaderView,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtGui import QColor
 
 from src.ui.theme import apply_card_shadow
 
@@ -26,6 +28,55 @@ RED = "#FF5252"
 TEXT_PRIMARY = "#e2e8f0"
 TEXT_MUTED = "#94a3b8"
 TEXT_DIM = "#64748b"
+
+
+class _CDWorker(QObject):
+    """Runs coordinate descent on a background thread."""
+    progress = Signal(str)
+    finished = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, include_sharp: bool, steps: int, max_rounds: int):
+        super().__init__()
+        self.include_sharp = include_sharp
+        self.steps = steps
+        self.max_rounds = max_rounds
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            from src.database.db import thread_local_db
+            thread_local_db()
+            from src.analytics.prediction import precompute_all_games
+            from src.analytics.optimizer import coordinate_descent
+
+            self.progress.emit("Loading precomputed games...")
+            games = precompute_all_games(
+                callback=lambda msg: self.progress.emit(msg),
+            )
+            if not games:
+                self.error.emit("No games available for CD")
+                return
+
+            self.progress.emit(f"Starting CD: {len(games)} games, "
+                              f"steps={self.steps}, rounds={self.max_rounds}")
+
+            result = coordinate_descent(
+                games=games,
+                steps=self.steps,
+                max_rounds=self.max_rounds,
+                include_sharp=self.include_sharp,
+                callback=lambda msg: self.progress.emit(msg),
+                is_cancelled=lambda: self._cancelled,
+                save=True,
+            )
+            self.finished.emit(result)
+        except Exception as e:
+            import traceback
+            self.error.emit(f"{e}\n{traceback.format_exc()}")
 
 
 # ----------------------------------------------------------------
@@ -70,7 +121,10 @@ class SettingsView(QWidget):
         # ---- Section 4: Theme ----
         self._build_theme_section(layout)
 
-        # ---- Section 5: Weight Management ----
+        # ---- Section 5: Coordinate Descent ----
+        self._build_cd_section(layout)
+
+        # ---- Section 6: Weight Management ----
         self._build_weight_management(layout)
 
         layout.addStretch()
@@ -270,6 +324,128 @@ class SettingsView(QWidget):
         gl.addLayout(row)
 
         self._theme_group.idToggled.connect(self._on_theme_changed)
+
+        apply_card_shadow(group)
+        parent_layout.addWidget(group)
+
+    def _build_cd_section(self, parent_layout: QVBoxLayout):
+        """Build coordinate descent refinement section."""
+        group = QGroupBox("Coordinate Descent Refinement")
+        gl = QVBoxLayout(group)
+        gl.setSpacing(10)
+
+        desc = QLabel(
+            "Grid-search refinement of individual parameters after Optuna optimization. "
+            "CD fine-tunes each weight by testing many values across wider ranges, "
+            "accepting only improvements. Run after the pipeline optimizer for best results."
+        )
+        desc.setProperty("class", "text-secondary")
+        desc.setWordWrap(True)
+        gl.addWidget(desc)
+
+        # Mode selector
+        mode_row = QHBoxLayout()
+        mode_lbl = QLabel("Mode:")
+        mode_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 600;")
+        mode_row.addWidget(mode_lbl)
+        self._cd_mode_group = QButtonGroup(self)
+        self._cd_mode_fund = QRadioButton("Fundamentals Only")
+        self._cd_mode_fund.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px;")
+        self._cd_mode_fund.setChecked(True)
+        self._cd_mode_group.addButton(self._cd_mode_fund, 0)
+        mode_row.addWidget(self._cd_mode_fund)
+        self._cd_mode_sharp = QRadioButton("Fundamentals + Sharp")
+        self._cd_mode_sharp.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px;")
+        self._cd_mode_group.addButton(self._cd_mode_sharp, 1)
+        mode_row.addWidget(self._cd_mode_sharp)
+        mode_row.addStretch()
+        gl.addLayout(mode_row)
+
+        # Controls row: steps, max rounds, buttons
+        ctrl_row = QHBoxLayout()
+        ctrl_row.setSpacing(12)
+
+        steps_lbl = QLabel("Steps:")
+        steps_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px;")
+        ctrl_row.addWidget(steps_lbl)
+        self._cd_steps_spin = QSpinBox()
+        self._cd_steps_spin.setRange(50, 2000)
+        self._cd_steps_spin.setValue(100)
+        self._cd_steps_spin.setSingleStep(50)
+        self._cd_steps_spin.setFixedWidth(80)
+        ctrl_row.addWidget(self._cd_steps_spin)
+
+        rounds_lbl = QLabel("Max Rounds:")
+        rounds_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px;")
+        ctrl_row.addWidget(rounds_lbl)
+        self._cd_rounds_spin = QSpinBox()
+        self._cd_rounds_spin.setRange(1, 20)
+        self._cd_rounds_spin.setValue(10)
+        self._cd_rounds_spin.setFixedWidth(60)
+        ctrl_row.addWidget(self._cd_rounds_spin)
+
+        self._cd_run_btn = QPushButton("Run CD")
+        self._cd_run_btn.setProperty("class", "success")
+        self._cd_run_btn.setFixedHeight(36)
+        self._cd_run_btn.setMinimumWidth(100)
+        self._cd_run_btn.clicked.connect(self._on_cd_run)
+        ctrl_row.addWidget(self._cd_run_btn)
+
+        self._cd_cancel_btn = QPushButton("Cancel")
+        self._cd_cancel_btn.setProperty("class", "danger")
+        self._cd_cancel_btn.setFixedHeight(36)
+        self._cd_cancel_btn.setMinimumWidth(80)
+        self._cd_cancel_btn.setVisible(False)
+        self._cd_cancel_btn.clicked.connect(self._on_cd_cancel)
+        ctrl_row.addWidget(self._cd_cancel_btn)
+
+        ctrl_row.addStretch()
+        gl.addLayout(ctrl_row)
+
+        # Progress log
+        self._cd_log = QTextEdit()
+        self._cd_log.setReadOnly(True)
+        self._cd_log.setFixedHeight(200)
+        self._cd_log.setStyleSheet(
+            "QTextEdit { background: #0a0e14; color: #22c55e; "
+            "font-family: 'Consolas', 'Courier New', monospace; font-size: 11px; "
+            "border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; "
+            "padding: 8px; }"
+        )
+        gl.addWidget(self._cd_log)
+
+        # Results label
+        self._cd_results_lbl = QLabel("")
+        self._cd_results_lbl.setStyleSheet(
+            f"color: {CYAN}; font-size: 13px; font-weight: 600;"
+        )
+        gl.addWidget(self._cd_results_lbl)
+
+        # Changes table (hidden until CD completes)
+        self._cd_changes_table = QTableWidget()
+        self._cd_changes_table.setColumnCount(4)
+        self._cd_changes_table.setHorizontalHeaderLabels(
+            ["Parameter", "Before", "After", "Delta"]
+        )
+        self._cd_changes_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch
+        )
+        for col in range(1, 4):
+            self._cd_changes_table.horizontalHeader().setSectionResizeMode(
+                col, QHeaderView.ResizeMode.ResizeToContents
+            )
+        self._cd_changes_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        self._cd_changes_table.verticalHeader().setVisible(False)
+        self._cd_changes_table.setAlternatingRowColors(True)
+        self._cd_changes_table.setMaximumHeight(200)
+        self._cd_changes_table.setVisible(False)
+        gl.addWidget(self._cd_changes_table)
+
+        # Worker state
+        self._cd_worker = None
+        self._cd_thread = None
 
         apply_card_shadow(group)
         parent_layout.addWidget(group)
@@ -480,6 +656,129 @@ class SettingsView(QWidget):
                 self._reset_status_lbl.setStyleSheet(
                     f"color: {RED}; font-size: 12px; font-weight: 600;"
                 )
+
+    def _on_cd_run(self):
+        """Start coordinate descent on a background thread."""
+        include_sharp = self._cd_mode_group.checkedId() == 1
+        steps = self._cd_steps_spin.value()
+        max_rounds = self._cd_rounds_spin.value()
+
+        self._cd_log.clear()
+        self._cd_results_lbl.setText("")
+        self._cd_changes_table.setVisible(False)
+        self._cd_run_btn.setEnabled(False)
+        self._cd_cancel_btn.setVisible(True)
+
+        mode_str = "Fundamentals + Sharp" if include_sharp else "Fundamentals Only"
+        self._cd_log.append(f"Starting CD ({mode_str}, {steps} steps, {max_rounds} rounds)...")
+
+        self._cd_worker = _CDWorker(include_sharp, steps, max_rounds)
+        self._cd_thread = QThread()
+        self._cd_worker.moveToThread(self._cd_thread)
+        self._cd_thread.started.connect(self._cd_worker.run)
+
+        _QC = Qt.ConnectionType.QueuedConnection
+        self._cd_worker.progress.connect(self._on_cd_progress, _QC)
+        self._cd_worker.finished.connect(self._on_cd_finished, _QC)
+        self._cd_worker.error.connect(self._on_cd_error, _QC)
+        self._cd_worker.finished.connect(self._cd_thread.quit)
+        self._cd_worker.error.connect(self._cd_thread.quit)
+        self._cd_thread.finished.connect(self._cd_cleanup)
+
+        self._cd_thread.start()
+
+    def _on_cd_cancel(self):
+        """Cancel a running CD."""
+        if self._cd_worker:
+            self._cd_worker.cancel()
+            self._cd_log.append("Cancelling...")
+
+    def _on_cd_progress(self, msg: str):
+        """Append progress message to the CD log."""
+        self._cd_log.append(msg)
+        sb = self._cd_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _on_cd_finished(self, result: dict):
+        """CD completed -- show results."""
+        self._cd_run_btn.setEnabled(True)
+        self._cd_cancel_btn.setVisible(False)
+
+        improved = result.get("improved", False)
+        rounds = result.get("rounds", 0)
+        changes = result.get("changes", {})
+        initial_wp = result.get("initial_winner_pct", 0)
+        final_wp = result.get("final_winner_pct", 0)
+
+        if improved:
+            self._cd_results_lbl.setText(
+                f"CD improved: {initial_wp:.1f}% -> {final_wp:.1f}% winner "
+                f"({rounds} rounds, {len(changes)} params changed)"
+            )
+            self._cd_results_lbl.setStyleSheet(
+                f"color: {GREEN}; font-size: 13px; font-weight: 600;"
+            )
+        else:
+            self._cd_results_lbl.setText(
+                f"CD did not improve validation winner% "
+                f"({rounds} rounds, {len(changes)} params tested)"
+            )
+            self._cd_results_lbl.setStyleSheet(
+                f"color: {AMBER}; font-size: 13px; font-weight: 600;"
+            )
+
+        # Populate changes table
+        if changes:
+            sorted_changes = sorted(
+                changes.items(),
+                key=lambda x: abs(x[1]["after"] - x[1]["before"]),
+                reverse=True,
+            )
+            self._cd_changes_table.setRowCount(len(sorted_changes))
+            for r, (param, vals) in enumerate(sorted_changes):
+                before = vals["before"]
+                after = vals["after"]
+                delta = after - before
+                self._cd_changes_table.setItem(
+                    r, 0, QTableWidgetItem(param)
+                )
+                self._cd_changes_table.setItem(
+                    r, 1, QTableWidgetItem(f"{before:.4f}")
+                )
+                self._cd_changes_table.setItem(
+                    r, 2, QTableWidgetItem(f"{after:.4f}")
+                )
+                delta_item = QTableWidgetItem(f"{delta:+.4f}")
+                delta_item.setForeground(
+                    QColor(GREEN if delta > 0 else RED)
+                )
+                self._cd_changes_table.setItem(r, 3, delta_item)
+            self._cd_changes_table.setVisible(True)
+
+        self._update_weight_summary()
+        self._notify(
+            f"CD complete: {'improved' if improved else 'no improvement'} "
+            f"({rounds} rounds)"
+        )
+
+    def _on_cd_error(self, msg: str):
+        """CD failed -- show error."""
+        self._cd_run_btn.setEnabled(True)
+        self._cd_cancel_btn.setVisible(False)
+        self._cd_log.append(f"ERROR: {msg}")
+        self._cd_results_lbl.setText("CD failed")
+        self._cd_results_lbl.setStyleSheet(
+            f"color: {RED}; font-size: 13px; font-weight: 600;"
+        )
+
+    def _cd_cleanup(self):
+        """Clean up CD thread resources."""
+        if self._cd_thread:
+            self._cd_thread.deleteLater()
+        if self._cd_worker:
+            self._cd_worker.deleteLater()
+        self._cd_thread = None
+        self._cd_worker = None
 
     def _notify(self, msg: str):
         """Show a status bar message."""
