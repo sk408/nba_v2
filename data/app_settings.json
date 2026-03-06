@@ -1,0 +1,25 @@
+{
+  "db_path": "data/nba_analytics.db",
+  "season": "2025-26",
+  "season_year": "2025",
+  "historical_seasons": [
+    "2019-20",
+    "2020-21",
+    "2021-22",
+    "2022-23",
+    "2023-24",
+    "2024-25"
+  ],
+  "theme": "dark",
+  "auto_sync_interval_minutes": 60,
+  "notification_webhook_url": "",
+  "notification_ntfy_topic": "",
+  "enable_toast_notifications": true,
+  "log_level": "INFO",
+  "worker_threads": 14,
+  "oled_mode": true,
+  "sync_freshness_hours": 4,
+  "optimizer_log_interval": 300,
+  "prediction_mode": "fundamentals_sharp",
+  "upset_bonus_mult": 0.5
+}
