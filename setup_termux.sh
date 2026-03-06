@@ -18,7 +18,7 @@ python -m venv venv
 echo "[3/4] Installing Python dependencies..."
 source venv/bin/activate
 pip install --upgrade pip
-pip install flask requests numpy
+pip install flask requests numpy pandas beautifulsoup4
 
 echo "[4/4] Done!"
 echo ""
