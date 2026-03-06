@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QScrollArea, QLabel, QHBoxLayout, QFrame,
 )
 
-from src.ui.widgets.nba_colors import get_team_colors
+from src.ui.widgets.nba_colors import get_team_colors, ensure_visible
 from src.ui.widgets.image_utils import get_team_logo, make_placeholder_logo
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,7 @@ class _PlayItem(QFrame):
             tid = int(team_id) if team_id else None
             if tid:
                 primary_color, _ = get_team_colors(tid)
+                primary_color = ensure_visible(primary_color)
                 if tid == home_team_id:
                     abbr = home_abbr
                 elif tid == away_team_id:

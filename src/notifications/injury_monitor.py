@@ -135,7 +135,7 @@ class InjuryMonitor:
     def _notify_new_injury(self, player: Dict):
         """Create notification for new injury."""
         severity = self._get_severity(player)
-        abbr = player.get("abbreviation", "???")
+        abbr = player.get("abbreviation") or "???"
         name = player.get("player_name", "Unknown")
         status = player.get("status", "Unknown")
         reason = player.get("reason", "")
@@ -157,7 +157,7 @@ class InjuryMonitor:
         """Create notification for status change."""
         severity = self._get_severity(current)
         name = current.get("player_name", "Unknown")
-        abbr = current.get("abbreviation", "???")
+        abbr = current.get("abbreviation") or "???"
 
         old_status = previous.get("status", "?")
         new_status = current.get("status", "?")
@@ -176,7 +176,7 @@ class InjuryMonitor:
     def _notify_recovered(self, player: Dict):
         """Create notification for injury removal (recovery)."""
         name = player.get("player_name", "Unknown")
-        abbr = player.get("abbreviation", "???")
+        abbr = player.get("abbreviation") or "???"
 
         title = f"Cleared: {name} ({abbr})"
         message = f"Removed from injury report (was {player.get('status', '?')})"

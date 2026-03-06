@@ -32,7 +32,7 @@ from src.ui.widgets.scoreboard_widget import ScoreboardWidget
 from src.ui.widgets.court_widget import CourtWidget
 from src.ui.widgets.play_feed_widget import PlayFeedWidget
 from src.ui.widgets.info_panel_widget import InfoPanelWidget, _CollapsibleSection
-from src.ui.widgets.nba_colors import get_team_colors
+from src.ui.widgets.nba_colors import get_team_colors, ensure_visible
 from src.ui.widgets.image_utils import get_team_logo, get_player_photo
 
 logger = logging.getLogger(__name__)
@@ -414,10 +414,10 @@ class GamecastView(QWidget):
 
         self.play_feed = PlayFeedWidget()
         self.play_feed.setMinimumHeight(100)
-        self.play_feed.setMaximumWidth(280)
         self._bottom_splitter.addWidget(self.play_feed)
-        self._bottom_splitter.setStretchFactor(0, 3)
-        self._bottom_splitter.setStretchFactor(1, 0)
+        self._bottom_splitter.setStretchFactor(0, 1)
+        self._bottom_splitter.setStretchFactor(1, 1)
+        self._bottom_splitter.setSizes([400, 400])
         root.addWidget(self._bottom_splitter, 2)
 
     def _make_box_table(self) -> QTableWidget:
@@ -1080,6 +1080,8 @@ class GamecastView(QWidget):
             get_team_colors(away_team_id) if away_team_id
             else ("#ef4444", "")
         )
+        home_clr = ensure_visible(home_clr)
+        away_clr = ensure_visible(away_clr)
         self.info_panel.update_win_probability(
             home_win_pct, home_clr, away_clr,
             self._home_abbr, self._away_abbr,

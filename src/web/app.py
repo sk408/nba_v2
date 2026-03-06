@@ -4,12 +4,16 @@ Routes:
   /                          Dashboard (today's games with predictions)
   /matchup/<hid>/<aid>/<date>  Game detail with breakdown + sharp panel
   /accuracy                  Backtest results with A/B comparison
+  /gamecast                  Live gamecast view (ESPN integration)
   /api/predict  (POST)       JSON prediction endpoint
   /api/sync     (POST)       Trigger data sync (background thread)
+  /api/gamecast/games        Today's games (ESPN scoreboard)
+  /api/gamecast/<game_id>    Full game data (summary, boxscore, plays, odds)
 """
 
 import logging
 import os
+import signal
 import threading
 from dataclasses import asdict
 from datetime import datetime
@@ -257,6 +261,207 @@ def api_sync_status():
 def _update_sync_status(msg: str):
     global _sync_status
     _sync_status = msg
+
+
+@app.route("/gamecast")
+def gamecast():
+    """Live gamecast view with ESPN integration."""
+    return render_template("gamecast.html")
+
+
+@app.route("/api/gamecast/games")
+def api_gamecast_games():
+    """Today's games from ESPN scoreboard."""
+    from src.data.gamecast import fetch_espn_scoreboard
+    try:
+        games = fetch_espn_scoreboard()
+        return jsonify({"games": games})
+    except Exception as e:
+        logger.error("Gamecast games error: %s", e, exc_info=True)
+        return jsonify({"games": [], "error": str(e)})
+
+
+@app.route("/api/gamecast/<game_id>")
+def api_gamecast_data(game_id):
+    """Full game data for gamecast (summary, boxscore, plays, odds)."""
+    from src.data.gamecast import fetch_espn_game_summary, get_actionnetwork_odds
+    from src.utils.team_mapper import normalize_espn_abbr
+    try:
+        summary = fetch_espn_game_summary(game_id)
+        if not summary:
+            return jsonify({"error": "No data available"}), 404
+        result = _parse_game_summary(summary, game_id, normalize_espn_abbr,
+                                     get_actionnetwork_odds)
+        return jsonify(result)
+    except Exception as e:
+        logger.error("Gamecast data error for %s: %s", game_id, e, exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
+    """Parse ESPN game summary into clean JSON for gamecast."""
+    result = {
+        "game_id": game_id,
+        "header": {"home": {}, "away": {}, "status": {}},
+        "boxscore": {"away": None, "home": None},
+        "plays": [],
+        "odds": {},
+        "predictor": {"home_pct": 50.0, "away_pct": 50.0},
+        "model_prediction": None,
+    }
+
+    # ── Header ──
+    header = summary.get("header", {})
+    competitions = header.get("competitions", [{}])
+    if competitions:
+        comp = competitions[0]
+        status = comp.get("status", {})
+        result["header"]["status"] = {
+            "state": status.get("type", {}).get("state", ""),
+            "period": status.get("period", 0),
+            "clock": status.get("displayClock", "0:00"),
+            "detail": status.get("type", {}).get("shortDetail", ""),
+            "description": status.get("type", {}).get("description", ""),
+        }
+        for c in comp.get("competitors", []):
+            side = c.get("homeAway", "")
+            if side not in ("home", "away"):
+                continue
+            team = c.get("team", {})
+            result["header"][side] = {
+                "abbr": normalize_abbr(team.get("abbreviation", "")),
+                "name": team.get("displayName", ""),
+                "id": team.get("id", ""),
+                "score": int(c.get("score", 0) or 0),
+                "linescores": [int(q.get("displayValue", 0) or 0)
+                               for q in c.get("linescores", [])],
+            }
+
+    # ── Boxscore ──
+    for team_block in summary.get("boxscore", {}).get("players", []):
+        team = team_block.get("team", {})
+        team_id = team.get("id", "")
+        side = None
+        if result["header"]["home"].get("id") == team_id:
+            side = "home"
+        elif result["header"]["away"].get("id") == team_id:
+            side = "away"
+        else:
+            continue
+        stats_block = (team_block.get("statistics") or [{}])[0]
+        labels = stats_block.get("labels", [])
+        players = []
+        for ath in stats_block.get("athletes", []):
+            info = ath.get("athlete", {})
+            raw_stats = ath.get("stats", [])
+            stat_dict = {}
+            for i, label in enumerate(labels):
+                stat_dict[label] = raw_stats[i] if i < len(raw_stats) else ""
+            players.append({
+                "name": info.get("displayName", ""),
+                "id": info.get("id", ""),
+                "active": ath.get("active", False),
+                "starter": ath.get("starter", False),
+                "stats": stat_dict,
+            })
+        result["boxscore"][side] = {
+            "team": normalize_abbr(team.get("abbreviation", "")),
+            "labels": labels,
+            "players": players,
+        }
+
+    # ── Plays ──
+    for entry in summary.get("plays", []):
+        if not isinstance(entry, dict):
+            continue
+        # Plays may be nested in "items" or be standalone
+        items = entry.get("items")
+        if isinstance(items, list):
+            play_list = items
+        else:
+            play_list = [entry]
+        for item in play_list:
+            text = item.get("text", "")
+            if not text:
+                continue
+            team = item.get("team", {})
+            clock = item.get("clock", {})
+            period = item.get("period", {})
+            result["plays"].append({
+                "text": text,
+                "team_id": (team.get("id", "") if isinstance(team, dict)
+                            else ""),
+                "clock": (clock.get("displayValue", "")
+                          if isinstance(clock, dict) else str(clock)),
+                "period": (period.get("number", 0)
+                           if isinstance(period, dict)
+                           else int(period) if period else 0),
+                "scoring": bool(item.get("scoringPlay", False)),
+                "away_score": item.get("awayScore", 0),
+                "home_score": item.get("homeScore", 0),
+            })
+
+    # ── Odds (try Action Network, fallback to ESPN pickcenter) ──
+    home_abbr = result["header"]["home"].get("abbr", "")
+    away_abbr = result["header"]["away"].get("abbr", "")
+    if home_abbr and away_abbr:
+        try:
+            an_odds = get_an_odds(home_abbr, away_abbr)
+            if an_odds:
+                result["odds"] = an_odds
+        except Exception:
+            pass
+    if not result["odds"]:
+        pickcenter = summary.get("pickcenter", [])
+        if pickcenter:
+            pc = pickcenter[0]
+            result["odds"] = {
+                "spread": pc.get("details", ""),
+                "over_under": pc.get("overUnder"),
+                "home_moneyline": pc.get("homeTeamOdds", {}).get("moneyLine"),
+                "away_moneyline": pc.get("awayTeamOdds", {}).get("moneyLine"),
+                "provider": pc.get("provider", {}).get("name", "ESPN"),
+            }
+
+    # ── Predictor ──
+    predictor = summary.get("predictor", {})
+    if predictor:
+        result["predictor"] = {
+            "home_pct": float(
+                predictor.get("homeTeam", {}).get("gameProjection", 50.0)),
+            "away_pct": float(
+                predictor.get("awayTeam", {}).get("gameProjection", 50.0)),
+        }
+
+    # ── Model prediction (best-effort) ──
+    try:
+        from src.analytics.stats_engine import get_team_abbreviations
+        abbr_map = get_team_abbreviations()
+        abbr_to_id = {v: k for k, v in abbr_map.items()}
+        h_id = abbr_to_id.get(home_abbr)
+        a_id = abbr_to_id.get(away_abbr)
+        if h_id and a_id:
+            today = datetime.now().strftime("%Y-%m-%d")
+            result["model_prediction"] = _run_prediction(
+                int(h_id), int(a_id), today)
+    except Exception as e:
+        logger.debug("Model prediction unavailable: %s", e)
+
+    return result
+
+
+@app.route("/api/shutdown", methods=["POST"])
+def api_shutdown():
+    """Shut down the web server and stop background services."""
+    from src.bootstrap import shutdown
+    logger.info("Shutdown requested via web UI")
+    shutdown()
+
+    def _exit():
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Timer(0.5, _exit).start()
+    return jsonify({"status": "shutting_down"})
 
 
 # ──────────────────────────────────────────────────────────────

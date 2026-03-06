@@ -540,9 +540,16 @@ def sync_injuries(callback=None) -> int:
             (f"{status} - {detail}", pid)
         )
 
-        # Get team_id
+        # Get team_id (from player record, or fall back to scraped team name)
         p_row = db.fetch_one("SELECT team_id FROM players WHERE player_id = ?", (pid,))
         team_id = p_row["team_id"] if p_row else 0
+        if not team_id and inj.get("team"):
+            t_row = db.fetch_one(
+                "SELECT team_id FROM teams WHERE name = ? OR abbreviation = ? COLLATE NOCASE",
+                (inj["team"], inj["team"]),
+            )
+            if t_row:
+                team_id = t_row["team_id"]
 
         # Insert into injuries table
         db.execute(

@@ -20,11 +20,15 @@
             </a>
             <div class="nav-links">
                 <a href="/" class="nav-link {% if request.path == '/' %}active{% endif %}">Dashboard</a>
+                <a href="/gamecast" class="nav-link {% if request.path == '/gamecast' %}active{% endif %}">Gamecast</a>
                 <a href="/accuracy" class="nav-link {% if request.path == '/accuracy' %}active{% endif %}">Accuracy</a>
             </div>
             <div class="nav-actions">
                 <button id="sync-btn" class="btn btn-sm btn-outline" onclick="triggerSync()">
                     <span id="sync-icon" class="sync-icon">&#8635;</span> Sync
+                </button>
+                <button id="shutdown-btn" class="btn btn-sm btn-outline btn-danger" onclick="shutdownServer()" title="Stop server and injury monitor">
+                    &#9724; Shutdown
                 </button>
             </div>
         </div>
@@ -84,6 +88,20 @@
                 btn.innerHTML = '<span class="sync-icon">&#8635;</span> Sync';
                 btn.disabled = false;
             }
+        }
+    </script>
+    <script>
+        async function shutdownServer() {
+            if (!confirm('Shut down the server and injury monitor?')) return;
+            const btn = document.getElementById('shutdown-btn');
+            btn.disabled = true;
+            btn.textContent = 'Shutting down...';
+            try {
+                await fetch('/api/shutdown', { method: 'POST' });
+            } catch (e) {
+                // Expected — server is stopping
+            }
+            document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:Inter,sans-serif;color:#64748b;"><h2>Server stopped.</h2></div>';
         }
     </script>
     {% block scripts %}{% endblock %}

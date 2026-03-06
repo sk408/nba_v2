@@ -1,0 +1,415 @@
+{% extends "base.html" %}
+{% block title %}Gamecast — NBA Fundamentals V2{% endblock %}
+
+{% block head %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+{% endblock %}
+
+{% block content %}
+
+<!-- ─── Game Selector Ticker ─── -->
+<div class="gc-ticker" id="gc-ticker-wrap">
+    <div class="gc-ticker-track" id="gc-ticker"></div>
+</div>
+
+<!-- ─── Loading State ─── -->
+<div class="gc-status-msg" id="gc-loading">
+    <div class="gc-spinner"></div>
+    <span>Loading games&hellip;</span>
+</div>
+
+<!-- ─── Empty State ─── -->
+<div class="gc-status-msg" id="gc-empty" style="display:none">
+    <div class="empty-icon">&#127936;</div>
+    <h2>No Games Today</h2>
+    <p>Check back when games are scheduled.</p>
+</div>
+
+<!-- ─── Main Gamecast ─── -->
+<div id="gc-main" style="display:none">
+
+    <!-- Scoreboard Hero -->
+    <section class="gc-scoreboard">
+        <div class="gc-sb-away gc-sb-side">
+            <span class="gc-sb-label">AWAY</span>
+            <span class="gc-sb-abbr" id="gc-away-abbr"></span>
+            <span class="gc-sb-name" id="gc-away-name"></span>
+            <span class="gc-sb-score" id="gc-away-score"></span>
+        </div>
+        <div class="gc-sb-center">
+            <div class="gc-sb-detail" id="gc-detail"></div>
+            <div class="gc-sb-live" id="gc-live" style="display:none">
+                <span class="gc-pulse"></span>LIVE
+            </div>
+        </div>
+        <div class="gc-sb-home gc-sb-side">
+            <span class="gc-sb-label">HOME</span>
+            <span class="gc-sb-abbr" id="gc-home-abbr"></span>
+            <span class="gc-sb-name" id="gc-home-name"></span>
+            <span class="gc-sb-score" id="gc-home-score"></span>
+        </div>
+        <div class="gc-ls-wrap" id="gc-linescores"></div>
+    </section>
+
+    <!-- Two-column: Info + Box Score -->
+    <div class="gc-columns">
+
+        <!-- Left: Info Sidebar -->
+        <aside class="gc-sidebar">
+            <!-- Win Probability -->
+            <div class="gc-card">
+                <div class="gc-card-title">Win Probability</div>
+                <div class="gc-wp">
+                    <div class="gc-wp-labels">
+                        <span class="gc-wp-away" id="gc-wp-away-label"></span>
+                        <span class="gc-wp-home" id="gc-wp-home-label"></span>
+                    </div>
+                    <div class="gc-wp-track">
+                        <div class="gc-wp-fill" id="gc-wp-fill"></div>
+                    </div>
+                    <div class="gc-wp-pcts">
+                        <span class="gc-wp-away" id="gc-wp-away-pct">50%</span>
+                        <span class="gc-wp-home" id="gc-wp-home-pct">50%</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Odds -->
+            <div class="gc-card">
+                <div class="gc-card-title">Odds</div>
+                <div id="gc-odds" class="gc-odds"></div>
+            </div>
+
+            <!-- Model Prediction -->
+            <div class="gc-card" id="gc-pred-card" style="display:none">
+                <div class="gc-card-title">Model Prediction</div>
+                <div id="gc-pred"></div>
+            </div>
+        </aside>
+
+        <!-- Right: Box Score -->
+        <section class="gc-boxscore">
+            <div class="gc-box-tabs">
+                <button class="gc-box-tab active" data-side="away" id="gc-tab-away">AWAY</button>
+                <button class="gc-box-tab" data-side="home" id="gc-tab-home">HOME</button>
+            </div>
+            <div class="gc-box-body" id="gc-box-body">
+                <div class="gc-no-data">Select a game</div>
+            </div>
+        </section>
+
+    </div>
+
+    <!-- Play-by-Play -->
+    <section class="gc-card gc-plays-section">
+        <div class="gc-card-title">Play-by-Play</div>
+        <div class="gc-plays" id="gc-plays">
+            <div class="gc-no-data">No plays available</div>
+        </div>
+    </section>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const GC = {
+    gameId: null,
+    timer: null,
+    data: null,
+    boxSide: 'away',
+    games: [],
+
+    async init() {
+        try {
+            const resp = await fetch('/api/gamecast/games');
+            const json = await resp.json();
+            this.games = json.games || [];
+        } catch (e) {
+            console.error('Failed to load games:', e);
+            this.games = [];
+        }
+
+        document.getElementById('gc-loading').style.display = 'none';
+
+        if (!this.games.length) {
+            document.getElementById('gc-empty').style.display = '';
+            return;
+        }
+
+        this.renderTicker();
+        // Auto-select first live game, or first game
+        const live = this.games.find(g => g.state === 'in');
+        this.select(live ? live.espn_id : this.games[0].espn_id);
+    },
+
+    renderTicker() {
+        const el = document.getElementById('gc-ticker');
+        el.innerHTML = this.games.map(g => {
+            const showScore = g.state !== 'pre';
+            return `
+            <button class="gc-ti" data-id="${g.espn_id}" onclick="GC.select('${g.espn_id}')">
+                <div class="gc-ti-matchup">
+                    <span class="gc-ti-team">${g.away_team}</span>
+                    <span class="gc-ti-score">${showScore ? g.away_score : ''}</span>
+                </div>
+                <span class="gc-ti-at">@</span>
+                <div class="gc-ti-matchup">
+                    <span class="gc-ti-team">${g.home_team}</span>
+                    <span class="gc-ti-score">${showScore ? g.home_score : ''}</span>
+                </div>
+                ${g.state === 'in' ? '<span class="gc-ti-live"></span>' : ''}
+                <span class="gc-ti-status">${g.short_detail || g.status || ''}</span>
+            </button>`;
+        }).join('');
+        document.getElementById('gc-ticker-wrap').style.display = '';
+    },
+
+    async select(gameId) {
+        if (this.timer) { clearInterval(this.timer); this.timer = null; }
+        this.gameId = gameId;
+
+        // Highlight active ticker item
+        document.querySelectorAll('.gc-ti').forEach(el => {
+            el.classList.toggle('active', el.dataset.id === gameId);
+        });
+
+        // Show loading
+        document.getElementById('gc-main').style.display = 'none';
+        document.getElementById('gc-loading').style.display = '';
+
+        await this.fetchData();
+
+        document.getElementById('gc-loading').style.display = 'none';
+        document.getElementById('gc-main').style.display = '';
+
+        // Start smart polling
+        const state = this.data?.header?.status?.state;
+        if (state === 'in') {
+            this.timer = setInterval(() => this.fetchData(), 10000);
+        } else if (state === 'pre') {
+            this.timer = setInterval(() => this.fetchData(), 60000);
+        }
+    },
+
+    async fetchData() {
+        try {
+            const resp = await fetch('/api/gamecast/' + this.gameId);
+            const data = await resp.json();
+            if (data.error) throw new Error(data.error);
+            this.data = data;
+            this.render();
+        } catch (e) {
+            console.error('Fetch error:', e);
+        }
+    },
+
+    render() {
+        const d = this.data;
+        this.renderScoreboard(d);
+        this.renderWinProb(d);
+        this.renderOdds(d);
+        this.renderPrediction(d);
+        this.renderBoxscore(d);
+        this.renderPlays(d);
+        this.updateTicker(d);
+    },
+
+    renderScoreboard(d) {
+        const h = d.header;
+        const away = h.away || {};
+        const home = h.home || {};
+        const st = h.status || {};
+        const isPre = st.state === 'pre';
+
+        document.getElementById('gc-away-abbr').textContent = away.abbr || '';
+        document.getElementById('gc-away-name').textContent = away.name || '';
+        document.getElementById('gc-away-score').textContent = isPre ? '' : (away.score ?? 0);
+        document.getElementById('gc-home-abbr').textContent = home.abbr || '';
+        document.getElementById('gc-home-name').textContent = home.name || '';
+        document.getElementById('gc-home-score').textContent = isPre ? '' : (home.score ?? 0);
+
+        document.getElementById('gc-detail').textContent = st.detail || st.description || '';
+        document.getElementById('gc-live').style.display = st.state === 'in' ? '' : 'none';
+
+        // Line scores
+        const awayQ = away.linescores || [];
+        const homeQ = home.linescores || [];
+        const maxQ = Math.max(awayQ.length, homeQ.length, 4);
+        let ls = '<table class="gc-ls"><thead><tr><th></th>';
+        for (let i = 0; i < maxQ; i++) ls += `<th>${i < 4 ? 'Q' + (i+1) : 'OT' + (i-3)}</th>`;
+        ls += '<th>T</th></tr></thead><tbody>';
+        ls += `<tr><td class="gc-ls-name">${away.abbr||''}</td>`;
+        for (let i = 0; i < maxQ; i++) ls += `<td>${awayQ[i] ?? '-'}</td>`;
+        ls += `<td class="gc-ls-total">${isPre ? '-' : (away.score??0)}</td></tr>`;
+        ls += `<tr><td class="gc-ls-name">${home.abbr||''}</td>`;
+        for (let i = 0; i < maxQ; i++) ls += `<td>${homeQ[i] ?? '-'}</td>`;
+        ls += `<td class="gc-ls-total">${isPre ? '-' : (home.score??0)}</td></tr>`;
+        ls += '</tbody></table>';
+        document.getElementById('gc-linescores').innerHTML = ls;
+    },
+
+    renderWinProb(d) {
+        const p = d.predictor || {};
+        const home = p.home_pct ?? 50;
+        const away = p.away_pct ?? 50;
+        const hAbbr = d.header?.home?.abbr || 'HOME';
+        const aAbbr = d.header?.away?.abbr || 'AWAY';
+        document.getElementById('gc-wp-away-label').textContent = aAbbr;
+        document.getElementById('gc-wp-home-label').textContent = hAbbr;
+        document.getElementById('gc-wp-away-pct').textContent = away.toFixed(1) + '%';
+        document.getElementById('gc-wp-home-pct').textContent = home.toFixed(1) + '%';
+        document.getElementById('gc-wp-fill').style.width = home + '%';
+    },
+
+    renderOdds(d) {
+        const o = d.odds || {};
+        const el = document.getElementById('gc-odds');
+        if (!o.spread && !o.over_under) {
+            el.innerHTML = '<span class="gc-no-data">No odds available</span>';
+            return;
+        }
+        const ml = (v) => v == null ? 'N/A' : (v > 0 ? '+' + v : '' + v);
+        el.innerHTML = `
+            <div class="gc-odds-row"><span>Spread</span><span class="gc-odds-val">${o.spread || 'N/A'}</span></div>
+            <div class="gc-odds-row"><span>O/U</span><span class="gc-odds-val">${o.over_under ?? 'N/A'}</span></div>
+            <div class="gc-odds-row"><span>Home ML</span><span class="gc-odds-val">${ml(o.home_moneyline)}</span></div>
+            <div class="gc-odds-row"><span>Away ML</span><span class="gc-odds-val">${ml(o.away_moneyline)}</span></div>
+            ${o.provider ? '<div class="gc-odds-prov">' + o.provider + '</div>' : ''}
+        `;
+    },
+
+    renderPrediction(d) {
+        const card = document.getElementById('gc-pred-card');
+        const pred = d.model_prediction;
+        if (!pred || !pred.pick) { card.style.display = 'none'; return; }
+        card.style.display = '';
+        const el = document.getElementById('gc-pred');
+        el.innerHTML = `
+            <div class="gc-pred-row gc-pred-pick">
+                <span>Pick</span>
+                <span class="gc-pred-team">${pred.pick}</span>
+            </div>
+            <div class="gc-pred-row">
+                <span>Confidence</span>
+                <span class="gc-pred-val">${pred.confidence ? pred.confidence.toFixed(1) + '%' : 'N/A'}</span>
+            </div>
+            <div class="gc-pred-row">
+                <span>Projected</span>
+                <span class="gc-pred-val">${Math.round(pred.projected_away_pts||0)} &ndash; ${Math.round(pred.projected_home_pts||0)}</span>
+            </div>
+            ${pred.game_score ? '<div class="gc-pred-row"><span>Game Score</span><span class="gc-pred-val">' + pred.game_score.toFixed(1) + '</span></div>' : ''}
+        `;
+    },
+
+    renderBoxscore(d) {
+        const box = d.boxscore || {};
+        const side = this.boxSide;
+        const team = box[side];
+
+        // Update tab labels
+        document.getElementById('gc-tab-away').textContent = d.header?.away?.abbr || 'AWAY';
+        document.getElementById('gc-tab-home').textContent = d.header?.home?.abbr || 'HOME';
+
+        const el = document.getElementById('gc-box-body');
+        if (!team || !team.players?.length) {
+            el.innerHTML = '<div class="gc-no-data">No box score available</div>';
+            return;
+        }
+
+        const labels = team.labels || [];
+        const show = ['MIN','PTS','REB','AST','STL','BLK','FG','3PT','TO','+/-'];
+        const cols = show.filter(l => labels.includes(l));
+
+        let html = '<div class="gc-box-scroll"><table class="gc-box-tbl"><thead><tr>';
+        html += '<th class="gc-box-name">Player</th>';
+        cols.forEach(c => html += `<th>${c}</th>`);
+        html += '</tr></thead><tbody>';
+
+        const starters = team.players.filter(p => p.starter);
+        const bench = team.players.filter(p => !p.starter);
+
+        const renderGroup = (players, label) => {
+            if (label && players.length) {
+                html += `<tr class="gc-box-div"><td colspan="${cols.length+1}">${label}</td></tr>`;
+            }
+            players.forEach(p => {
+                const s = p.stats || {};
+                const active = p.active ? ' gc-box-active' : '';
+                html += `<tr class="${active}"><td class="gc-box-name">${p.name}</td>`;
+                cols.forEach(c => {
+                    const cls = c === 'PTS' ? ' class="gc-box-pts"' : '';
+                    html += `<td${cls}>${s[c] ?? '-'}</td>`;
+                });
+                html += '</tr>';
+            });
+        };
+
+        if (starters.length || bench.length) {
+            renderGroup(starters, 'Starters');
+            renderGroup(bench, 'Bench');
+        } else {
+            renderGroup(team.players, '');
+        }
+
+        html += '</tbody></table></div>';
+        el.innerHTML = html;
+    },
+
+    switchTab(side) {
+        this.boxSide = side;
+        document.querySelectorAll('.gc-box-tab').forEach(t =>
+            t.classList.toggle('active', t.dataset.side === side));
+        if (this.data) this.renderBoxscore(this.data);
+    },
+
+    renderPlays(d) {
+        const el = document.getElementById('gc-plays');
+        const plays = d.plays || [];
+        if (!plays.length) {
+            el.innerHTML = '<div class="gc-no-data">No plays available</div>';
+            return;
+        }
+
+        const homeId = d.header?.home?.id;
+        const awayId = d.header?.away?.id;
+        const hAbbr = d.header?.home?.abbr || '';
+        const aAbbr = d.header?.away?.abbr || '';
+
+        const reversed = [...plays].reverse();
+        el.innerHTML = reversed.slice(0, 60).map(p => {
+            const isHome = p.team_id === homeId;
+            const isAway = p.team_id === awayId;
+            const teamAbbr = isHome ? hAbbr : (isAway ? aAbbr : '');
+            const sideCls = isHome ? 'home' : (isAway ? 'away' : '');
+            const scoreCls = p.scoring ? ' gc-play-score' : '';
+            return `
+            <div class="gc-play ${sideCls}${scoreCls}">
+                <span class="gc-play-time">Q${p.period} ${p.clock}</span>
+                ${teamAbbr ? `<span class="gc-play-team ${sideCls}">${teamAbbr}</span>` : '<span class="gc-play-team"></span>'}
+                <span class="gc-play-text">${p.text}</span>
+                ${p.scoring ? `<span class="gc-play-pts">${p.away_score}-${p.home_score}</span>` : ''}
+            </div>`;
+        }).join('');
+    },
+
+    updateTicker(d) {
+        // Update scores in ticker for current game
+        const st = d.header?.status;
+        if (!st || st.state === 'pre') return;
+        const btn = document.querySelector(`.gc-ti[data-id="${this.gameId}"]`);
+        if (!btn) return;
+        const scores = btn.querySelectorAll('.gc-ti-score');
+        if (scores[0]) scores[0].textContent = d.header.away?.score ?? '';
+        if (scores[1]) scores[1].textContent = d.header.home?.score ?? '';
+    },
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.gc-box-tab').forEach(tab =>
+        tab.addEventListener('click', () => GC.switchTab(tab.dataset.side)));
+    GC.init();
+});
+</script>
+{% endblock %}

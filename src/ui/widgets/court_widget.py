@@ -29,9 +29,9 @@ _FULL_H = 50.0
 _HALF_X = 47.0
 
 # Left-side basket is at (5.25, 25).  Right-side basket at (88.75, 25).
-_LEFT_HOOP_X = 5.25
+_LEFT_HOOP_X = 2.0
 _LEFT_HOOP_Y = 25.0
-_RIGHT_HOOP_X = 88.75
+_RIGHT_HOOP_X = 92.0
 _RIGHT_HOOP_Y = 25.0
 
 # Key / paint dimensions (symmetric for both sides)
@@ -265,7 +265,10 @@ class _CourtCanvas(QWidget):
         p.drawEllipse(center_pt, crx, cry)
         p.setBrush(Qt.BrushStyle.NoBrush)
 
-        # ── Home team logo at center court ──
+        # ── Court lines ──
+        self._draw_court_lines(p, ppfx, ppfy)
+
+        # ── Home team logo at center court (on top of lines) ──
         if self._home_logo and not self._home_logo.isNull():
             logo_size = min(int(crx * 1.5), int(cry * 1.5), 80)
             scaled = self._home_logo.scaled(
@@ -275,12 +278,9 @@ class _CourtCanvas(QWidget):
             )
             lx = center_pt.x() - scaled.width() / 2
             ly = center_pt.y() - scaled.height() / 2
-            p.setOpacity(0.35)
+            p.setOpacity(0.8)
             p.drawPixmap(QPointF(lx, ly), scaled)
             p.setOpacity(1.0)
-
-        # ── Court lines ──
-        self._draw_court_lines(p, ppfx, ppfy)
 
         # ── Shot markers ──
         self._draw_shots(p)
@@ -383,10 +383,16 @@ class _CourtCanvas(QWidget):
         br = self._court_to_px(_FULL_W, _FULL_H)
         p.drawRect(QRectF(tl, br))
 
-        # Half-court line
+        # Half-court line (split around logo area)
+        logo_gap = _CENTER_CIRCLE_R * ppfy * 0.85  # half-gap matches logo radius
+        center_y_px = self._court_to_px(_HALF_X, 25).y()
         hlt = self._court_to_px(_HALF_X, 0)
         hlb = self._court_to_px(_HALF_X, _FULL_H)
-        p.drawLine(hlt, hlb)
+        if self._home_logo and not self._home_logo.isNull():
+            p.drawLine(hlt, QPointF(hlt.x(), center_y_px - logo_gap))
+            p.drawLine(QPointF(hlb.x(), center_y_px + logo_gap), hlb)
+        else:
+            p.drawLine(hlt, hlb)
 
         # Center circle
         center = self._court_to_px(_HALF_X, 25)

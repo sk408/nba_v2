@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QPointF, Property, QVariantAnimation, QObject, QE
 from PySide6.QtGui import QColor, QFont, QPainter, QLinearGradient, QPen, QPixmap, QPolygonF, QPainterPath
 from PySide6.QtWidgets import QWidget
 
-from src.ui.widgets.nba_colors import get_team_colors
+from src.ui.widgets.nba_colors import get_team_colors, ensure_visible
 from src.ui.widgets.image_utils import get_team_logo, make_placeholder_logo
 
 logger = logging.getLogger(__name__)
@@ -324,6 +324,8 @@ class ScoreboardWidget(QWidget):
 
         away_clr, _ = get_team_colors(self._away_team_id) if self._away_team_id else ("#3b82f6", "#1e293b")
         home_clr, _ = get_team_colors(self._home_team_id) if self._home_team_id else ("#ef4444", "#1e293b")
+        away_clr = ensure_visible(away_clr)
+        home_clr = ensure_visible(home_clr)
 
         # Background - Dark glass panel
         p.fillRect(0, 0, w, h, QColor(15, 20, 30, 240))

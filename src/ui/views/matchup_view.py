@@ -22,7 +22,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor
 
 from src.ui.widgets.image_utils import get_team_logo, make_placeholder_logo
-from src.ui.widgets.nba_colors import get_team_colors
+from src.ui.widgets.nba_colors import get_team_colors, ensure_visible
 from src.ui.theme import apply_card_shadow
 
 logger = logging.getLogger(__name__)
@@ -780,12 +780,14 @@ class MatchupView(QWidget):
         # Color accent for team names
         if home_id:
             primary, _ = get_team_colors(home_id)
+            primary = ensure_visible(primary)
             self._home_name_lbl.setStyleSheet(
                 f"color: {primary}; font-size: 18px; font-weight: 700; "
                 f"font-family: 'Oswald'; text-transform: uppercase; letter-spacing: 1px;"
             )
         if away_id:
             primary, _ = get_team_colors(away_id)
+            primary = ensure_visible(primary)
             self._away_name_lbl.setStyleSheet(
                 f"color: {primary}; font-size: 18px; font-weight: 700; "
                 f"font-family: 'Oswald'; text-transform: uppercase; letter-spacing: 1px;"

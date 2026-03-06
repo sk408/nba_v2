@@ -43,3 +43,46 @@ _DEFAULT_SECONDARY = "#1e293b"
 def get_team_colors(team_id: int) -> tuple:
     """Return (primary, secondary) hex colors for a team."""
     return TEAM_COLORS.get(team_id, (_DEFAULT_PRIMARY, _DEFAULT_SECONDARY))
+
+
+def _relative_luminance(hex_color: str) -> float:
+    """WCAG relative luminance of a hex color (0.0 = black, 1.0 = white)."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255
+
+    def linearize(c):
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * linearize(r) + 0.7152 * linearize(g) + 0.0722 * linearize(b)
+
+
+def ensure_visible(hex_color: str, min_luminance: float = 0.08) -> str:
+    """Lighten a hex color if it's too dark for the app's dark background.
+
+    Blends toward white until the color reaches *min_luminance*.
+    Returns the original color unchanged if already bright enough.
+    """
+    if _relative_luminance(hex_color) >= min_luminance:
+        return hex_color
+
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+    # Iteratively blend toward white (fast — converges in <20 steps)
+    lo, hi = 0.0, 1.0
+    for _ in range(20):
+        mid = (lo + hi) / 2
+        nr = int(r + (255 - r) * mid)
+        ng = int(g + (255 - g) * mid)
+        nb = int(b + (255 - b) * mid)
+        candidate = f"#{nr:02x}{ng:02x}{nb:02x}"
+        if _relative_luminance(candidate) < min_luminance:
+            lo = mid
+        else:
+            hi = mid
+
+    t = hi
+    nr = int(r + (255 - r) * t)
+    ng = int(g + (255 - g) * t)
+    nb = int(b + (255 - b) * t)
+    return f"#{nr:02x}{ng:02x}{nb:02x}"

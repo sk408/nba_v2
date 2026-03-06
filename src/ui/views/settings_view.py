@@ -363,7 +363,12 @@ class SettingsView(QWidget):
 
         # Controls row: steps, max rounds, buttons
         ctrl_row = QHBoxLayout()
-        ctrl_row.setSpacing(12)
+        ctrl_row.setSpacing(6)
+
+        _spin_style = (
+            f"QSpinBox {{ color: {TEXT_PRIMARY}; font-size: 12px; "
+            "padding: 4px 6px; min-height: 26px; }}"
+        )
 
         steps_lbl = QLabel("Steps:")
         steps_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px;")
@@ -372,8 +377,11 @@ class SettingsView(QWidget):
         self._cd_steps_spin.setRange(50, 2000)
         self._cd_steps_spin.setValue(100)
         self._cd_steps_spin.setSingleStep(50)
-        self._cd_steps_spin.setFixedWidth(80)
+        self._cd_steps_spin.setFixedWidth(100)
+        self._cd_steps_spin.setStyleSheet(_spin_style)
         ctrl_row.addWidget(self._cd_steps_spin)
+
+        ctrl_row.addSpacing(10)
 
         rounds_lbl = QLabel("Max Rounds:")
         rounds_lbl.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 12px;")
@@ -381,8 +389,11 @@ class SettingsView(QWidget):
         self._cd_rounds_spin = QSpinBox()
         self._cd_rounds_spin.setRange(1, 20)
         self._cd_rounds_spin.setValue(10)
-        self._cd_rounds_spin.setFixedWidth(60)
+        self._cd_rounds_spin.setFixedWidth(80)
+        self._cd_rounds_spin.setStyleSheet(_spin_style)
         ctrl_row.addWidget(self._cd_rounds_spin)
+
+        ctrl_row.addSpacing(10)
 
         self._cd_run_btn = QPushButton("Run CD")
         self._cd_run_btn.setProperty("class", "success")

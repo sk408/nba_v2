@@ -327,9 +327,9 @@ def get_actionnetwork_odds(home_abbr: str, away_abbr: str) -> Dict[str, Any]:
         if len(teams) < 2:
             continue
             
-        t1_abbr = teams[0].get("abbr", "")
-        t2_abbr = teams[1].get("abbr", "")
-        
+        t1_abbr = normalize_action_abbr(teams[0].get("abbr", ""))
+        t2_abbr = normalize_action_abbr(teams[1].get("abbr", ""))
+
         # Check if this game matches our teams
         match = (t1_abbr == home_query and t2_abbr == away_query) or \
                 (t1_abbr == away_query and t2_abbr == home_query)
