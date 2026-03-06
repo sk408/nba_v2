@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}NBA Fundamentals V2{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Oswald:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/" class="nav-brand">
+                <span class="brand-icon">&#127936;</span>
+                <span class="brand-text">NBA Fundamentals</span>
+                <span class="brand-version">V2</span>
+            </a>
+            <div class="nav-links">
+                <a href="/" class="nav-link {% if request.path == '/' %}active{% endif %}">Dashboard</a>
+                <a href="/accuracy" class="nav-link {% if request.path == '/accuracy' %}active{% endif %}">Accuracy</a>
+            </div>
+            <div class="nav-actions">
+                <button id="sync-btn" class="btn btn-sm btn-outline" onclick="triggerSync()">
+                    <span id="sync-icon" class="sync-icon">&#8635;</span> Sync
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <div class="footer-container">
+            <span class="footer-text">NBA Fundamentals V2 &mdash; Prediction Engine</span>
+        </div>
+    </footer>
+
+    <script>
+        async function triggerSync() {
+            const btn = document.getElementById('sync-btn');
+            const icon = document.getElementById('sync-icon');
+            btn.disabled = true;
+            icon.classList.add('spinning');
+            btn.innerHTML = '<span id="sync-icon" class="sync-icon spinning">&#8635;</span> Syncing...';
+
+            try {
+                const resp = await fetch('/api/sync', { method: 'POST' });
+                const data = await resp.json();
+
+                if (data.status === 'already_running') {
+                    btn.innerHTML = '<span class="sync-icon spinning">&#8635;</span> Running...';
+                } else {
+                    btn.innerHTML = '<span class="sync-icon spinning">&#8635;</span> Syncing...';
+                }
+
+                // Poll for completion
+                pollSync();
+            } catch (e) {
+                btn.innerHTML = '<span class="sync-icon">&#8635;</span> Sync Failed';
+                btn.disabled = false;
+            }
+        }
+
+        async function pollSync() {
+            const btn = document.getElementById('sync-btn');
+            try {
+                const resp = await fetch('/api/sync/status');
+                const data = await resp.json();
+                if (data.running) {
+                    setTimeout(pollSync, 3000);
+                } else {
+                    btn.innerHTML = '<span class="sync-icon">&#8635;</span> Sync';
+                    btn.disabled = false;
+                    if (data.status && data.status.includes('complete')) {
+                        location.reload();
+                    }
+                }
+            } catch (e) {
+                btn.innerHTML = '<span class="sync-icon">&#8635;</span> Sync';
+                btn.disabled = false;
+            }
+        }
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

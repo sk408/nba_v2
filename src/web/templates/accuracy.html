@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+
+{% block title %}Accuracy - NBA Fundamentals V2{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Backtest Accuracy</h1>
+    <span class="page-subtitle">
+        {% if fund.total_games %}{{ fund.total_games }} historical games{% else %}No data{% endif %}
+    </span>
+</div>
+
+{% if error %}
+<div class="error-banner">
+    <strong>Error:</strong> {{ error }}
+</div>
+{% endif %}
+
+{% if fund and fund.total_games %}
+
+{# ── Primary Metrics ── #}
+<div class="metrics-hero">
+    <div class="metric-card primary">
+        <span class="metric-value">{{ fund.winner_pct|pct }}</span>
+        <span class="metric-label">Winner Accuracy</span>
+        <span class="metric-sub">Fundamentals Only</span>
+    </div>
+    <div class="metric-card">
+        <span class="metric-value">{{ fund.favorites_pct|pct }}</span>
+        <span class="metric-label">Favorites Baseline</span>
+        <span class="metric-sub">Always pick the favorite</span>
+    </div>
+    <div class="metric-card {% if fund.beats_favorites %}beats-fav{% else %}below-fav{% endif %}">
+        <span class="metric-badge">
+            {% if fund.beats_favorites %}BEATS FAVORITES{% else %}BELOW FAVORITES{% endif %}
+        </span>
+        <span class="metric-value">
+            {{ "%.1f"|format(fund.winner_pct - fund.favorites_pct) }}%
+        </span>
+        <span class="metric-label">
+            {% if fund.beats_favorites %}above{% else %}below{% endif %} baseline
+        </span>
+    </div>
+</div>
+
+{# ── A/B Comparison Cards ── #}
+<h2 class="section-title">A/B Comparison</h2>
+<div class="ab-grid">
+    {# Fundamentals Only #}
+    <div class="ab-card">
+        <div class="ab-header fund">
+            <span class="ab-label">Fundamentals Only</span>
+        </div>
+        <div class="ab-body">
+            <div class="ab-row">
+                <span class="ab-key">Winner %</span>
+                <span class="ab-val">{{ fund.winner_pct|pct }}</span>
+            </div>
+            <div class="ab-row">
+                <span class="ab-key">Upset Rate</span>
+                <span class="ab-val">{{ fund.upset_rate|pct }} ({{ fund.upset_count }} picks)</span>
+            </div>
+            <div class="ab-row">
+                <span class="ab-key">Upset Accuracy</span>
+                <span class="ab-val">{{ fund.upset_accuracy|pct }} ({{ fund.upset_correct }} correct)</span>
+            </div>
+            <div class="ab-row">
+                <span class="ab-key">ML ROI</span>
+                <span class="ab-val {% if fund.ml_roi > 0 %}positive{% else %}negative{% endif %}">
+                    {{ "%.1f"|format(fund.ml_roi) }}%
+                </span>
+            </div>
+            <div class="ab-row">
+                <span class="ab-key">ML Win Rate</span>
+                <span class="ab-val">{{ fund.ml_win_rate|pct }}</span>
+            </div>
+            <div class="ab-row">
+                <span class="ab-key">Spread MAE</span>
+                <span class="ab-val">{{ "%.1f"|format(fund.spread_mae) }}</span>
+            </div>
+        </div>
+    </div>
+
+    {# Fundamentals + Sharp #}
+    <div class="ab-card">
+        <div class="ab-header sharp">
+            <span class="ab-label">Fundamentals + Sharp</span>
+        </div>
+        <div class="ab-body">
+            <div class="ab-row">
+                <span class="ab-key">Winner %</span>
+                <span class="ab-val">{{ sharp.winner_pct|pct }}</span>
+            </div>
+            <div class="ab-row">
+                <span class="ab-key">Upset Rate</span>
+                <span class="ab-val">{{ sharp.upset_rate|pct }} ({{ sharp.upset_count }} picks)</span>
+            </div>
+            <div class="ab-row">
+                <span class="ab-key">Upset Accuracy</span>
+                <span class="ab-val">{{ sharp.upset_accuracy|pct }} ({{ sharp.upset_correct }} correct)</span>
+            </div>
+            <div class="ab-row">
+                <span class="ab-key">ML ROI</span>
+                <span class="ab-val {% if sharp.ml_roi > 0 %}positive{% else %}negative{% endif %}">
+                    {{ "%.1f"|format(sharp.ml_roi) }}%
+                </span>
+            </div>
+            <div class="ab-row">
+                <span class="ab-key">ML Win Rate</span>
+                <span class="ab-val">{{ sharp.ml_win_rate|pct }}</span>
+            </div>
+            <div class="ab-row">
+                <span class="ab-key">Spread MAE</span>
+                <span class="ab-val">{{ "%.1f"|format(sharp.spread_mae) }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ── Sharp Impact Summary ── #}
+<div class="panel">
+    <div class="panel-header static">
+        <span class="panel-title">Sharp Money Impact</span>
+    </div>
+    <div class="panel-body">
+        <div class="impact-grid">
+            <div class="impact-stat">
+                <span class="impact-value">{{ comparison.sharp_flipped_picks }}</span>
+                <span class="impact-label">Picks Flipped by Sharp</span>
+            </div>
+            <div class="impact-stat">
+                <span class="impact-value">{{ comparison.sharp_flipped_correct }}</span>
+                <span class="impact-label">Flipped Picks Correct</span>
+            </div>
+            <div class="impact-stat">
+                <span class="impact-value">{{ comparison.sharp_flipped_accuracy|pct }}</span>
+                <span class="impact-label">Flipped Accuracy</span>
+            </div>
+            <div class="impact-stat {% if comparison.sharp_net_value > 0 %}positive{% else %}negative{% endif %}">
+                <span class="impact-value">{{ "%.1f"|format(comparison.sharp_net_value) }}%</span>
+                <span class="impact-label">Net Winner % Impact</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ── Upset Metrics ── #}
+<div class="panel">
+    <div class="panel-header static">
+        <span class="panel-title">Upset Detection (Fundamentals)</span>
+    </div>
+    <div class="panel-body">
+        <div class="upset-grid">
+            <div class="upset-stat">
+                <span class="upset-value">{{ fund.upset_count }}</span>
+                <span class="upset-label">Upset Picks Made</span>
+            </div>
+            <div class="upset-stat">
+                <span class="upset-value">{{ fund.upset_rate|pct }}</span>
+                <span class="upset-label">Upset Rate</span>
+            </div>
+            <div class="upset-stat">
+                <span class="upset-value">{{ fund.upset_correct }}</span>
+                <span class="upset-label">Correct Upsets</span>
+            </div>
+            <div class="upset-stat">
+                <span class="upset-value">{{ fund.upset_accuracy|pct }}</span>
+                <span class="upset-label">Upset Accuracy</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ── ML ROI Display ── #}
+<div class="panel">
+    <div class="panel-header static">
+        <span class="panel-title">Moneyline ROI</span>
+    </div>
+    <div class="panel-body">
+        <div class="roi-display">
+            <div class="roi-card">
+                <span class="roi-mode">Fundamentals</span>
+                <span class="roi-value {% if fund.ml_roi > 0 %}positive{% else %}negative{% endif %}">
+                    {{ "%.1f"|format(fund.ml_roi) }}%
+                </span>
+                <span class="roi-sub">{{ fund.ml_win_rate|pct }} win rate</span>
+            </div>
+            <div class="roi-card">
+                <span class="roi-mode">Fund + Sharp</span>
+                <span class="roi-value {% if sharp.ml_roi > 0 %}positive{% else %}negative{% endif %}">
+                    {{ "%.1f"|format(sharp.ml_roi) }}%
+                </span>
+                <span class="roi-sub">{{ sharp.ml_win_rate|pct }} win rate</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% else %}
+<div class="empty-state">
+    <div class="empty-icon">&#128202;</div>
+    <h2>No Backtest Data</h2>
+    <p>Run the pipeline to generate backtest results. Use the Sync button or run the pipeline from the desktop app.</p>
+</div>
+{% endif %}
+{% endblock %}

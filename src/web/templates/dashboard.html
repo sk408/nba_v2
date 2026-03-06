@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - NBA Fundamentals V2{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Today's Games</h1>
+    <span class="page-subtitle">{{ today }} &mdash; {{ game_count }} game{{ 's' if game_count != 1 else '' }}</span>
+</div>
+
+{% if predictions %}
+<div class="game-grid">
+    {% for pred in predictions %}
+    <a href="/matchup/{{ pred.home_team_id }}/{{ pred.away_team_id }}/{{ pred.game_date }}"
+       class="game-card {% if pred.is_dog_pick %}dog-card{% endif %} {% if pred.is_dog_pick and pred.is_value_zone %}value-zone-card{% endif %}">
+
+        {# Upset badge #}
+        {% if pred.is_dog_pick %}
+        <div class="dog-badge {% if pred.is_value_zone %}value-zone{% endif %}">
+            {% if pred.is_value_zone %}VALUE UPSET{% else %}UPSET{% endif %}
+        </div>
+        {% endif %}
+
+        {# Teams row #}
+        <div class="card-teams">
+            <div class="team-block away">
+                <span class="team-abbr">{{ pred.away_team }}</span>
+                <span class="team-name">{{ pred.away_name }}</span>
+            </div>
+            <div class="at-symbol">@</div>
+            <div class="team-block home">
+                <span class="team-abbr">{{ pred.home_team }}</span>
+                <span class="team-name">{{ pred.home_name }}</span>
+            </div>
+        </div>
+
+        {# Pick + Confidence #}
+        {% if pred.pick %}
+        <div class="card-pick">
+            <div class="pick-label">PICK</div>
+            <div class="pick-team {% if pred.pick == 'HOME' %}home-pick{% else %}away-pick{% endif %}">
+                {% if pred.pick == 'HOME' %}{{ pred.home_team }}{% else %}{{ pred.away_team }}{% endif %}
+            </div>
+            <div class="pick-confidence">
+                <span class="conf-value">{{ "%.0f"|format(pred.confidence) }}%</span>
+                <span class="conf-label">confidence</span>
+            </div>
+        </div>
+
+        {# Projected Score #}
+        <div class="card-score">
+            <span class="score-label">Projected</span>
+            <span class="score-value">
+                {{ "%.0f"|format(pred.projected_away_pts) }} - {{ "%.0f"|format(pred.projected_home_pts) }}
+            </span>
+        </div>
+
+        {# Vegas line reference #}
+        {% if pred.vegas_spread %}
+        <div class="card-vegas">
+            <span class="vegas-label">Vegas</span>
+            <span class="vegas-spread">{{ pred.vegas_spread|sign }}</span>
+        </div>
+        {% endif %}
+
+        {% elif pred.get('error') %}
+        <div class="card-error">
+            <span class="error-text">Prediction unavailable</span>
+        </div>
+        {% endif %}
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <div class="empty-icon">&#127936;</div>
+    <h2>No Games Today</h2>
+    <p>Check back on a game day, or use the Sync button to fetch the latest schedule.</p>
+</div>
+{% endif %}
+{% endblock %}

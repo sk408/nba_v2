@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+
+{% block title %}
+{% if fund %}{{ fund.away_team }} @ {{ fund.home_team }} - NBA Fundamentals V2{% else %}Matchup - NBA Fundamentals V2{% endif %}
+{% endblock %}
+
+{% block content %}
+{% if error %}
+<div class="error-banner">
+    <strong>Error:</strong> {{ error }}
+</div>
+{% endif %}
+
+{% if fund %}
+{# ── Team Header ── #}
+<div class="matchup-header">
+    <div class="matchup-team away-team">
+        <span class="matchup-abbr">{{ fund.away_team }}</span>
+        <span class="matchup-name">{{ fund.away_name }}</span>
+    </div>
+    <div class="matchup-vs">
+        <span class="vs-at">@</span>
+        <span class="vs-date">{{ date }}</span>
+    </div>
+    <div class="matchup-team home-team">
+        <span class="matchup-abbr">{{ fund.home_team }}</span>
+        <span class="matchup-name">{{ fund.home_name }}</span>
+    </div>
+</div>
+
+{# ── Pick + Confidence Hero ── #}
+<div class="hero-section {% if fund.is_dog_pick %}dog-hero{% endif %}">
+    {% if fund.is_dog_pick %}
+    <div class="hero-badge {% if fund.is_value_zone %}value-zone{% endif %}">
+        {% if fund.is_value_zone %}VALUE UPSET{% else %}UPSET PICK{% endif %}
+        {% if fund.dog_payout > 0 %} &mdash; {{ "%.2f"|format(fund.dog_payout) }}x payout{% endif %}
+    </div>
+    {% endif %}
+
+    <div class="hero-pick">
+        <span class="hero-label">Model Pick</span>
+        <span class="hero-team {% if fund.pick == 'HOME' %}home-pick{% else %}away-pick{% endif %}">
+            {% if fund.pick == 'HOME' %}{{ fund.home_team }}{% else %}{{ fund.away_team }}{% endif %}
+        </span>
+    </div>
+
+    <div class="hero-confidence">
+        <div class="conf-ring">
+            <svg viewBox="0 0 120 120" class="conf-svg">
+                <circle cx="60" cy="60" r="52" class="conf-bg"/>
+                <circle cx="60" cy="60" r="52" class="conf-fill"
+                        style="stroke-dasharray: {{ (fund.confidence / 100 * 326.7)|round(1) }} 326.7"
+                        transform="rotate(-90 60 60)"/>
+            </svg>
+            <span class="conf-text">{{ "%.0f"|format(fund.confidence) }}%</span>
+        </div>
+        <span class="conf-label">Confidence</span>
+    </div>
+
+    <div class="hero-score">
+        <span class="score-label">Projected Score</span>
+        <span class="score-away">{{ fund.away_team }} {{ "%.0f"|format(fund.projected_away_pts) }}</span>
+        <span class="score-divider">&ndash;</span>
+        <span class="score-home">{{ fund.home_team }} {{ "%.0f"|format(fund.projected_home_pts) }}</span>
+    </div>
+</div>
+
+{# ── Mode Toggle ── #}
+<div class="mode-toggle-container">
+    <div class="mode-toggle">
+        <button id="mode-fund" class="mode-btn active" onclick="switchMode('fundamentals')">Fundamentals</button>
+        <button id="mode-sharp" class="mode-btn" onclick="switchMode('sharp')">Fundamentals + Sharp</button>
+    </div>
+    <div id="mode-diff" class="mode-diff" style="display: none;"></div>
+</div>
+
+{# ── Sharp Money Panel (collapsible) ── #}
+<div class="panel collapsible" id="sharp-panel">
+    <button class="panel-header" onclick="togglePanel('sharp-panel')">
+        <span class="panel-title">Sharp Money Indicators</span>
+        <span class="panel-chevron">&#9660;</span>
+    </button>
+    <div class="panel-body">
+        <div class="sharp-grid">
+            <div class="sharp-stat">
+                <span class="sharp-label">ML Public %</span>
+                <span class="sharp-value">{{ fund.ml_sharp_home_public or 0 }}% Home</span>
+            </div>
+            <div class="sharp-stat">
+                <span class="sharp-label">ML Money %</span>
+                <span class="sharp-value">{{ fund.ml_sharp_home_money or 0 }}% Home</span>
+            </div>
+            <div class="sharp-stat">
+                <span class="sharp-label">Divergence</span>
+                {% set div = (fund.ml_sharp_home_money or 0) - (fund.ml_sharp_home_public or 0) %}
+                <span class="sharp-value {% if div|abs > 10 %}divergence-high{% endif %}">
+                    {{ div|sign }}%
+                </span>
+            </div>
+            <div class="sharp-stat">
+                <span class="sharp-label">Agrees with Model</span>
+                <span class="sharp-value">
+                    {% if fund.sharp_agrees is none %}N/A
+                    {% elif fund.sharp_agrees %}Yes
+                    {% else %}No{% endif %}
+                </span>
+            </div>
+        </div>
+    </div>
+</div>
+
+{# ── Fundamentals Breakdown ── #}
+<div class="panel">
+    <div class="panel-header static">
+        <span class="panel-title">Fundamentals Breakdown</span>
+    </div>
+    <div class="panel-body">
+        <table class="breakdown-table">
+            <thead>
+                <tr>
+                    <th>Factor</th>
+                    <th>Contribution</th>
+                    <th>Direction</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for key, value in sorted_adjustments %}
+                <tr>
+                    <td>{{ key|adj_name }}</td>
+                    <td class="contribution {% if value > 0 %}positive{% elif value < 0 %}negative{% endif %}">
+                        {{ value|sign }}
+                    </td>
+                    <td>
+                        {% if value > 0.05 %}
+                        <span class="direction home">&#9650; {{ fund.home_team }}</span>
+                        {% elif value < -0.05 %}
+                        <span class="direction away">&#9660; {{ fund.away_team }}</span>
+                        {% else %}
+                        <span class="direction neutral">&#8212; Even</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+                {% if not sorted_adjustments %}
+                <tr>
+                    <td colspan="3" class="no-data">No adjustment data available</td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{# ── Vegas Reference ── #}
+<div class="panel">
+    <div class="panel-header static">
+        <span class="panel-title">Vegas Reference</span>
+    </div>
+    <div class="panel-body">
+        <div class="vegas-grid">
+            <div class="vegas-stat">
+                <span class="vegas-label">Spread</span>
+                <span class="vegas-value">{{ fund.vegas_spread|sign }}</span>
+            </div>
+            <div class="vegas-stat">
+                <span class="vegas-label">Home ML</span>
+                <span class="vegas-value">
+                    {% if fund.vegas_home_ml > 0 %}+{% endif %}{{ fund.vegas_home_ml or 'N/A' }}
+                </span>
+            </div>
+            <div class="vegas-stat">
+                <span class="vegas-label">Away ML</span>
+                <span class="vegas-value">
+                    {% if fund.vegas_away_ml > 0 %}+{% endif %}{{ fund.vegas_away_ml or 'N/A' }}
+                </span>
+            </div>
+            <div class="vegas-stat">
+                <span class="vegas-label">Game Score</span>
+                <span class="vegas-value">{{ fund.game_score|sign }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="back-link">
+    <a href="/">&larr; Back to Dashboard</a>
+</div>
+
+{% else %}
+<div class="empty-state">
+    <h2>Matchup Not Available</h2>
+    <p>Could not load prediction data for this game.</p>
+    <a href="/" class="btn btn-primary">&larr; Dashboard</a>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Store both predictions for mode toggle
+    const fundPred = {{ fund|tojson if fund else 'null' }};
+    const sharpPred = {{ sharp|tojson if sharp else 'null' }};
+
+    function switchMode(mode) {
+        const pred = mode === 'sharp' ? sharpPred : fundPred;
+        if (!pred) return;
+
+        // Toggle button states
+        document.getElementById('mode-fund').classList.toggle('active', mode === 'fundamentals');
+        document.getElementById('mode-sharp').classList.toggle('active', mode === 'sharp');
+
+        // Update hero pick
+        const pickTeam = document.querySelector('.hero-team');
+        if (pickTeam) {
+            const team = pred.pick === 'HOME' ? pred.home_team : pred.away_team;
+            pickTeam.textContent = team;
+            pickTeam.className = 'hero-team ' + (pred.pick === 'HOME' ? 'home-pick' : 'away-pick');
+        }
+
+        // Update confidence
+        const confText = document.querySelector('.conf-text');
+        if (confText) confText.textContent = Math.round(pred.confidence) + '%';
+
+        const confFill = document.querySelector('.conf-fill');
+        if (confFill) {
+            const dashLen = (pred.confidence / 100 * 326.7).toFixed(1);
+            confFill.style.strokeDasharray = dashLen + ' 326.7';
+        }
+
+        // Update projected score
+        const scoreAway = document.querySelector('.score-away');
+        const scoreHome = document.querySelector('.score-home');
+        if (scoreAway) scoreAway.textContent = pred.away_team + ' ' + Math.round(pred.projected_away_pts);
+        if (scoreHome) scoreHome.textContent = pred.home_team + ' ' + Math.round(pred.projected_home_pts);
+
+        // Show mode diff if picks differ
+        const diffEl = document.getElementById('mode-diff');
+        if (fundPred && sharpPred && fundPred.pick !== sharpPred.pick) {
+            diffEl.style.display = 'block';
+            diffEl.innerHTML = 'Sharp money flips pick from <strong>' +
+                (fundPred.pick === 'HOME' ? fundPred.home_team : fundPred.away_team) +
+                '</strong> to <strong>' +
+                (sharpPred.pick === 'HOME' ? sharpPred.home_team : sharpPred.away_team) +
+                '</strong>';
+        } else {
+            diffEl.style.display = mode === 'sharp' && fundPred && sharpPred ? 'block' : 'none';
+            if (diffEl.style.display === 'block') {
+                diffEl.innerHTML = 'Sharp money agrees with fundamentals pick';
+            }
+        }
+    }
+
+    function togglePanel(panelId) {
+        const panel = document.getElementById(panelId);
+        panel.classList.toggle('collapsed');
+    }
+</script>
+{% endblock %}
