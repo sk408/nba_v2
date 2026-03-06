@@ -3,7 +3,7 @@
 # Copy to ~/.shortcuts/: cp nba_widget.sh ~/.shortcuts/NBA_Fundamentals.sh
 
 PROJECT_DIR="$HOME/nba_v2"
-PYTHON="$PROJECT_DIR/venv/bin/python"
+PYTHON="python"
 
 cd "$PROJECT_DIR" || { echo "Project not found at $PROJECT_DIR"; exit 1; }
 
