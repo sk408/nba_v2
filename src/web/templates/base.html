@@ -25,10 +25,10 @@
             </div>
             <div class="nav-actions">
                 <button id="sync-btn" class="btn btn-sm btn-outline" onclick="triggerSync()">
-                    <span id="sync-icon" class="sync-icon">&#8635;</span> Sync
+                    <span id="sync-icon" class="sync-icon">&#8635;</span><span class="btn-label"> Sync</span>
                 </button>
                 <button id="shutdown-btn" class="btn btn-sm btn-outline btn-danger" onclick="shutdownServer()" title="Stop server and injury monitor">
-                    &#9724; Shutdown
+                    &#9724;<span class="btn-label"> Shutdown</span>
                 </button>
             </div>
         </div>
@@ -50,22 +50,22 @@
             const icon = document.getElementById('sync-icon');
             btn.disabled = true;
             icon.classList.add('spinning');
-            btn.innerHTML = '<span id="sync-icon" class="sync-icon spinning">&#8635;</span> Syncing...';
+            btn.innerHTML = '<span id="sync-icon" class="sync-icon spinning">&#8635;</span><span class="btn-label"> Syncing...</span>';
 
             try {
                 const resp = await fetch('/api/sync', { method: 'POST' });
                 const data = await resp.json();
 
                 if (data.status === 'already_running') {
-                    btn.innerHTML = '<span class="sync-icon spinning">&#8635;</span> Running...';
+                    btn.innerHTML = '<span class="sync-icon spinning">&#8635;</span><span class="btn-label"> Running...</span>';
                 } else {
-                    btn.innerHTML = '<span class="sync-icon spinning">&#8635;</span> Syncing...';
+                    btn.innerHTML = '<span class="sync-icon spinning">&#8635;</span><span class="btn-label"> Syncing...</span>';
                 }
 
                 // Poll for completion
                 pollSync();
             } catch (e) {
-                btn.innerHTML = '<span class="sync-icon">&#8635;</span> Sync Failed';
+                btn.innerHTML = '<span class="sync-icon">&#8635;</span><span class="btn-label"> Sync Failed</span>';
                 btn.disabled = false;
             }
         }
@@ -78,14 +78,14 @@
                 if (data.running) {
                     setTimeout(pollSync, 3000);
                 } else {
-                    btn.innerHTML = '<span class="sync-icon">&#8635;</span> Sync';
+                    btn.innerHTML = '<span class="sync-icon">&#8635;</span><span class="btn-label"> Sync</span>';
                     btn.disabled = false;
                     if (data.status && data.status.includes('complete')) {
                         location.reload();
                     }
                 }
             } catch (e) {
-                btn.innerHTML = '<span class="sync-icon">&#8635;</span> Sync';
+                btn.innerHTML = '<span class="sync-icon">&#8635;</span><span class="btn-label"> Sync</span>';
                 btn.disabled = false;
             }
         }

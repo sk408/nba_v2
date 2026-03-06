@@ -117,11 +117,21 @@ def dashboard():
         logger.error("Dashboard error: %s", e, exc_info=True)
         predictions = []
 
+    # Fallback: if no predictions (game_odds empty), show ESPN scoreboard
+    espn_games = []
+    if not predictions:
+        try:
+            from src.data.gamecast import fetch_espn_scoreboard
+            espn_games = fetch_espn_scoreboard()
+        except Exception as e:
+            logger.warning("ESPN scoreboard fallback failed: %s", e)
+
     return render_template(
         "dashboard.html",
         predictions=predictions,
+        espn_games=espn_games,
         today=today,
-        game_count=len(predictions),
+        game_count=len(predictions) or len(espn_games),
     )
 
 
@@ -399,6 +409,9 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
                 "scoring": bool(item.get("scoringPlay", False)),
                 "away_score": item.get("awayScore", 0),
                 "home_score": item.get("homeScore", 0),
+                "coordinate": item.get("coordinate", {}),
+                "shootingPlay": bool(item.get("shootingPlay", False)),
+                "scoreValue": int(item.get("scoreValue", 0) or 0),
             })
 
     # ── Odds (try Action Network, fallback to ESPN pickcenter) ──

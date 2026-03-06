@@ -52,62 +52,73 @@
         <div class="gc-ls-wrap" id="gc-linescores"></div>
     </section>
 
-    <!-- Two-column: Info + Box Score -->
-    <div class="gc-columns">
+    <!-- Court / Shot Chart -->
+    <section class="gc-court-section gc-card" id="gc-court-section" style="display:none">
+        <div class="gc-card-title">Shot Chart</div>
+        <canvas id="gc-court"></canvas>
+    </section>
 
-        <!-- Left: Info Sidebar -->
-        <aside class="gc-sidebar">
-            <!-- Win Probability -->
-            <div class="gc-card">
-                <div class="gc-card-title">Win Probability</div>
-                <div class="gc-wp">
-                    <div class="gc-wp-labels">
-                        <span class="gc-wp-away" id="gc-wp-away-label"></span>
-                        <span class="gc-wp-home" id="gc-wp-home-label"></span>
-                    </div>
-                    <div class="gc-wp-track">
-                        <div class="gc-wp-fill" id="gc-wp-fill"></div>
-                    </div>
-                    <div class="gc-wp-pcts">
-                        <span class="gc-wp-away" id="gc-wp-away-pct">50%</span>
-                        <span class="gc-wp-home" id="gc-wp-home-pct">50%</span>
-                    </div>
-                </div>
-            </div>
+    <!-- Content flow wrapper for mobile reorder -->
+    <div class="gc-content-flow">
 
-            <!-- Odds -->
-            <div class="gc-card">
-                <div class="gc-card-title">Odds</div>
-                <div id="gc-odds" class="gc-odds"></div>
-            </div>
-
-            <!-- Model Prediction -->
-            <div class="gc-card" id="gc-pred-card" style="display:none">
-                <div class="gc-card-title">Model Prediction</div>
-                <div id="gc-pred"></div>
-            </div>
-        </aside>
-
-        <!-- Right: Box Score -->
-        <section class="gc-boxscore">
-            <div class="gc-box-tabs">
-                <button class="gc-box-tab active" data-side="away" id="gc-tab-away">AWAY</button>
-                <button class="gc-box-tab" data-side="home" id="gc-tab-home">HOME</button>
-            </div>
-            <div class="gc-box-body" id="gc-box-body">
-                <div class="gc-no-data">Select a game</div>
+        <!-- Play-by-Play -->
+        <section class="gc-card gc-plays-section">
+            <div class="gc-card-title">Play-by-Play</div>
+            <div class="gc-plays" id="gc-plays">
+                <div class="gc-no-data">No plays available</div>
             </div>
         </section>
 
-    </div>
+        <!-- Two-column: Info + Box Score -->
+        <div class="gc-columns">
 
-    <!-- Play-by-Play -->
-    <section class="gc-card gc-plays-section">
-        <div class="gc-card-title">Play-by-Play</div>
-        <div class="gc-plays" id="gc-plays">
-            <div class="gc-no-data">No plays available</div>
+            <!-- Left: Info Sidebar -->
+            <aside class="gc-sidebar">
+                <!-- Win Probability -->
+                <div class="gc-card">
+                    <div class="gc-card-title">Win Probability</div>
+                    <div class="gc-wp">
+                        <div class="gc-wp-labels">
+                            <span class="gc-wp-away" id="gc-wp-away-label"></span>
+                            <span class="gc-wp-home" id="gc-wp-home-label"></span>
+                        </div>
+                        <div class="gc-wp-track">
+                            <div class="gc-wp-fill" id="gc-wp-fill"></div>
+                        </div>
+                        <div class="gc-wp-pcts">
+                            <span class="gc-wp-away" id="gc-wp-away-pct">50%</span>
+                            <span class="gc-wp-home" id="gc-wp-home-pct">50%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Odds -->
+                <div class="gc-card">
+                    <div class="gc-card-title">Odds</div>
+                    <div id="gc-odds" class="gc-odds"></div>
+                </div>
+
+                <!-- Model Prediction -->
+                <div class="gc-card" id="gc-pred-card" style="display:none">
+                    <div class="gc-card-title">Model Prediction</div>
+                    <div id="gc-pred"></div>
+                </div>
+            </aside>
+
+            <!-- Right: Box Score -->
+            <section class="gc-boxscore">
+                <div class="gc-box-tabs">
+                    <button class="gc-box-tab active" data-side="away" id="gc-tab-away">AWAY</button>
+                    <button class="gc-box-tab" data-side="home" id="gc-tab-home">HOME</button>
+                </div>
+                <div class="gc-box-body" id="gc-box-body">
+                    <div class="gc-no-data">Select a game</div>
+                </div>
+            </section>
+
         </div>
-    </section>
+
+    </div>
 
 </div>
 {% endblock %}
@@ -208,12 +219,164 @@ const GC = {
     render() {
         const d = this.data;
         this.renderScoreboard(d);
+        this.renderCourt(d);
         this.renderWinProb(d);
         this.renderOdds(d);
         this.renderPrediction(d);
         this.renderBoxscore(d);
         this.renderPlays(d);
         this.updateTicker(d);
+    },
+
+    renderCourt(d) {
+        const plays = d.plays || [];
+        const shots = plays.filter(p => p.shootingPlay && p.coordinate &&
+            (p.coordinate.x != null || p.coordinate.y != null));
+
+        const section = document.getElementById('gc-court-section');
+        if (!shots.length) { section.style.display = 'none'; return; }
+        section.style.display = '';
+
+        const canvas = document.getElementById('gc-court');
+        const rect = canvas.parentElement.getBoundingClientRect();
+        const W = 94, H = 50, M = 2;
+        const dpr = window.devicePixelRatio || 1;
+        const cw = rect.width - 36; // account for card padding
+        const ch = cw * (H / W);
+        canvas.width = cw * dpr;
+        canvas.height = ch * dpr;
+        canvas.style.width = cw + 'px';
+        canvas.style.height = ch + 'px';
+
+        const ctx = canvas.getContext('2d');
+        ctx.scale(dpr, dpr);
+        const s = (cw - M * 2) / W; // pixels per foot
+        const tx = v => M + v * s;
+        const ty = v => M + v * s;
+
+        // Hardwood background
+        const grad = ctx.createLinearGradient(0, 0, cw, ch);
+        grad.addColorStop(0, '#b5651d');
+        grad.addColorStop(0.5, '#c8803a');
+        grad.addColorStop(1, '#b5651d');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, cw, ch);
+        // Plank lines
+        ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+        ctx.lineWidth = 1;
+        for (let x = 0; x < cw; x += s * 3) {
+            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ch); ctx.stroke();
+        }
+
+        // Court lines helper
+        const line = (x1,y1,x2,y2) => { ctx.beginPath(); ctx.moveTo(tx(x1),ty(y1)); ctx.lineTo(tx(x2),ty(y2)); ctx.stroke(); };
+        const arcPath = (cx,cy,r,sa,ea) => { ctx.beginPath(); ctx.arc(tx(cx),ty(cy),r*s,sa,ea); ctx.stroke(); };
+
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+
+        // Outline
+        ctx.strokeRect(tx(0), ty(0), W*s, H*s);
+        // Half-court line
+        line(47, 0, 47, H);
+        // Center circle
+        arcPath(47, 25, 6, 0, Math.PI * 2);
+        arcPath(47, 25, 2, 0, Math.PI * 2);
+
+        // Draw half-court markings for both sides
+        const drawHalf = (left) => {
+            const bx = left ? 0 : W; // baseline x
+            const dir = left ? 1 : -1;
+
+            // Key / paint (19 ft deep, 16 ft wide = 17..33 y)
+            const kx = bx + dir * 19;
+            ctx.strokeRect(
+                tx(Math.min(bx, kx)), ty(17),
+                19 * s, 16 * s
+            );
+            // Free throw circle
+            arcPath(bx + dir * 19, 25, 6,
+                left ? -Math.PI/2 : Math.PI/2,
+                left ? Math.PI/2 : Math.PI * 3/2);
+            // Dashed free throw circle (back)
+            ctx.setLineDash([4, 4]);
+            arcPath(bx + dir * 19, 25, 6,
+                left ? Math.PI/2 : Math.PI * 3/2,
+                left ? Math.PI * 3/2 : Math.PI/2);
+            ctx.setLineDash([]);
+
+            // Restricted area arc (4 ft radius from hoop at ~5.25 ft from baseline)
+            const hoopX = bx + dir * 5.25;
+            arcPath(hoopX, 25, 4,
+                left ? -Math.PI/2 : Math.PI/2,
+                left ? Math.PI/2 : Math.PI * 3/2);
+
+            // Three-point line
+            const tpR = 23.75;
+            const cornerLen = 14; // corner 3 extends 14ft from baseline
+            // Corner lines
+            line(bx, 3, bx + dir * cornerLen, 3);
+            line(bx, 47, bx + dir * cornerLen, 47);
+            // Arc
+            const arcStart = left ? -Math.asin((25 - 3) / tpR) : Math.PI - Math.asin((25 - 3) / tpR);
+            const arcEnd = left ? Math.asin((25 - 3) / tpR) : Math.PI + Math.asin((25 - 3) / tpR);
+            if (left) {
+                arcPath(hoopX, 25, tpR, -arcEnd, arcEnd);
+            } else {
+                arcPath(hoopX, 25, tpR, Math.PI - Math.asin(22/tpR), Math.PI + Math.asin(22/tpR));
+            }
+
+            // Backboard (4 ft wide at 4 ft from baseline)
+            const bbX = bx + dir * 4;
+            line(bbX, 22, bbX, 28);
+
+            // Hoop
+            ctx.beginPath();
+            ctx.arc(tx(hoopX), ty(25), 0.75 * s, 0, Math.PI * 2);
+            ctx.strokeStyle = '#ff6600';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 1.5;
+        };
+
+        // Paint fill
+        ctx.fillStyle = 'rgba(0, 100, 200, 0.12)';
+        ctx.fillRect(tx(0), ty(17), 19 * s, 16 * s);
+        ctx.fillRect(tx(75), ty(17), 19 * s, 16 * s);
+
+        drawHalf(true);
+        drawHalf(false);
+
+        // Plot shots
+        const homeId = d.header?.home?.id;
+        shots.forEach(p => {
+            const cx = p.coordinate.x;
+            const cy = p.coordinate.y;
+            if (cx == null || cy == null) return;
+            const isHome = p.team_id === homeId;
+            const made = p.scoring;
+            const px = tx(cx);
+            const py = ty(cy);
+            const r = 3.5;
+
+            if (made) {
+                // Filled circle
+                ctx.beginPath();
+                ctx.arc(px, py, r, 0, Math.PI * 2);
+                ctx.fillStyle = isHome ? 'rgba(0,229,255,0.85)' : 'rgba(255,82,82,0.85)';
+                ctx.fill();
+                ctx.strokeStyle = isHome ? '#00e5ff' : '#ff5252';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            } else {
+                // X marker
+                ctx.strokeStyle = isHome ? 'rgba(0,229,255,0.5)' : 'rgba(255,82,82,0.5)';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath(); ctx.moveTo(px-r, py-r); ctx.lineTo(px+r, py+r); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(px+r, py-r); ctx.lineTo(px-r, py+r); ctx.stroke();
+            }
+        });
     },
 
     renderScoreboard(d) {

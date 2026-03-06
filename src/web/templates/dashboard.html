@@ -71,6 +71,28 @@
     </a>
     {% endfor %}
 </div>
+{% elif espn_games %}
+<div class="game-grid">
+    {% for g in espn_games %}
+    <a href="/gamecast" class="game-card">
+        <div class="card-teams">
+            <div class="team-block away">
+                <span class="team-abbr">{{ g.away_team }}</span>
+            </div>
+            <div class="at-symbol">@</div>
+            <div class="team-block home">
+                <span class="team-abbr">{{ g.home_team }}</span>
+            </div>
+        </div>
+        <div class="card-score">
+            {% if g.state != 'pre' %}
+            <span class="score-value">{{ g.away_score }} - {{ g.home_score }}</span>
+            {% endif %}
+            <span class="score-label">{{ g.short_detail or g.status }}</span>
+        </div>
+    </a>
+    {% endfor %}
+</div>
 {% else %}
 <div class="empty-state">
     <div class="empty-icon">&#127936;</div>

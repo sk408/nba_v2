@@ -1994,3 +1994,87 @@ a:hover {
         font-size: 1.3rem;
     }
 }
+
+
+/* ══════════════════════════════════════════════════
+   Court / Shot Chart
+   ══════════════════════════════════════════════════ */
+
+.gc-court-section {
+    margin-bottom: 20px;
+}
+
+#gc-court {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 94 / 50;
+    border-radius: var(--radius-sm);
+    display: block;
+}
+
+
+/* ══════════════════════════════════════════════════
+   Mobile: Content flow reorder (plays above columns)
+   ══════════════════════════════════════════════════ */
+
+.gc-content-flow {
+    display: flex;
+    flex-direction: column;
+}
+
+@media (max-width: 900px) {
+    .gc-content-flow .gc-plays-section {
+        order: 1;
+    }
+    .gc-content-flow .gc-columns {
+        order: 2;
+    }
+}
+
+
+/* ══════════════════════════════════════════════════
+   Mobile: Ticker scroll-snap + compact
+   ══════════════════════════════════════════════════ */
+
+@media (max-width: 600px) {
+    .gc-ticker-track {
+        scroll-snap-type: x mandatory;
+    }
+    .gc-ti {
+        scroll-snap-align: start;
+        padding: 6px 10px;
+        gap: 5px;
+        font-size: 0.72rem;
+    }
+    .gc-ti-team {
+        font-size: 0.78rem;
+    }
+    .gc-ti-score {
+        font-size: 0.78rem;
+        min-width: 16px;
+    }
+    .gc-ti-status {
+        font-size: 0.62rem;
+        padding-left: 5px;
+    }
+}
+
+
+/* ══════════════════════════════════════════════════
+   Mobile: Navbar buttons icon-only
+   ══════════════════════════════════════════════════ */
+
+@media (max-width: 768px) {
+    .nav-actions {
+        display: flex;
+        gap: 6px;
+        margin-left: auto;
+    }
+    .nav-actions .btn-label {
+        display: none;
+    }
+    .nav-actions .btn {
+        padding: 6px 8px;
+        min-width: 0;
+    }
+}
