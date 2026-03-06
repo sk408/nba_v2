@@ -246,13 +246,13 @@ class _PredictionWorker(QObject):
 
     def run(self):
         try:
-            from src.database import thread_local_db
-            thread_local_db()
+            from src.database.db import thread_local_db
             from src.analytics.prediction import predict_matchup
             from dataclasses import asdict
-            pred = predict_matchup(
-                self.home_team_id, self.away_team_id, self.game_date,
-            )
+            with thread_local_db():
+                pred = predict_matchup(
+                    self.home_team_id, self.away_team_id, self.game_date,
+                )
             self.finished.emit(asdict(pred))
         except Exception as e:
             logger.error("Prediction failed: %s", e, exc_info=True)
@@ -404,20 +404,20 @@ class GamecastView(QWidget):
         self._box_expanded_sizes = None
         root.addWidget(self._mid_splitter, 3)
 
-        # ── Bottom: Shot Chart + Play-by-play ──
+        # ── Bottom: Full Court (landscape) + Play-by-play ──
         self._bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self._court_section = _CollapsibleSection("Shot Chart")
         self.court = CourtWidget()
-        self.court.setFixedHeight(220)
-        self._court_section.add_widget(self.court, 0)
+        self._court_section.add_widget(self.court, 1)
         self._bottom_splitter.addWidget(self._court_section)
 
         self.play_feed = PlayFeedWidget()
-        self.play_feed.setMinimumHeight(120)
+        self.play_feed.setMinimumHeight(100)
+        self.play_feed.setMaximumWidth(280)
         self._bottom_splitter.addWidget(self.play_feed)
-        self._bottom_splitter.setStretchFactor(0, 0)
-        self._bottom_splitter.setStretchFactor(1, 1)
+        self._bottom_splitter.setStretchFactor(0, 3)
+        self._bottom_splitter.setStretchFactor(1, 0)
         root.addWidget(self._bottom_splitter, 2)
 
     def _make_box_table(self) -> QTableWidget:
