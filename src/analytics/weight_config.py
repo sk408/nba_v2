@@ -152,6 +152,40 @@ SHARP_RANGES = {
 # Combined ranges for sharp-enabled optimization
 SHARP_MODE_RANGES = {**OPTIMIZER_RANGES, **SHARP_RANGES}
 
+# Coordinate Descent ranges — wider than OPTIMIZER_RANGES for broader exploration.
+# CD grid-searches every value so it can safely explore beyond Optuna's TPE bounds.
+CD_RANGES = {
+    "def_factor_dampening": (0.05, 12.0),
+    "turnover_margin_mult": (0.0, 12.0),
+    "rebound_diff_mult": (0.0, 5.0),
+    "rating_matchup_mult": (0.0, 6.0),
+    "four_factors_scale": (0.5, 120.0),
+    "ff_efg_weight": (0.0, 18.0),
+    "ff_tov_weight": (0.0, 18.0),
+    "ff_oreb_weight": (0.0, 18.0),
+    "ff_fta_weight": (0.0, 18.0),
+    "opp_ff_efg_weight": (0.0, 18.0),
+    "opp_ff_tov_weight": (0.0, 18.0),
+    "opp_ff_oreb_weight": (0.0, 18.0),
+    "opp_ff_fta_weight": (0.0, 18.0),
+    "clutch_scale": (0.0, 3.0),
+    "hustle_effort_mult": (0.0, 3.0),
+    "hustle_contested_wt": (0.0, 2.0),
+    "steals_penalty": (0.0, 5.0),
+    "blocks_penalty": (0.0, 5.0),
+    "rest_advantage_mult": (0.0, 5.0),
+    "altitude_b2b_penalty": (0.0, 12.0),
+    "fatigue_b2b": (0.0, 12.0),
+    "fatigue_3in4": (0.0, 12.0),
+    "fatigue_4in6": (0.0, 6.0),
+    "fatigue_same_day": (0.0, 8.0),
+    "fatigue_rest_bonus": (0.0, 5.0),
+    "fatigue_total_mult": (0.0, 3.0),
+}
+
+# CD ranges with sharp money parameter included
+CD_SHARP_RANGES = {**CD_RANGES, "sharp_ml_weight": (0.0, 20.0)}
+
 
 # ──────────────────────────────────────────────────────────────
 # Persistence

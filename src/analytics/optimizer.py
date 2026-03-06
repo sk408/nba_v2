@@ -18,6 +18,7 @@ from src.analytics.prediction import GameInput
 from src.analytics.weight_config import (
     WeightConfig, get_weight_config, save_weight_config,
     OPTIMIZER_RANGES, SHARP_MODE_RANGES, invalidate_weight_cache,
+    CD_RANGES, CD_SHARP_RANGES,
 )
 
 logger = logging.getLogger(__name__)
