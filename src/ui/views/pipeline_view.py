@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QGridLayout, QScrollArea, QTextEdit, QSizePolicy,
     QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit,
-    QGraphicsOpacityEffect, QMessageBox, QSpinBox,
+    QGraphicsOpacityEffect, QMessageBox, QSpinBox, QCheckBox,
 )
 from PySide6.QtCore import (
     Qt, QThread, Signal, QObject, QTimer,
@@ -113,6 +113,37 @@ class _PipelineWorker(QObject):
 
 
 # ----------------------------------------------------------------
+# Sync-Only Worker
+# ----------------------------------------------------------------
+
+class _SyncWorker(QObject):
+    """Background worker that runs data sync only."""
+    finished = Signal(dict)
+    error = Signal(str)
+    progress = Signal(str)
+
+    def __init__(self, force: bool = False):
+        super().__init__()
+        self._force = force
+
+    def run(self):
+        try:
+            from src.database.db import thread_local_db
+            with thread_local_db():
+                from src.data.sync_service import full_sync
+                mode = "force" if self._force else "incremental"
+                self.progress.emit(f"Starting {mode} data sync...")
+                result = full_sync(
+                    force=self._force,
+                    callback=lambda msg: self.progress.emit(msg),
+                )
+                self.finished.emit({"sync_result": result})
+        except Exception as e:
+            logger.error("SyncWorker error: %s", e, exc_info=True)
+            self.error.emit(str(e))
+
+
+# ----------------------------------------------------------------
 # Step Indicator Widget
 # ----------------------------------------------------------------
 
@@ -176,6 +207,8 @@ class PipelineView(QWidget):
         self.main_window = parent
         self._worker: Optional[_PipelineWorker] = None
         self._worker_thread: Optional[QThread] = None
+        self._sync_worker: Optional[_SyncWorker] = None
+        self._sync_thread: Optional[QThread] = None
         self._current_worker = None  # ref for MainWindow cleanup
         self._running = False
         self._step_start_time: float = 0.0
@@ -230,12 +263,16 @@ class PipelineView(QWidget):
     # ---------------------------------------------------------------
 
     def _build_controls(self, parent_layout: QVBoxLayout):
-        """Build the start/stop button row and overnight controls."""
+        """Build the control panel with pipeline, sync, and overnight sections."""
         control_frame = QFrame()
         control_frame.setProperty("class", "broadcast-card")
-        cl = QHBoxLayout(control_frame)
-        cl.setContentsMargins(16, 10, 16, 10)
-        cl.setSpacing(12)
+        cl = QVBoxLayout(control_frame)
+        cl.setContentsMargins(16, 12, 16, 12)
+        cl.setSpacing(10)
+
+        # ── Row 1: Pipeline + Sync actions ──
+        row1 = QHBoxLayout()
+        row1.setSpacing(12)
 
         # Run Pipeline button
         self._run_btn = QPushButton("RUN PIPELINE")
@@ -243,45 +280,91 @@ class PipelineView(QWidget):
         self._run_btn.setFixedHeight(44)
         self._run_btn.setMinimumWidth(180)
         self._run_btn.clicked.connect(self._on_run_toggle)
-        cl.addWidget(self._run_btn)
+        row1.addWidget(self._run_btn)
 
-        cl.addSpacing(16)
+        # Vertical separator
+        sep1 = QFrame()
+        sep1.setFixedWidth(1)
+        sep1.setFixedHeight(36)
+        sep1.setStyleSheet("background: rgba(255, 255, 255, 0.12);")
+        row1.addWidget(sep1)
 
-        # Overnight section
-        overnight_lbl = QLabel("OVERNIGHT")
-        overnight_lbl.setProperty("class", "muted")
-        cl.addWidget(overnight_lbl)
+        # Sync section
+        self._sync_btn = QPushButton("SYNC DATA")
+        self._sync_btn.setProperty("class", "primary")
+        self._sync_btn.setFixedHeight(44)
+        self._sync_btn.setMinimumWidth(140)
+        self._sync_btn.clicked.connect(self._on_sync)
+        row1.addWidget(self._sync_btn)
 
-        hours_lbl = QLabel("Hours:")
-        hours_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
-        cl.addWidget(hours_lbl)
-        self._hours_spin = QSpinBox()
-        self._hours_spin.setRange(1, 24)
-        self._hours_spin.setValue(8)
-        self._hours_spin.setFixedWidth(60)
-        cl.addWidget(self._hours_spin)
+        self._force_sync_cb = QCheckBox("Force full")
+        self._force_sync_cb.setToolTip(
+            "Bypass freshness checks and re-fetch all data from scratch"
+        )
+        self._force_sync_cb.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-size: 12px; spacing: 5px;"
+        )
+        row1.addWidget(self._force_sync_cb)
 
-        self._overnight_btn = QPushButton("RUN OVERNIGHT")
-        self._overnight_btn.setProperty("class", "indigo")
-        self._overnight_btn.setFixedHeight(44)
-        self._overnight_btn.setMinimumWidth(160)
-        self._overnight_btn.clicked.connect(self._on_overnight)
-        cl.addWidget(self._overnight_btn)
+        row1.addStretch()
 
-        cl.addStretch()
-
-        # Current step / elapsed
+        # Current step / elapsed (right-aligned)
         self._current_step_lbl = QLabel("")
         self._current_step_lbl.setStyleSheet(
             f"color: {CYAN}; font-size: 13px; font-weight: 700;"
         )
-        cl.addWidget(self._current_step_lbl)
+        row1.addWidget(self._current_step_lbl)
 
         self._elapsed_lbl = QLabel("")
         self._elapsed_lbl.setStyleSheet(
             f"color: {TEXT_MUTED}; font-size: 12px;"
         )
-        cl.addWidget(self._elapsed_lbl)
+        row1.addWidget(self._elapsed_lbl)
+
+        cl.addLayout(row1)
+
+        # ── Thin divider ──
+        divider = QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet("background: rgba(255, 255, 255, 0.06);")
+        cl.addWidget(divider)
+
+        # ── Row 2: Overnight section ──
+        row2 = QHBoxLayout()
+        row2.setSpacing(10)
+
+        overnight_lbl = QLabel("OVERNIGHT")
+        overnight_lbl.setStyleSheet(
+            f"color: {TEXT_DIM}; font-size: 11px; font-weight: 700; "
+            f"letter-spacing: 2px;"
+        )
+        row2.addWidget(overnight_lbl)
+
+        row2.addSpacing(8)
+
+        hours_lbl = QLabel("Hours:")
+        hours_lbl.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
+        row2.addWidget(hours_lbl)
+
+        self._hours_spin = QSpinBox()
+        self._hours_spin.setRange(1, 24)
+        self._hours_spin.setValue(8)
+        self._hours_spin.setFixedWidth(70)
+        self._hours_spin.setSuffix("h")
+        row2.addWidget(self._hours_spin)
+
+        row2.addSpacing(8)
+
+        self._overnight_btn = QPushButton("RUN OVERNIGHT")
+        self._overnight_btn.setProperty("class", "indigo")
+        self._overnight_btn.setFixedHeight(36)
+        self._overnight_btn.setMinimumWidth(160)
+        self._overnight_btn.clicked.connect(self._on_overnight)
+        row2.addWidget(self._overnight_btn)
+
+        row2.addStretch()
+
+        cl.addLayout(row2)
 
         apply_card_shadow(control_frame)
         parent_layout.addWidget(control_frame)
@@ -555,6 +638,111 @@ class PipelineView(QWidget):
             return
         self._start_pipeline(overnight=True)
 
+    # ---------------------------------------------------------------
+    # Sync-only
+    # ---------------------------------------------------------------
+
+    def _on_sync(self):
+        """Run data sync only (not the full pipeline)."""
+        if self._running:
+            return
+
+        force = self._force_sync_cb.isChecked()
+        self._running = True
+        self._pipeline_start_time = time.time()
+
+        # UI updates
+        self._sync_btn.setText("SYNCING...")
+        self._sync_btn.setEnabled(False)
+        self._run_btn.setEnabled(False)
+        self._overnight_btn.setEnabled(False)
+        self._hours_spin.setEnabled(False)
+        self._log_text.clear()
+
+        mode_str = "force" if force else "incremental"
+        self._log_text.append(f"Starting {mode_str} data sync...")
+        self._current_step_lbl.setText("DATA SYNC")
+
+        # Mark the sync step as active
+        ind = self._step_indicators.get("sync")
+        if ind:
+            ind.set_state("active")
+        self._step_start_time = time.time()
+
+        # Create worker
+        self._sync_worker = _SyncWorker(force=force)
+        self._sync_thread = QThread()
+        self._sync_worker.moveToThread(self._sync_thread)
+        self._sync_thread.started.connect(self._sync_worker.run)
+
+        _QC = Qt.ConnectionType.QueuedConnection
+        self._sync_worker.progress.connect(self._on_progress, _QC)
+        self._sync_worker.finished.connect(self._on_sync_finished, _QC)
+        self._sync_worker.error.connect(self._on_sync_error, _QC)
+        self._sync_worker.finished.connect(self._sync_thread.quit)
+        self._sync_worker.error.connect(self._sync_thread.quit)
+        self._sync_thread.finished.connect(self._cleanup_sync_worker)
+
+        self._elapsed_timer.start()
+        self._sync_thread.start()
+
+        if self.main_window:
+            self.main_window.set_status(f"Data sync ({mode_str}) running...")
+
+    def _on_sync_finished(self, result: dict):
+        """Handle sync-only completion."""
+        self._running = False
+        self._elapsed_timer.stop()
+
+        elapsed = time.time() - self._pipeline_start_time
+        self._elapsed_lbl.setText(self._fmt_seconds(elapsed))
+
+        # Mark sync step done
+        ind = self._step_indicators.get("sync")
+        if ind:
+            ind.set_state("done", self._fmt_seconds(elapsed))
+
+        self._log_text.append(f"\nData sync complete in {self._fmt_seconds(elapsed)}")
+        self._current_step_lbl.setText("Sync Complete")
+        self._current_step_lbl.setStyleSheet(
+            f"color: {GREEN}; font-size: 13px; font-weight: 700;"
+        )
+
+        self._reset_controls()
+
+        if self.main_window:
+            self.main_window.set_status(
+                f"Data sync complete in {self._fmt_seconds(elapsed)}"
+            )
+
+    def _on_sync_error(self, msg: str):
+        """Handle sync-only error."""
+        self._running = False
+        self._elapsed_timer.stop()
+
+        ind = self._step_indicators.get("sync")
+        if ind:
+            ind.set_state("error", "ERR")
+
+        self._log_text.append(f"\nSYNC ERROR: {msg}")
+        self._current_step_lbl.setText("Sync Error")
+        self._current_step_lbl.setStyleSheet(
+            f"color: {RED}; font-size: 13px; font-weight: 700;"
+        )
+        self._reset_controls()
+
+        if self.main_window:
+            self.main_window.set_status(f"Sync error: {msg}")
+
+    def _cleanup_sync_worker(self):
+        """Clean up sync worker and thread."""
+        if hasattr(self, '_sync_thread') and self._sync_thread is not None:
+            self._sync_thread.deleteLater()
+        if hasattr(self, '_sync_worker') and self._sync_worker is not None:
+            self._sync_worker.deleteLater()
+        self._sync_thread = None
+        self._sync_worker = None
+
     def _start_pipeline(self, overnight: bool = False):
         """Start the pipeline in a background thread."""
         # Busy guard
@@ -572,6 +760,7 @@ class PipelineView(QWidget):
         self._run_btn.setProperty("class", "danger")
         self._run_btn.style().unpolish(self._run_btn)
         self._run_btn.style().polish(self._run_btn)
+        self._sync_btn.setEnabled(False)
         self._overnight_btn.setEnabled(False)
         self._hours_spin.setEnabled(False)
         self._log_text.clear()
@@ -700,6 +889,9 @@ class PipelineView(QWidget):
         self._run_btn.setProperty("class", "success")
         self._run_btn.style().unpolish(self._run_btn)
         self._run_btn.style().polish(self._run_btn)
+        self._run_btn.setEnabled(True)
+        self._sync_btn.setText("SYNC DATA")
+        self._sync_btn.setEnabled(True)
         self._overnight_btn.setEnabled(True)
         self._hours_spin.setEnabled(True)
 
