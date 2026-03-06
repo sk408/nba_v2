@@ -117,14 +117,25 @@ def dashboard():
         logger.error("Dashboard error: %s", e, exc_info=True)
         predictions = []
 
-    # Fallback: if no predictions (game_odds empty), show ESPN scoreboard
+    # Enrich predictions with ESPN start times for sorting
     espn_games = []
-    if not predictions:
-        try:
-            from src.data.gamecast import fetch_espn_scoreboard
-            espn_games = fetch_espn_scoreboard()
-        except Exception as e:
-            logger.warning("ESPN scoreboard fallback failed: %s", e)
+    try:
+        from src.data.gamecast import fetch_espn_scoreboard
+        espn_list = fetch_espn_scoreboard()
+        if predictions:
+            # Build lookup: "AWAY@HOME" -> espn game
+            espn_lookup = {}
+            for g in espn_list:
+                espn_lookup[f"{g['away_team']}@{g['home_team']}"] = g
+            for pred in predictions:
+                key = f"{pred.get('away_team', '')}@{pred.get('home_team', '')}"
+                eg = espn_lookup.get(key, {})
+                pred["start_utc"] = eg.get("date", "")
+            predictions.sort(key=lambda p: p.get("start_utc", ""))
+        else:
+            espn_games = sorted(espn_list, key=lambda g: g.get("date", ""))
+    except Exception as e:
+        logger.warning("ESPN scoreboard enrichment failed: %s", e)
 
     return render_template(
         "dashboard.html",
@@ -151,7 +162,9 @@ def matchup_picker():
                 "away_score": g.get("away_score"),
                 "status": g.get("short_detail") or g.get("status"),
                 "state": g.get("state"),
+                "start_utc": g.get("date", ""),
             })
+        games.sort(key=lambda g: g.get("start_utc", ""))
     except Exception as e:
         logger.error("Matchup picker error: %s", e, exc_info=True)
 

@@ -11,6 +11,11 @@
 <div class="game-grid">
     {% for g in games %}
     <a href="/matchup/{{ g.home_abbr }}/{{ g.away_abbr }}/{{ today }}" class="game-card">
+        {% if g.start_utc %}
+        <div class="card-top-row">
+            <span class="card-time" data-utc="{{ g.start_utc }}"></span>
+        </div>
+        {% endif %}
         <div class="card-teams">
             <div class="team-block away">
                 <span class="team-abbr">{{ g.away_abbr }}</span>
@@ -36,4 +41,16 @@
     <p>Check back on a game day for matchup predictions.</p>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('.card-time[data-utc]').forEach(el => {
+    const utc = el.dataset.utc;
+    if (!utc) return;
+    const d = new Date(utc);
+    if (isNaN(d)) return;
+    el.textContent = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+});
+</script>
 {% endblock %}

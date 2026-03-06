@@ -316,7 +316,45 @@ a:hover {
     box-shadow: 0 0 20px rgba(255, 179, 0, 0.1);
 }
 
-/* Dog badge */
+/* Card top row: time + badge */
+.card-top-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    min-height: 20px;
+}
+
+.card-time {
+    font-family: var(--font-heading);
+    font-size: 0.7rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+/* Dog badge (inline) */
+.dog-badge-inline {
+    background: rgba(255, 179, 0, 0.15);
+    color: var(--accent-amber);
+    font-size: 0.6rem;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 4px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    border: 1px solid rgba(255, 179, 0, 0.3);
+    margin-left: auto;
+    white-space: nowrap;
+}
+
+.dog-badge-inline.value-zone {
+    background: rgba(255, 179, 0, 0.2);
+    border-color: var(--accent-amber);
+}
+
+/* Legacy absolute dog badge (desktop fallback) */
 .dog-badge {
     position: absolute;
     top: 12px;
@@ -330,6 +368,7 @@ a:hover {
     letter-spacing: 0.5px;
     text-transform: uppercase;
     border: 1px solid rgba(255, 179, 0, 0.3);
+    display: none;
 }
 
 .dog-badge.value-zone {

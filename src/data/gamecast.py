@@ -37,6 +37,7 @@ def fetch_espn_scoreboard() -> List[Dict[str, Any]]:
                 games.append({
                     "espn_id": event.get("id", ""),
                     "name": event.get("name", ""),
+                    "date": event.get("date", ""),
                     "status": event.get("status", {}).get("type", {}).get("description", ""),
                     "short_detail": event.get("status", {}).get("type", {}).get("shortDetail", ""),
                     "period": event.get("status", {}).get("period", 0),

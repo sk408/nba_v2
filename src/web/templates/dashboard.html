@@ -14,12 +14,19 @@
     <a href="/matchup/{{ pred.home_team_id }}/{{ pred.away_team_id }}/{{ pred.game_date }}"
        class="game-card {% if pred.is_dog_pick %}dog-card{% endif %} {% if pred.is_dog_pick and pred.is_value_zone %}value-zone-card{% endif %}">
 
-        {# Upset badge #}
-        {% if pred.is_dog_pick %}
-        <div class="dog-badge {% if pred.is_value_zone %}value-zone{% endif %}">
-            {% if pred.is_value_zone %}VALUE UPSET{% else %}UPSET{% endif %}
+        {# Game time + Upset badge row #}
+        <div class="card-top-row">
+            {% if pred.start_utc %}
+            <span class="card-time" data-utc="{{ pred.start_utc }}"></span>
+            {% else %}
+            <span class="card-time"></span>
+            {% endif %}
+            {% if pred.is_dog_pick %}
+            <span class="dog-badge-inline {% if pred.is_value_zone %}value-zone{% endif %}">
+                {% if pred.is_value_zone %}VALUE UPSET{% else %}UPSET{% endif %}
+            </span>
+            {% endif %}
         </div>
-        {% endif %}
 
         {# Teams row #}
         <div class="card-teams">
@@ -75,6 +82,11 @@
 <div class="game-grid">
     {% for g in espn_games %}
     <a href="/gamecast" class="game-card">
+        {% if g.date %}
+        <div class="card-top-row">
+            <span class="card-time" data-utc="{{ g.date }}"></span>
+        </div>
+        {% endif %}
         <div class="card-teams">
             <div class="team-block away">
                 <span class="team-abbr">{{ g.away_team }}</span>
@@ -100,4 +112,16 @@
     <p>Check back on a game day, or use the Sync button to fetch the latest schedule.</p>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('.card-time[data-utc]').forEach(el => {
+    const utc = el.dataset.utc;
+    if (!utc) return;
+    const d = new Date(utc);
+    if (isNaN(d)) return;
+    el.textContent = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+});
+</script>
 {% endblock %}
