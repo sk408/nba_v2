@@ -11,6 +11,11 @@ cd "$PROJECT_DIR" || { echo "Project not found at $PROJECT_DIR"; exit 1; }
 pkill -f "python web.py" 2>/dev/null
 sleep 0.5
 
+# Pull latest code — stash local changes, pull, drop stash
+git stash --quiet 2>/dev/null
+git pull --quiet 2>/dev/null
+git stash drop --quiet 2>/dev/null
+
 # Start server in background — call venv python directly, no activate needed
 nohup "$PYTHON" web.py > /dev/null 2>&1 &
 
