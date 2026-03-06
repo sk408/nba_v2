@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Matchup — NBA Fundamentals V2{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1 class="page-title">Matchup Predictions</h1>
+    <span class="page-subtitle">{{ today }} &mdash; Select a game</span>
+</div>
+
+{% if games %}
+<div class="game-grid">
+    {% for g in games %}
+    <a href="/matchup/{{ g.home_id }}/{{ g.away_id }}/{{ today }}" class="game-card">
+        <div class="card-teams">
+            <div class="team-block away">
+                <span class="team-abbr">{{ g.away_abbr }}</span>
+            </div>
+            <div class="at-symbol">@</div>
+            <div class="team-block home">
+                <span class="team-abbr">{{ g.home_abbr }}</span>
+            </div>
+        </div>
+        <div class="card-score">
+            {% if g.state and g.state != 'pre' %}
+            <span class="score-value">{{ g.away_score }} - {{ g.home_score }}</span>
+            {% endif %}
+            <span class="score-label">{{ g.status or 'Tap for prediction' }}</span>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <div class="empty-icon">&#127936;</div>
+    <h2>No Games Today</h2>
+    <p>Check back on a game day for matchup predictions.</p>
+</div>
+{% endif %}
+{% endblock %}

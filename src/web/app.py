@@ -135,6 +135,52 @@ def dashboard():
     )
 
 
+@app.route("/matchup")
+def matchup_picker():
+    """Game picker for matchup predictions."""
+    from src.database import db
+    from src.analytics.stats_engine import get_team_abbreviations
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    abbr_map = get_team_abbreviations()
+    games = []
+
+    try:
+        odds_games = db.fetch_all(
+            "SELECT home_team_id, away_team_id FROM game_odds WHERE game_date = ?",
+            (today,),
+        )
+        if odds_games:
+            for g in odds_games:
+                games.append({
+                    "home_id": g["home_team_id"],
+                    "away_id": g["away_team_id"],
+                    "home_abbr": abbr_map.get(g["home_team_id"], "???"),
+                    "away_abbr": abbr_map.get(g["away_team_id"], "???"),
+                })
+        else:
+            from src.data.gamecast import fetch_espn_scoreboard
+            abbr_to_id = {v: k for k, v in abbr_map.items()}
+            for g in fetch_espn_scoreboard():
+                h_id = abbr_to_id.get(g["home_team"])
+                a_id = abbr_to_id.get(g["away_team"])
+                if h_id and a_id:
+                    games.append({
+                        "home_id": h_id,
+                        "away_id": a_id,
+                        "home_abbr": g["home_team"],
+                        "away_abbr": g["away_team"],
+                        "home_score": g.get("home_score"),
+                        "away_score": g.get("away_score"),
+                        "status": g.get("short_detail") or g.get("status"),
+                        "state": g.get("state"),
+                    })
+    except Exception as e:
+        logger.error("Matchup picker error: %s", e, exc_info=True)
+
+    return render_template("matchup_picker.html", games=games, today=today)
+
+
 @app.route("/matchup/<int:home_id>/<int:away_id>/<date>")
 def matchup_detail(home_id, away_id, date):
     """Game detail with breakdown + sharp money panel."""
