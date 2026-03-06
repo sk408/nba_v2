@@ -1,4 +1,4 @@
-"""Database schema migrations — 16 tables, indexes, init_db()."""
+"""Database schema migrations — 20 tables, indexes, init_db()."""
 
 import logging
 
@@ -315,6 +315,45 @@ CREATE TABLE IF NOT EXISTS game_odds (
     FOREIGN KEY (home_team_id) REFERENCES teams(team_id),
     FOREIGN KEY (away_team_id) REFERENCES teams(team_id)
 );
+
+CREATE TABLE IF NOT EXISTS arenas (
+    team_id    INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    city       TEXT NOT NULL,
+    lat        REAL NOT NULL,
+    lon        REAL NOT NULL,
+    altitude_ft INTEGER NOT NULL DEFAULT 0,
+    timezone   TEXT NOT NULL DEFAULT 'US/Eastern'
+);
+
+CREATE TABLE IF NOT EXISTS referees (
+    referee_name       TEXT NOT NULL,
+    season             TEXT NOT NULL DEFAULT '2025-26',
+    games_officiated   INTEGER DEFAULT 0,
+    home_win_pct       REAL DEFAULT 50.0,
+    total_points_pg    REAL DEFAULT 215.0,
+    fouls_per_game     REAL DEFAULT 38.0,
+    foul_differential  REAL DEFAULT 0.0,
+    home_foul_pct      REAL DEFAULT 50.0,
+    road_foul_pct      REAL DEFAULT 50.0,
+    last_synced_at     TEXT,
+    PRIMARY KEY (referee_name, season)
+);
+
+CREATE TABLE IF NOT EXISTS game_referees (
+    game_date       TEXT NOT NULL,
+    home_team_id    INTEGER NOT NULL,
+    away_team_id    INTEGER NOT NULL,
+    referee_name    TEXT NOT NULL,
+    PRIMARY KEY (game_date, home_team_id, referee_name)
+);
+
+CREATE TABLE IF NOT EXISTS elo_ratings (
+    team_id    INTEGER NOT NULL,
+    game_date  TEXT NOT NULL,
+    elo        REAL NOT NULL DEFAULT 1500.0,
+    PRIMARY KEY (team_id, game_date)
+);
 """
 
 INDEXES_SQL = """
@@ -334,6 +373,9 @@ CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(read, id DE
 CREATE INDEX IF NOT EXISTS idx_injuries_team ON injuries(team_id);
 CREATE INDEX IF NOT EXISTS idx_injuries_player ON injuries(player_id);
 CREATE INDEX IF NOT EXISTS idx_player_stats_season ON player_stats(season, game_date);
+CREATE INDEX IF NOT EXISTS idx_elo_ratings_date ON elo_ratings(game_date DESC);
+CREATE INDEX IF NOT EXISTS idx_game_referees_date ON game_referees(game_date, home_team_id);
+CREATE INDEX IF NOT EXISTS idx_referees_season ON referees(season);
 """
 
 
@@ -365,6 +407,18 @@ def _run_column_migrations():
     _add_column_if_missing("game_odds", "ml_away_public", "INTEGER")
     _add_column_if_missing("game_odds", "ml_home_money", "INTEGER")
     _add_column_if_missing("game_odds", "ml_away_money", "INTEGER")
+    # New feature columns: SRS, Pythagorean, paint/fastbreak/second-chance
+    _add_column_if_missing("team_metrics", "srs", "REAL DEFAULT 0.0")
+    _add_column_if_missing("team_metrics", "pythag_wins", "REAL DEFAULT 0.0")
+    _add_column_if_missing("team_metrics", "points_in_paint", "REAL DEFAULT 0.0")
+    _add_column_if_missing("team_metrics", "fast_break_pts", "REAL DEFAULT 0.0")
+    _add_column_if_missing("team_metrics", "second_chance_pts", "REAL DEFAULT 0.0")
+    # New feature columns: player advanced metrics
+    _add_column_if_missing("player_impact", "vorp", "REAL DEFAULT 0.0")
+    _add_column_if_missing("player_impact", "bpm", "REAL DEFAULT 0.0")
+    _add_column_if_missing("player_impact", "ws_per_48", "REAL DEFAULT 0.0")
+    # New feature column: spread movement
+    _add_column_if_missing("game_odds", "spread_movement", "REAL DEFAULT 0.0")
     _rename_notifications_body_to_message()
     _fix_game_date_formats()
 
@@ -550,7 +604,8 @@ def get_table_counts() -> dict:
     """Return row counts for key tables."""
     tables = ["teams", "players", "player_stats", "predictions",
               "team_metrics", "player_impact", "injuries", "injury_history",
-              "injury_status_log", "team_tuning", "notifications", "game_odds"]
+              "injury_status_log", "team_tuning", "notifications", "game_odds",
+              "arenas", "referees", "game_referees", "elo_ratings"]
     counts = {}
     for t in tables:
         try:
