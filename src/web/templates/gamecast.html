@@ -349,15 +349,23 @@ const GC = {
         drawHalf(false);
 
         // Plot shots
+        // ESPN coords are half-court: x=0..50 (sideline), y=0..47 (baseline to half)
+        // Map to full court: court_x = raw_y (depth), court_y = raw_x (sideline)
+        // Home team shoots right, away shoots left
         const homeId = d.header?.home?.id;
         shots.forEach(p => {
-            const cx = p.coordinate.x;
-            const cy = p.coordinate.y;
-            if (cx == null || cy == null) return;
+            const rawX = p.coordinate.x;
+            const rawY = p.coordinate.y;
+            if (rawX == null && rawY == null) return;
+            const rx = rawX ?? 25, ry = rawY ?? 20;
+            if (rx < -100 || rx > 200 || ry < -100 || ry > 200) return;
+            let courtX = Math.max(0, Math.min(ry, 47)); // distance from baseline
+            const courtY = Math.max(0, Math.min(rx, 50)); // sideline position
             const isHome = p.team_id === homeId;
+            if (isHome) courtX = W - courtX; // flip to right side
             const made = p.scoring;
-            const px = tx(cx);
-            const py = ty(cy);
+            const px = tx(Math.max(0, Math.min(courtX, W)));
+            const py = ty(Math.max(0, Math.min(courtY, H)));
             const r = 3.5;
 
             if (made) {
