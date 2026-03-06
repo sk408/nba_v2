@@ -161,6 +161,8 @@ def matchup_picker():
 @app.route("/matchup/<home_abbr>/<away_abbr>/<date>")
 def matchup_by_abbr(home_abbr, away_abbr, date):
     """Matchup detail by team abbreviation — resolves to IDs internally."""
+    from src.database import db as _db
+
     error = None
     fund_pred = None
     sharp_pred = None
@@ -168,15 +170,17 @@ def matchup_by_abbr(home_abbr, away_abbr, date):
     away_id = 0
 
     try:
-        from src.analytics.stats_engine import get_team_abbreviations
-        abbr_map = get_team_abbreviations()
-        abbr_to_id = {v: k for k, v in abbr_map.items()}
+        # Direct DB lookup — no memory store dependency
+        rows = _db.fetch_all("SELECT team_id, abbreviation FROM teams")
+        abbr_to_id = {r["abbreviation"]: r["team_id"] for r in rows}
         home_id = abbr_to_id.get(home_abbr.upper(), 0)
         away_id = abbr_to_id.get(away_abbr.upper(), 0)
 
         if not home_id or not away_id:
+            found = sorted(abbr_to_id.keys())
             raise ValueError(
-                f"Could not resolve teams: {home_abbr}, {away_abbr}"
+                f"Could not resolve teams: {home_abbr.upper()}, {away_abbr.upper()}. "
+                f"DB has {len(found)} teams: {', '.join(found[:10])}..."
             )
 
         fund_pred = _run_prediction(home_id, away_id, date, include_sharp=False)
