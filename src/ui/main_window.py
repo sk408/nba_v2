@@ -28,7 +28,7 @@ def _placeholder(label: str) -> QWidget:
 
 
 class MainWindow(QMainWindow):
-    """Main application window with 4 tabs."""
+    """Main application window with 5 tabs."""
 
     def __init__(self):
         super().__init__()
@@ -70,7 +70,15 @@ class MainWindow(QMainWindow):
         self._init_notifications()
 
     def _init_tabs(self):
-        """Create all four tabs with try/except fallbacks."""
+        """Create all five tabs with try/except fallbacks."""
+        # Gamecast (live games — first tab)
+        try:
+            from src.ui.views.gamecast_view import GamecastView
+            self.gamecast = GamecastView(self)
+        except ImportError:
+            logger.debug("GamecastView not available, using placeholder")
+            self.gamecast = _placeholder("Gamecast")
+
         # Matchups
         try:
             from src.ui.views.matchup_view import MatchupView
@@ -103,6 +111,7 @@ class MainWindow(QMainWindow):
             logger.debug("SettingsView not available, using placeholder")
             self.settings = _placeholder("Settings")
 
+        self.tabs.addTab(self.gamecast, "Gamecast")
         self.tabs.addTab(self.matchup, "Matchups")
         self.tabs.addTab(self.accuracy, "Accuracy")
         self.tabs.addTab(self.pipeline, "Pipeline")
