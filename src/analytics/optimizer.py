@@ -179,6 +179,32 @@ class VectorizedGames:
             0.0,
         )
 
+        # ── V2.1 feature arrays ──
+        self.home_elo = np.array([g.home_elo for g in games])
+        self.away_elo = np.array([g.away_elo for g in games])
+        self.home_travel_miles = np.array([g.home_travel_miles for g in games])
+        self.away_travel_miles = np.array([g.away_travel_miles for g in games])
+        self.home_tz_crossings = np.array([g.home_tz_crossings for g in games], dtype=float)
+        self.away_tz_crossings = np.array([g.away_tz_crossings for g in games], dtype=float)
+        self.home_streak = np.array([g.home_streak for g in games], dtype=float)
+        self.away_streak = np.array([g.away_streak for g in games], dtype=float)
+        self.home_mov_trend = np.array([g.home_mov_trend for g in games])
+        self.away_mov_trend = np.array([g.away_mov_trend for g in games])
+        self.home_injury_vorp = np.array([g.home_injury_vorp_lost for g in games])
+        self.away_injury_vorp = np.array([g.away_injury_vorp_lost for g in games])
+        self.ref_crew_fouls_pg = np.array([g.ref_crew_fouls_pg for g in games])
+        self.ref_crew_home_bias = np.array([g.ref_crew_home_bias for g in games])
+        self.spread_sharp_edge = np.array([g.spread_sharp_edge for g in games])
+        self.home_lookahead = np.array([float(g.home_lookahead) for g in games])
+        self.away_lookahead = np.array([float(g.away_lookahead) for g in games])
+        self.home_letdown = np.array([float(g.home_letdown) for g in games])
+        self.away_letdown = np.array([float(g.away_letdown) for g in games])
+        self.home_srs = np.array([g.home_srs for g in games])
+        self.away_srs = np.array([g.away_srs for g in games])
+        self.home_onoff = np.array([g.home_onoff_impact for g in games])
+        self.away_onoff = np.array([g.away_onoff_impact for g in games])
+        self.pace_diff = np.array([abs(g.home_pace - g.away_pace) for g in games])
+
     def evaluate(self, w: WeightConfig, include_sharp: bool = False) -> Dict[str, float]:
         """Vectorized evaluation. Returns metrics dict including loss.
 
@@ -252,6 +278,38 @@ class VectorizedGames:
         # 13. Sharp ML (optional toggle layer)
         if include_sharp:
             game_score += self.sharp_ml_edge * w.sharp_ml_weight
+
+        # ── V2.1 vectorized adjustments ──
+        game_score += (self.home_elo - self.away_elo) / 400.0 * w.elo_diff_mult
+        game_score -= ((self.away_travel_miles / 1000.0) - (self.home_travel_miles / 1000.0)) * w.travel_dist_mult
+        game_score -= (self.away_tz_crossings - self.home_tz_crossings) * w.timezone_crossing_mult
+        game_score += (self.home_streak - self.away_streak) * w.momentum_streak_mult
+        game_score += (self.home_mov_trend - self.away_mov_trend) * w.mov_trend_mult
+        game_score += (self.away_injury_vorp - self.home_injury_vorp) * w.injury_vorp_mult
+        game_score += (self.ref_crew_home_bias - 50.0) / 50.0 * w.ref_home_bias_mult
+        game_score += self.spread_sharp_edge / 100.0 * w.sharp_spread_weight
+        game_score += (-(self.home_lookahead * w.lookahead_penalty + self.home_letdown * w.letdown_penalty)
+                       + (self.away_lookahead * w.lookahead_penalty + self.away_letdown * w.letdown_penalty))
+        game_score += (self.home_srs - self.away_srs) * w.srs_diff_mult
+        game_score += (self.home_onoff - self.away_onoff) * w.onoff_impact_mult
+
+        # ──────────────────────────────────────────────────────────
+        # TOTAL (projected combined score — diagnostic)
+        # ──────────────────────────────────────────────────────────
+        total = home_base + away_base
+        # Defensive disruption total adjustment
+        total -= (np.maximum(0, self.combined_steals - w.steals_threshold) * w.steals_penalty +
+                  np.maximum(0, self.combined_blocks - w.blocks_threshold) * w.blocks_penalty)
+        # Hustle deflection total adjustment
+        defl_over = np.maximum(0, self.combined_deflections - w.hustle_defl_baseline)
+        total -= defl_over * w.hustle_defl_penalty
+        # Fatigue total
+        total -= (home_fat + away_fat) * w.fatigue_total_mult
+        # V2.1 total adjustments
+        total += self.pace_diff * w.pace_mismatch_mult
+        total += (self.ref_crew_fouls_pg - 38.0) * w.ref_fouls_mult
+        # Clamp total
+        total = np.clip(total, w.total_min, w.total_max)
 
         # ──────────────────────────────────────────────────────────
         # METRICS

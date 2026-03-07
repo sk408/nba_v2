@@ -276,6 +276,67 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
             game_score += sharp_adj
             pred.adjustments["sharp_ml"] = sharp_adj
 
+    # ── V2.1 adjustment layers ──
+
+    # 14. Elo differential
+    elo_adj = (game.home_elo - game.away_elo) / 400.0 * w.elo_diff_mult
+    game_score += elo_adj
+    pred.adjustments["elo"] = elo_adj
+
+    # 15. Travel fatigue
+    travel_adj = -((game.away_travel_miles / 1000.0) - (game.home_travel_miles / 1000.0)) * w.travel_dist_mult
+    game_score += travel_adj
+    pred.adjustments["travel"] = travel_adj
+
+    # 16. Timezone crossing
+    tz_adj = -(game.away_tz_crossings - game.home_tz_crossings) * w.timezone_crossing_mult
+    game_score += tz_adj
+    pred.adjustments["timezone"] = tz_adj
+
+    # 17. Momentum (win/loss streak)
+    momentum_adj = (game.home_streak - game.away_streak) * w.momentum_streak_mult
+    game_score += momentum_adj
+    pred.adjustments["momentum"] = momentum_adj
+
+    # 18. Margin-of-victory trend
+    mov_adj = (game.home_mov_trend - game.away_mov_trend) * w.mov_trend_mult
+    game_score += mov_adj
+    pred.adjustments["mov_trend"] = mov_adj
+
+    # 19. Injury VORP impact (more VORP lost = weaker team)
+    injury_adj = (game.away_injury_vorp_lost - game.home_injury_vorp_lost) * w.injury_vorp_mult
+    game_score += injury_adj
+    pred.adjustments["injury_vorp"] = injury_adj
+
+    # 20. Referee home bias (50% = neutral, >50% = favors home)
+    ref_bias_adj = (game.ref_crew_home_bias - 50.0) / 50.0 * w.ref_home_bias_mult
+    game_score += ref_bias_adj
+    pred.adjustments["ref_home_bias"] = ref_bias_adj
+
+    # 21. Spread sharp money
+    if game.spread_sharp_edge:
+        spread_sharp_adj = game.spread_sharp_edge / 100.0 * w.sharp_spread_weight
+        game_score += spread_sharp_adj
+        pred.adjustments["sharp_spread"] = spread_sharp_adj
+
+    # 22. Schedule spots
+    sched_adj = (-(game.home_lookahead * w.lookahead_penalty +
+                   game.home_letdown * w.letdown_penalty)
+                 + (game.away_lookahead * w.lookahead_penalty +
+                    game.away_letdown * w.letdown_penalty))
+    game_score += sched_adj
+    pred.adjustments["schedule_spots"] = sched_adj
+
+    # 23. SRS differential
+    srs_adj = (game.home_srs - game.away_srs) * w.srs_diff_mult
+    game_score += srs_adj
+    pred.adjustments["srs"] = srs_adj
+
+    # 24. Player On/Off impact
+    onoff_adj = (game.home_onoff_impact - game.away_onoff_impact) * w.onoff_impact_mult
+    game_score += onoff_adj
+    pred.adjustments["onoff_impact"] = onoff_adj
+
     # Derive projected scores (diagnostic only)
     total = home_base + away_base
     # Defensive disruption total adjustment
@@ -289,6 +350,10 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
         total -= (comb_defl - w.hustle_defl_baseline) * w.hustle_defl_penalty
     # Fatigue total
     total -= (home_fat + away_fat) * w.fatigue_total_mult
+    # Pace mismatch total adjustment (higher pace diff = more scoring variance)
+    total += abs(game.home_pace - game.away_pace) * w.pace_mismatch_mult
+    # Referee fouls total adjustment (more fouls = more FTs = higher scoring)
+    total += (game.ref_crew_fouls_pg - 38.0) * w.ref_fouls_mult
     # Clamp total
     total = max(w.total_min, min(w.total_max, total))
 
