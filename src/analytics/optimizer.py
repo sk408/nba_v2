@@ -551,11 +551,49 @@ def optimize_weights(
         except Exception:
             pass
 
-        if study.best_value < best_train_loss:
-            best_params = study.best_params
-            best_w = WeightConfig.from_dict({**baseline_w.to_dict(), **best_params})
-            best_train_loss = study.best_value
-            best_train_result = vg_train.evaluate(best_w, include_sharp=include_sharp)
+        # Evaluate top-N training trials on validation to find best generalizer
+        from src.config import get as _get_setting
+        top_n = int(_get_setting("optuna_top_n_validation", 10))
+        completed = [t for t in study.trials
+                     if t.state == optuna.trial.TrialState.COMPLETE]
+        completed.sort(key=lambda t: t.value)
+        candidates = completed[:top_n]
+
+        if candidates and candidates[0].value < best_train_loss:
+            best_val_loss = float("inf")
+            if callback:
+                callback(f"Validating top {len(candidates)} training trials...")
+
+            for rank, trial in enumerate(candidates):
+                cand_w = WeightConfig.from_dict(
+                    {**baseline_w.to_dict(), **trial.params})
+                cand_val = vg_val.evaluate(cand_w, include_sharp=include_sharp)
+                cand_val_loss = cand_val["loss"]
+
+                if callback and rank < 5:
+                    tr = trial.user_attrs.get("result", {})
+                    callback(
+                        f"  #{rank + 1} train loss={trial.value:.3f} "
+                        f"(Winner={tr.get('winner_pct', 0):.1f}%) "
+                        f"-> val loss={cand_val_loss:.3f} "
+                        f"(Winner={cand_val.get('winner_pct', 0):.1f}%)")
+
+                if cand_val_loss < best_val_loss:
+                    best_val_loss = cand_val_loss
+                    best_w = cand_w
+                    best_train_loss = trial.value
+                    best_train_result = trial.user_attrs.get(
+                        "result",
+                        vg_train.evaluate(cand_w, include_sharp=include_sharp))
+
+            if callback:
+                chosen_rank = next(
+                    i for i, t in enumerate(candidates)
+                    if t.value == best_train_loss)
+                if chosen_rank > 0:
+                    callback(
+                        f"Selected trial #{chosen_rank + 1} "
+                        f"(not #1) — better validation performance")
 
     except ImportError:
         if callback:
