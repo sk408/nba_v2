@@ -1,6 +1,7 @@
-"""Simplified 6-step pipeline orchestrator.
+"""10-step pipeline orchestrator.
 
-Steps: backup -> sync -> precompute -> optimize_fundamentals -> optimize_sharp -> backtest
+Steps: backup -> sync -> seed_arenas -> bbref_sync -> referee_sync -> elo_compute
+       -> precompute -> optimize_fundamentals -> optimize_sharp -> backtest
 
 No disabled steps, no dead code. Each step receives (callback, is_cancelled) and
 returns a result dict. Pipeline state is persisted to data/pipeline_state.json
@@ -147,6 +148,56 @@ def run_data_sync(callback=None, is_cancelled=None) -> Dict:
     return {"sync_result": result}
 
 
+def run_seed_arenas(callback=None, is_cancelled=None) -> Dict:
+    """Step 2b: Seed arena data (one-time, idempotent)."""
+    if callback:
+        callback("Seeding arena data...")
+    from src.data.arenas import seed_arenas_table
+    seed_arenas_table()
+    return {"status": "seeded"}
+
+
+def run_bbref_sync(callback=None, is_cancelled=None) -> Dict:
+    """Step 2c: Sync Basketball-Reference advanced stats (daily)."""
+    from src.config import get_season
+    season = get_season()
+    try:
+        if callback:
+            callback("Syncing Basketball-Reference stats...")
+        from src.data.bbref_scraper import sync_bbref_stats
+        sync_bbref_stats(season)
+        return {"status": "synced"}
+    except Exception as e:
+        logger.warning("BBRef sync failed (non-fatal): %s", e)
+        return {"status": "failed", "error": str(e)}
+
+
+def run_referee_sync(callback=None, is_cancelled=None) -> Dict:
+    """Step 2d: Sync referee tendencies (daily)."""
+    from src.config import get_season
+    season = get_season()
+    try:
+        if callback:
+            callback("Syncing referee tendencies...")
+        from src.data.referee_scraper import sync_referee_stats
+        sync_referee_stats(season)
+        return {"status": "synced"}
+    except Exception as e:
+        logger.warning("Referee sync failed (non-fatal): %s", e)
+        return {"status": "failed", "error": str(e)}
+
+
+def run_elo_compute(callback=None, is_cancelled=None) -> Dict:
+    """Step 2e: Compute Elo ratings (must run before precompute)."""
+    from src.config import get_season
+    season = get_season()
+    if callback:
+        callback("Computing Elo ratings...")
+    from src.analytics.elo import compute_all_elo
+    compute_all_elo(season)
+    return {"status": "computed"}
+
+
 def run_precompute(callback=None, is_cancelled=None) -> Dict:
     """Step 3: Build GameInput objects for all historical games (disk+memory cached)."""
     from src.analytics.prediction import precompute_all_games
@@ -210,6 +261,12 @@ StepFunc = Callable[[Optional[Callable], Optional[Callable]], Dict]
 PIPELINE_STEPS: List[Tuple[str, StepFunc]] = [
     ("backup", backup_snapshot),
     ("sync", run_data_sync),
+    # ── V2.1 sync steps ──
+    ("seed_arenas", run_seed_arenas),
+    ("bbref_sync", run_bbref_sync),
+    ("referee_sync", run_referee_sync),
+    ("elo_compute", run_elo_compute),
+    # ──────────────────────
     ("precompute", run_precompute),
     ("optimize_fundamentals", run_optimize_fundamentals),
     ("optimize_sharp", run_optimize_sharp),

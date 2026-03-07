@@ -602,6 +602,73 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
     except Exception:
         pass
 
+    # ── V2.1 features ──
+    from src.analytics.elo import get_team_elo
+    from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots
+
+    _home_travel = compute_travel(home_team_id, game_date, away_team_id, is_home=True)
+    _away_travel = compute_travel(away_team_id, game_date, home_team_id, is_home=False)
+    _home_momentum = compute_momentum(home_team_id, game_date)
+    _away_momentum = compute_momentum(away_team_id, game_date)
+    _home_sched = compute_schedule_spots(home_team_id, game_date, away_team_id)
+    _away_sched = compute_schedule_spots(away_team_id, game_date, home_team_id)
+
+    # On/Off impact
+    _home_onoff = 0.0
+    _away_onoff = 0.0
+    for _side, _tid in [("home", home_team_id), ("away", away_team_id)]:
+        _impact_rows = db.fetch_all(
+            "SELECT pi.net_rating_diff, pi.on_court_minutes "
+            "FROM player_impact pi "
+            "JOIN players p ON pi.player_id = p.player_id "
+            "WHERE pi.season = ? AND p.team_id = ? AND pi.on_court_minutes > 0",
+            (game_season, _tid),
+        )
+        _total_impact = sum(
+            r["net_rating_diff"] * min(r["on_court_minutes"], 30) / 30.0
+            for r in _impact_rows
+            if r.get("net_rating_diff") is not None
+        ) if _impact_rows else 0.0
+        if _side == "home":
+            _home_onoff = _total_impact
+        else:
+            _away_onoff = _total_impact
+
+    # Injury VORP lost
+    _home_injury_vorp = 0.0
+    _away_injury_vorp = 0.0
+    if injured_players:
+        for _pid, _play_prob in injured_players.items():
+            _vorp_row = db.fetch_one(
+                "SELECT pi.vorp, p.team_id FROM player_impact pi "
+                "JOIN players p ON pi.player_id = p.player_id "
+                "WHERE pi.player_id = ? AND pi.season = ?",
+                (_pid, game_season),
+            )
+            if _vorp_row and _vorp_row.get("vorp"):
+                _lost = _vorp_row["vorp"] * (1.0 - _play_prob)
+                if _vorp_row["team_id"] == home_team_id:
+                    _home_injury_vorp += _lost
+                elif _vorp_row["team_id"] == away_team_id:
+                    _away_injury_vorp += _lost
+
+    # Referee crew stats
+    _ref_fouls_pg = 38.0
+    _ref_home_bias = 50.0
+    try:
+        _ref_rows = db.fetch_all(
+            "SELECT r.total_fouls_pg, r.home_foul_pct "
+            "FROM game_referees gr "
+            "JOIN referees r ON gr.referee_name = r.referee_name "
+            "WHERE gr.game_date = ? AND gr.home_team_id = ? AND gr.away_team_id = ?",
+            (game_date, home_team_id, away_team_id),
+        )
+        if _ref_rows:
+            _ref_fouls_pg = sum(r.get("total_fouls_pg", 38.0) or 38.0 for r in _ref_rows) / len(_ref_rows)
+            _ref_home_bias = sum(r.get("home_foul_pct", 50.0) or 50.0 for r in _ref_rows) / len(_ref_rows)
+    except Exception:
+        pass
+
     # Build GameInput
     game = GameInput(
         game_date=game_date,
@@ -644,6 +711,43 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
         vegas_spread=vegas_spread,
         vegas_home_ml=vegas_home_ml,
         vegas_away_ml=vegas_away_ml,
+        # ── V2.1 fields ──
+        # Elo
+        home_elo=get_team_elo(home_team_id, game_date, game_season),
+        away_elo=get_team_elo(away_team_id, game_date, game_season),
+        # Travel
+        home_travel_miles=_home_travel["travel_miles"],
+        away_travel_miles=_away_travel["travel_miles"],
+        home_tz_crossings=_home_travel["tz_crossings"],
+        away_tz_crossings=_away_travel["tz_crossings"],
+        home_cum_travel_7d=_home_travel["cum_travel_7d"],
+        away_cum_travel_7d=_away_travel["cum_travel_7d"],
+        # Momentum
+        home_streak=_home_momentum["streak"],
+        away_streak=_away_momentum["streak"],
+        home_mov_trend=_home_momentum["mov_trend"],
+        away_mov_trend=_away_momentum["mov_trend"],
+        # Injury VORP
+        home_injury_vorp_lost=_home_injury_vorp,
+        away_injury_vorp_lost=_away_injury_vorp,
+        # Referee
+        ref_crew_fouls_pg=_ref_fouls_pg,
+        ref_crew_home_bias=_ref_home_bias,
+        # Schedule
+        home_lookahead=_home_sched["lookahead"],
+        away_lookahead=_away_sched["lookahead"],
+        home_letdown=_home_sched["letdown"],
+        away_letdown=_away_sched["letdown"],
+        home_road_trip_game=_home_sched["road_trip_game"],
+        away_road_trip_game=_away_sched["road_trip_game"],
+        # SRS
+        home_srs=hm.get("srs", 0.0) or 0.0,
+        away_srs=am.get("srs", 0.0) or 0.0,
+        # On/Off
+        home_onoff_impact=_home_onoff,
+        away_onoff_impact=_away_onoff,
+        # Pace diff
+        pace_diff=abs(home_pace - away_pace),
     )
 
     # Determine include_sharp from settings if not explicitly passed
@@ -1204,6 +1308,52 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
                         "contested": (am.get("contested_shots", 0) or 0) / a_gp,
                         "loose_balls": (am.get("loose_balls_recovered", 0) or 0) / a_gp}
 
+            # ── V2.1 features ──
+            from src.analytics.elo import get_team_elo
+            from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots
+
+            _home_travel = compute_travel(htid, gdate, atid, is_home=True)
+            _away_travel = compute_travel(atid, gdate, htid, is_home=False)
+            _home_momentum = compute_momentum(htid, gdate)
+            _away_momentum = compute_momentum(atid, gdate)
+            _home_sched = compute_schedule_spots(htid, gdate, atid)
+            _away_sched = compute_schedule_spots(atid, gdate, htid)
+
+            # On/Off impact
+            _home_onoff = 0.0
+            _away_onoff = 0.0
+            for _side, _tid, _target in [("home", htid, "_home_onoff"), ("away", atid, "_away_onoff")]:
+                from src.database import db as _db
+                _impact_rows = _db.fetch_all(
+                    "SELECT pi.net_rating_diff, pi.on_court_minutes "
+                    "FROM player_impact pi "
+                    "JOIN players p ON pi.player_id = p.player_id "
+                    "WHERE pi.season = ? AND p.team_id = ? AND pi.on_court_minutes > 0",
+                    (game_season, _tid),
+                )
+                _total_impact = sum(
+                    r["net_rating_diff"] * min(r["on_court_minutes"], 30) / 30.0
+                    for r in _impact_rows
+                    if r.get("net_rating_diff") is not None
+                ) if _impact_rows else 0.0
+                if _side == "home":
+                    _home_onoff = _total_impact
+                else:
+                    _away_onoff = _total_impact
+
+            # Spread sharp edge
+            _spread_sharp = 0.0
+            from src.database import db as _db
+            _odds_row = _db.fetch_all(
+                "SELECT spread_home_money, spread_home_public FROM game_odds "
+                "WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?",
+                (gdate, htid, atid),
+            )
+            if _odds_row:
+                _sm = _odds_row[0].get("spread_home_money", 0) or 0
+                _sp = _odds_row[0].get("spread_home_public", 0) or 0
+                _spread_sharp = float(_sm - _sp)
+
             return GameInput(
                 game_date=gdate,
                 season=game_season,
@@ -1247,6 +1397,39 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
                 vegas_spread=g.get("vegas_spread") or 0.0,
                 vegas_home_ml=g.get("vegas_home_ml") or 0,
                 vegas_away_ml=g.get("vegas_away_ml") or 0,
+                # ── V2.1 fields ──
+                # Elo
+                home_elo=get_team_elo(htid, gdate, game_season),
+                away_elo=get_team_elo(atid, gdate, game_season),
+                # Travel
+                home_travel_miles=_home_travel["travel_miles"],
+                away_travel_miles=_away_travel["travel_miles"],
+                home_tz_crossings=_home_travel["tz_crossings"],
+                away_tz_crossings=_away_travel["tz_crossings"],
+                home_cum_travel_7d=_home_travel["cum_travel_7d"],
+                away_cum_travel_7d=_away_travel["cum_travel_7d"],
+                # Momentum
+                home_streak=_home_momentum["streak"],
+                away_streak=_away_momentum["streak"],
+                home_mov_trend=_home_momentum["mov_trend"],
+                away_mov_trend=_away_momentum["mov_trend"],
+                # Schedule
+                home_lookahead=_home_sched["lookahead"],
+                away_lookahead=_away_sched["lookahead"],
+                home_letdown=_home_sched["letdown"],
+                away_letdown=_away_sched["letdown"],
+                home_road_trip_game=_home_sched["road_trip_game"],
+                away_road_trip_game=_away_sched["road_trip_game"],
+                # SRS
+                home_srs=hm.get("srs", 0.0) or 0.0,
+                away_srs=am.get("srs", 0.0) or 0.0,
+                # On/Off
+                home_onoff_impact=_home_onoff,
+                away_onoff_impact=_away_onoff,
+                # Pace diff
+                pace_diff=abs(home_pace - away_pace),
+                # Spread sharp edge
+                spread_sharp_edge=_spread_sharp,
             )
 
     # Compute new games in parallel
