@@ -657,15 +657,15 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
     _ref_home_bias = 50.0
     try:
         _ref_rows = db.fetch_all(
-            "SELECT r.total_fouls_pg, r.home_foul_pct "
+            "SELECT r.fouls_per_game, r.home_win_pct "
             "FROM game_referees gr "
             "JOIN referees r ON gr.referee_name = r.referee_name "
             "WHERE gr.game_date = ? AND gr.home_team_id = ? AND gr.away_team_id = ?",
             (game_date, home_team_id, away_team_id),
         )
         if _ref_rows:
-            _ref_fouls_pg = sum(r.get("total_fouls_pg", 38.0) or 38.0 for r in _ref_rows) / len(_ref_rows)
-            _ref_home_bias = sum(r.get("home_foul_pct", 50.0) or 50.0 for r in _ref_rows) / len(_ref_rows)
+            _ref_fouls_pg = sum(r.get("fouls_per_game", 38.0) or 38.0 for r in _ref_rows) / len(_ref_rows)
+            _ref_home_bias = sum(r.get("home_win_pct", 50.0) or 50.0 for r in _ref_rows) / len(_ref_rows)
     except Exception:
         pass
 
