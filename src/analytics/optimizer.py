@@ -1,14 +1,19 @@
-"""Optuna TPE optimizer for NBA Fundamentals V2.
+"""Optuna CMA-ES optimizer for NBA Fundamentals V2.
 
 Loss function: -(winner_pct + upset_accuracy * upset_rate / 100 * upset_bonus_mult)
-Replaces v1's dog-hunting loss with straight-up winner accuracy + upset bonus.
+
+Studies are persisted to data/optuna_studies.db so trials accumulate across
+runs and survive crashes.  CMA-ES sampler learns parameter correlations for
+efficient 49-dimensional exploration.
 
 VectorizedGames converts List[GameInput] into flat NumPy arrays for fast evaluation.
 optimize_weights() runs walk-forward Optuna optimization.
 compare_modes() A/B tests fundamentals-only vs fundamentals+sharp.
 """
 
+import hashlib
 import logging
+import os
 import random
 from typing import List, Dict, Any, Optional, Callable
 
@@ -494,21 +499,40 @@ def optimize_weights(
             trial.set_user_attr("result", result)
             return result["loss"]
 
-        sampler = optuna.samplers.TPESampler()
-        study = optuna.create_study(direction="minimize", sampler=sampler)
+        # ── Persistent study with CMA-ES ──
+        # Version hash: changes when parameter space or training window changes.
+        # A new hash creates a new study (old trials become irrelevant).
+        range_keys = sorted(ranges.keys())
+        version_blob = ",".join(range_keys) + "|" + train_games[-1].game_date
+        version_hash = hashlib.md5(version_blob.encode()).hexdigest()[:8]
+        study_name = f"{'sharp' if include_sharp else 'fundamentals'}_{version_hash}"
 
-        # Seed the current baseline as the first trial
-        _base_dict = baseline_w.to_dict()
-        seed_params = {}
-        for key, (lo, hi) in ranges.items():
-            val = _base_dict.get(key, (lo + hi) / 2)
-            seed_params[key] = max(lo, min(hi, val))
-        study.enqueue_trial(seed_params)
+        db_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "data", "optuna_studies.db")
+        storage_url = f"sqlite:///{db_path}"
+
+        sampler = optuna.samplers.CmaEsSampler()
+        study = optuna.create_study(
+            study_name=study_name,
+            storage=storage_url,
+            direction="minimize",
+            sampler=sampler,
+            load_if_exists=True,
+        )
+
+        prior_trials = len([t for t in study.trials
+                            if t.state == optuna.trial.TrialState.COMPLETE])
+        if callback:
+            callback(f"Study '{study_name}': {prior_trials} prior trials, "
+                     f"adding {n_trials} more")
 
         # Log interval from config
         from src.config import get as get_setting
         log_interval = int(get_setting("optimizer_log_interval", 300))
         _best_logged_loss = best_train_loss
+        _stagnation_counter = [0]
+        _stagnation_threshold = int(get_setting("optuna_stagnation_threshold", 500))
 
         def trial_callback(study, trial):
             nonlocal _best_logged_loss
@@ -521,6 +545,16 @@ def optimize_weights(
             is_new_best = trial.value < _best_logged_loss
             if is_new_best:
                 _best_logged_loss = trial.value
+                _stagnation_counter[0] = 0
+            else:
+                _stagnation_counter[0] += 1
+
+            # Stagnation warning
+            if (_stagnation_counter[0] > 0
+                    and _stagnation_counter[0] % _stagnation_threshold == 0
+                    and callback):
+                callback(f"  Stagnation: {_stagnation_counter[0]} trials "
+                         f"without improvement (best loss={_best_logged_loss:.3f})")
 
             if trial.number % log_interval == 0 or is_new_best:
                 if callback:
@@ -534,9 +568,14 @@ def optimize_weights(
 
         study.optimize(objective, n_trials=n_trials, callbacks=[trial_callback])
 
+        total_trials = len([t for t in study.trials
+                            if t.state == optuna.trial.TrialState.COMPLETE])
+        if callback:
+            callback(f"Study now has {total_trials} total trials")
+
         # Parameter importance (best-effort)
         try:
-            if len(study.trials) > 0 and callback:
+            if total_trials > 0 and callback:
                 from optuna.importance import (
                     get_param_importances,
                     MeanDecreaseImpurityImportanceEvaluator,
@@ -562,7 +601,8 @@ def optimize_weights(
         if candidates and candidates[0].value < best_train_loss:
             best_val_loss = float("inf")
             if callback:
-                callback(f"Validating top {len(candidates)} training trials...")
+                callback(f"Validating top {len(candidates)} training trials "
+                         f"(from {total_trials} total)...")
 
             for rank, trial in enumerate(candidates):
                 cand_w = WeightConfig.from_dict(
