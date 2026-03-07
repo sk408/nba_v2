@@ -5,7 +5,8 @@
       "WebFetch(domain:www.covers.com)",
       "WebFetch(domain:the-odds-api.com)",
       "WebFetch(domain:www.scoresandodds.com)",
-      "WebFetch(domain:www.basketball-reference.com)"
+      "WebFetch(domain:www.basketball-reference.com)",
+      "WebFetch(domain:www.nbastuffer.com)"
     ]
   }
 }
