@@ -9,7 +9,7 @@ import re
 import time
 from typing import Dict, List, Optional
 
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup, Comment
 
 from src.database import db
@@ -17,7 +17,7 @@ from src.database import db
 _log = logging.getLogger(__name__)
 _BASE = "https://www.basketball-reference.com"
 _DELAY = 3.0  # seconds between requests
-_HEADERS = {"User-Agent": "NBAFundamentalsV2/1.0 (research)"}
+_scraper = cloudscraper.create_scraper()
 
 # Map BBRef team abbreviations to nba_api team IDs
 _BBREF_ABBR_TO_ID = {
@@ -33,9 +33,9 @@ _BBREF_ABBR_TO_ID = {
 
 
 def _fetch_page(url: str) -> Optional[BeautifulSoup]:
-    """Fetch a BBRef page with rate limiting."""
+    """Fetch a BBRef page with rate limiting. Uses cloudscraper for Cloudflare."""
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=30)
+        resp = _scraper.get(url, timeout=30)
         resp.raise_for_status()
         time.sleep(_DELAY)
         return BeautifulSoup(resp.text, "html.parser")

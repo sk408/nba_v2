@@ -79,7 +79,10 @@ def fetch_referee_stats(season: str = "2025-26") -> List[Dict]:
         columns were found on the page (``games_officiated``, ``home_win_pct``,
         ``total_points_pg``, ``fouls_per_game``, ``foul_differential``).
     """
-    url = f"https://www.nbastuffer.com/{season}-nba-referee-stats/"
+    # NBAstuffer uses "2025-2026" format, not "2025-26"
+    parts = season.split("-")
+    long_season = f"{parts[0]}-20{parts[1]}" if len(parts) == 2 and len(parts[1]) == 2 else season
+    url = f"https://www.nbastuffer.com/{long_season}-nba-referee-stats/"
     logger.info("Fetching referee stats from %s", url)
 
     resp = requests.get(url, headers={"User-Agent": _UA}, timeout=_TIMEOUT)
@@ -148,6 +151,9 @@ def fetch_referee_stats(season: str = "2025-26") -> List[Dict]:
                     # games_officiated should be int
                     if col_name == "games_officiated":
                         entry[col_name] = int(val)
+                    elif col_name == "home_win_pct" and val < 1.0:
+                        # NBAstuffer uses decimal (.608), convert to pct (60.8)
+                        entry[col_name] = val * 100.0
                     else:
                         entry[col_name] = val
             else:
