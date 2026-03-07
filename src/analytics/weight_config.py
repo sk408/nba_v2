@@ -75,6 +75,22 @@ class WeightConfig:
     # Sharp Money (ML only) — toggle layer, not in fundamentals-only mode
     sharp_ml_weight: float = 1.5
 
+    # ── V2.1 weights ──
+    elo_diff_mult: float = 1.0
+    travel_dist_mult: float = 0.5
+    timezone_crossing_mult: float = 1.0
+    momentum_streak_mult: float = 0.3
+    mov_trend_mult: float = 0.2
+    injury_vorp_mult: float = 1.0
+    ref_fouls_mult: float = 0.3
+    ref_home_bias_mult: float = 0.3
+    sharp_spread_weight: float = 1.0
+    lookahead_penalty: float = 0.5
+    letdown_penalty: float = 0.5
+    srs_diff_mult: float = 0.5
+    onoff_impact_mult: float = 0.5
+    pace_mismatch_mult: float = 0.2
+
     # Total floor/ceiling
     total_min: float = 140.0
     total_max: float = 280.0
@@ -142,11 +158,26 @@ OPTIMIZER_RANGES = {
     "fatigue_same_day": (0.0, 6.0),
     "fatigue_rest_bonus": (0.0, 3.0),
     "fatigue_total_mult": (0.0, 2.0),
+    "elo_diff_mult": (0.0, 5.0),
+    "travel_dist_mult": (0.0, 3.0),
+    "timezone_crossing_mult": (0.0, 5.0),
+    "momentum_streak_mult": (0.0, 3.0),
+    "mov_trend_mult": (0.0, 2.0),
+    "injury_vorp_mult": (0.0, 5.0),
+    "ref_fouls_mult": (0.0, 3.0),
+    "ref_home_bias_mult": (0.0, 3.0),
+    "sharp_spread_weight": (0.0, 15.0),
+    "lookahead_penalty": (0.0, 3.0),
+    "letdown_penalty": (0.0, 3.0),
+    "srs_diff_mult": (0.0, 3.0),
+    "onoff_impact_mult": (0.0, 3.0),
+    "pace_mismatch_mult": (0.0, 2.0),
 }
 
 # Sharp money range — separate toggle layer
 SHARP_RANGES = {
     "sharp_ml_weight": (0.0, 15.0),
+    "sharp_spread_weight": (0.0, 15.0),
 }
 
 # Combined ranges for sharp-enabled optimization
@@ -181,10 +212,24 @@ CD_RANGES = {
     "fatigue_same_day": (0.0, 8.0),
     "fatigue_rest_bonus": (0.0, 5.0),
     "fatigue_total_mult": (0.0, 3.0),
+    "elo_diff_mult": (0.0, 7.0),
+    "travel_dist_mult": (0.0, 5.0),
+    "timezone_crossing_mult": (0.0, 7.0),
+    "momentum_streak_mult": (0.0, 5.0),
+    "mov_trend_mult": (0.0, 3.0),
+    "injury_vorp_mult": (0.0, 7.0),
+    "ref_fouls_mult": (0.0, 5.0),
+    "ref_home_bias_mult": (0.0, 5.0),
+    "sharp_spread_weight": (0.0, 20.0),
+    "lookahead_penalty": (0.0, 5.0),
+    "letdown_penalty": (0.0, 5.0),
+    "srs_diff_mult": (0.0, 5.0),
+    "onoff_impact_mult": (0.0, 5.0),
+    "pace_mismatch_mult": (0.0, 3.0),
 }
 
 # CD ranges with sharp money parameter included
-CD_SHARP_RANGES = {**CD_RANGES, "sharp_ml_weight": (0.0, 20.0)}
+CD_SHARP_RANGES = {**CD_RANGES, "sharp_ml_weight": (0.0, 20.0), "sharp_spread_weight": (0.0, 20.0)}
 
 
 # ──────────────────────────────────────────────────────────────

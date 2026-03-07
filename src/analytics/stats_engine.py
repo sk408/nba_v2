@@ -640,3 +640,206 @@ def get_team_matchup_stats(team_id: int, opponent_team_id: int,
 
     result.sort(key=lambda x: x["contribution"], reverse=True)
     return result
+
+
+# ──────────────────── V2.1 Feature Computation ────────────────────
+
+def compute_travel(team_id: int, game_date: str, opponent_team_id: int,
+                   is_home: int) -> Dict[str, Any]:
+    """Compute travel-related features for a team in a specific game.
+
+    Returns {"travel_miles": float, "tz_crossings": int, "cum_travel_7d": float}
+    """
+    from src.data.arenas import travel_distance, timezone_crossings
+    from src.config import get_season
+
+    result = {"travel_miles": 0.0, "tz_crossings": 0, "cum_travel_7d": 0.0}
+
+    try:
+        if is_home:
+            # Home team: check if last game was away (they traveled back)
+            rows = db.fetch_all(
+                """SELECT DISTINCT ps.game_date, ps.is_home, ps.opponent_team_id
+                   FROM player_stats ps
+                   JOIN players p ON ps.player_id = p.player_id
+                   WHERE p.team_id = ? AND ps.game_date < ?
+                   ORDER BY ps.game_date DESC LIMIT 1""",
+                (team_id, game_date)
+            )
+            if rows and rows[0]["is_home"] == 0:
+                # Last game was away — traveled back from that opponent's arena
+                last_away_opp = rows[0]["opponent_team_id"]
+                try:
+                    result["travel_miles"] = travel_distance(last_away_opp, team_id)
+                except KeyError:
+                    pass
+            result["tz_crossings"] = 0
+        else:
+            # Away team: distance from home arena to opponent's arena
+            try:
+                result["travel_miles"] = travel_distance(team_id, opponent_team_id)
+            except KeyError:
+                pass
+            try:
+                result["tz_crossings"] = timezone_crossings(team_id, opponent_team_id)
+            except KeyError:
+                pass
+
+        # cum_travel_7d: approximate with current game distance
+        result["cum_travel_7d"] = result["travel_miles"]
+
+    except Exception as e:
+        logger.debug("compute_travel error for team %d on %s: %s", team_id, game_date, e)
+
+    return result
+
+
+def compute_momentum(team_id: int, game_date: str) -> Dict[str, Any]:
+    """Compute momentum features: win/loss streak and margin-of-victory trend.
+
+    Returns {"streak": int, "mov_trend": float}
+    - streak: positive = consecutive wins, negative = consecutive losses (capped +-10)
+    - mov_trend: average margin of victory over last 5 games (positive = winning by more)
+    """
+    from src.config import get_season
+
+    result = {"streak": 0, "mov_trend": 0.0}
+
+    try:
+        season = get_season()
+
+        # Get recent game results for this team
+        rows = db.fetch_all(
+            """SELECT DISTINCT game_date, win_loss FROM player_stats
+               WHERE season = ? AND game_date < ?
+               AND player_id IN (SELECT player_id FROM players WHERE team_id = ?)
+               ORDER BY game_date DESC LIMIT 10""",
+            (season, game_date, team_id)
+        )
+
+        if not rows:
+            return result
+
+        # Compute streak
+        streak = 0
+        first_wl = rows[0]["win_loss"]
+        for r in rows:
+            if r["win_loss"] == first_wl:
+                streak += 1
+            else:
+                break
+
+        if first_wl == "L":
+            streak = -streak
+
+        # Clamp to +-10
+        streak = max(-10, min(10, streak))
+        result["streak"] = streak
+
+        # mov_trend: average margin of victory from last 5 games
+        # Use game_quarter_scores if available
+        recent_dates = [r["game_date"] for r in rows[:5]]
+        if recent_dates:
+            total_margin = 0.0
+            counted = 0
+            for gd in recent_dates:
+                score_row = db.fetch_one(
+                    """SELECT home_score, away_score, home_team_id
+                       FROM game_quarter_scores
+                       WHERE game_date = ?
+                       AND (home_team_id = ? OR away_team_id = ?)
+                       LIMIT 1""",
+                    (gd, team_id, team_id)
+                )
+                if score_row and score_row["home_score"] is not None:
+                    if score_row["home_team_id"] == team_id:
+                        margin = score_row["home_score"] - score_row["away_score"]
+                    else:
+                        margin = score_row["away_score"] - score_row["home_score"]
+                    total_margin += margin
+                    counted += 1
+
+            if counted > 0:
+                result["mov_trend"] = total_margin / counted
+
+    except Exception as e:
+        logger.debug("compute_momentum error for team %d on %s: %s", team_id, game_date, e)
+
+    return result
+
+
+def compute_schedule_spots(team_id: int, game_date: str,
+                           opponent_team_id: int) -> Dict[str, Any]:
+    """Compute schedule-spot features: lookahead, letdown, road trip game number.
+
+    Returns {"lookahead": bool, "letdown": bool, "road_trip_game": int}
+    - lookahead: next opponent is top-8 by w_pct AND current opponent is NOT top-8
+    - letdown: previous opponent was top-8 AND we won that game AND current opponent is NOT top-8
+    - road_trip_game: count of consecutive away games up to and including current (0 if home)
+    """
+    from src.config import get_season
+
+    result = {"lookahead": False, "letdown": False, "road_trip_game": 0}
+
+    try:
+        season = get_season()
+
+        # Get top-8 teams by w_pct
+        top8_rows = db.fetch_all(
+            "SELECT team_id FROM team_metrics WHERE season = ? ORDER BY w_pct DESC LIMIT 8",
+            (season,)
+        )
+        top8 = {r["team_id"] for r in top8_rows} if top8_rows else set()
+
+        current_is_top8 = opponent_team_id in top8
+
+        # Lookahead: check next game's opponent
+        next_rows = db.fetch_all(
+            """SELECT DISTINCT ps.opponent_team_id FROM player_stats ps
+               WHERE ps.game_date > ?
+               AND ps.player_id IN (SELECT player_id FROM players WHERE team_id = ?)
+               ORDER BY ps.game_date ASC LIMIT 1""",
+            (game_date, team_id)
+        )
+        if next_rows and not current_is_top8:
+            next_opp = next_rows[0]["opponent_team_id"]
+            if next_opp in top8:
+                result["lookahead"] = True
+
+        # Letdown: check previous game
+        prev_rows = db.fetch_all(
+            """SELECT DISTINCT ps.game_date, ps.opponent_team_id, ps.win_loss
+               FROM player_stats ps
+               WHERE ps.game_date < ? AND ps.season = ?
+               AND ps.player_id IN (SELECT player_id FROM players WHERE team_id = ?)
+               ORDER BY ps.game_date DESC LIMIT 1""",
+            (game_date, season, team_id)
+        )
+        if prev_rows and not current_is_top8:
+            prev_opp = prev_rows[0]["opponent_team_id"]
+            prev_wl = prev_rows[0]["win_loss"]
+            if prev_opp in top8 and prev_wl == "W":
+                result["letdown"] = True
+
+        # Road trip game: count consecutive away games including current
+        recent_rows = db.fetch_all(
+            """SELECT DISTINCT ps.game_date, ps.is_home FROM player_stats ps
+               WHERE ps.game_date <= ? AND ps.season = ?
+               AND ps.player_id IN (SELECT player_id FROM players WHERE team_id = ?)
+               ORDER BY ps.game_date DESC LIMIT 15""",
+            (game_date, season, team_id)
+        )
+        if recent_rows:
+            road_count = 0
+            for r in recent_rows:
+                if r["is_home"] == 0:
+                    road_count += 1
+                else:
+                    break
+            result["road_trip_game"] = road_count
+
+    except Exception as e:
+        logger.debug("compute_schedule_spots error for team %d on %s: %s",
+                     team_id, game_date, e)
+
+    return result

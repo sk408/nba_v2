@@ -89,6 +89,47 @@ class GameInput:
     vegas_spread: float = 0.0
     vegas_home_ml: int = 0
     vegas_away_ml: int = 0
+    # ── V2.1 features ──
+    # Elo ratings
+    home_elo: float = 1500.0
+    away_elo: float = 1500.0
+    # Travel & Geography
+    home_travel_miles: float = 0.0
+    away_travel_miles: float = 0.0
+    home_tz_crossings: int = 0
+    away_tz_crossings: int = 0
+    home_cum_travel_7d: float = 0.0
+    away_cum_travel_7d: float = 0.0
+    # Momentum
+    home_streak: int = 0
+    away_streak: int = 0
+    home_mov_trend: float = 0.0
+    away_mov_trend: float = 0.0
+    # Injury VORP
+    home_injury_vorp_lost: float = 0.0
+    away_injury_vorp_lost: float = 0.0
+    # Referee
+    ref_crew_fouls_pg: float = 38.0
+    ref_crew_home_bias: float = 50.0
+    # Spread sharp money
+    spread_sharp_edge: float = 0.0
+    # Schedule spots
+    home_lookahead: bool = False
+    away_lookahead: bool = False
+    home_letdown: bool = False
+    away_letdown: bool = False
+    home_road_trip_game: int = 0
+    away_road_trip_game: int = 0
+    # SRS / Pythagorean
+    home_srs: float = 0.0
+    away_srs: float = 0.0
+    home_pythag_wpct: float = 0.5
+    away_pythag_wpct: float = 0.5
+    # Player On/Off impact
+    home_onoff_impact: float = 0.0
+    away_onoff_impact: float = 0.0
+    # Pace differential
+    pace_diff: float = 0.0
 
 
 @dataclass
