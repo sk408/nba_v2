@@ -294,6 +294,26 @@ class thread_local_db:
         return False
 
 
+def ensure_thread_local_db():
+    """Set up a thread-local read-only DB for the current thread (idempotent).
+
+    Unlike the ``thread_local_db`` context manager this does NOT auto-close.
+    Intended for ``ThreadPoolExecutor(initializer=...)``.
+    """
+    if getattr(_thread_local_db, "conn", None) is not None:
+        return
+    mem = _get_mem_conn()
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.row_factory = sqlite3.Row
+    _rwlock.read_acquire()
+    try:
+        mem.backup(conn)
+    finally:
+        _rwlock.read_release()
+    _thread_local_db.conn = conn
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------

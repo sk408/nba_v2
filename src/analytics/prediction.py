@@ -1228,7 +1228,7 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
 
     Pass ``force=True`` to discard the cache and recompute everything.
     """
-    from src.database.db import thread_local_db
+    from src.database.db import ensure_thread_local_db
 
     # Load cache
     cache = {} if force else _load_pc_cache()
@@ -1279,243 +1279,242 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
     completed_count = [0]
 
     def _precompute_one(g):
-        """Process one game with a thread-local DB."""
-        with thread_local_db():
-            htid = g["home_team_id"]
-            atid = g["away_team_id"]
-            gdate = g["game_date"]
+        """Process one game (thread-local DB set up by pool initializer)."""
+        htid = g["home_team_id"]
+        atid = g["away_team_id"]
+        gdate = g["game_date"]
 
-            # Historical roster from context
-            home_roster = _get_historical_roster(htid, gdate, ctx)
-            away_roster = _get_historical_roster(atid, gdate, ctx)
+        # Historical roster from context
+        home_roster = _get_historical_roster(htid, gdate, ctx)
+        away_roster = _get_historical_roster(atid, gdate, ctx)
 
-            # Projections
-            home_proj = aggregate_projection(htid, atid, is_home=1, as_of_date=gdate,
-                                             roster=home_roster)
-            away_proj = aggregate_projection(atid, htid, is_home=0, as_of_date=gdate,
-                                             roster=away_roster)
+        # Projections
+        home_proj = aggregate_projection(htid, atid, is_home=1, as_of_date=gdate,
+                                         roster=home_roster)
+        away_proj = aggregate_projection(atid, htid, is_home=0, as_of_date=gdate,
+                                         roster=away_roster)
 
-            # Season for this game
-            game_season = _game_date_to_season(gdate)
+        # Season for this game
+        game_season = _game_date_to_season(gdate)
 
-            # Home court
-            home_court = get_home_court_advantage(htid, season=game_season)
+        # Home court
+        home_court = get_home_court_advantage(htid, season=game_season)
 
-            # Metrics
-            hm = _get_team_metrics(htid, season=game_season)
-            am = _get_team_metrics(atid, season=game_season)
+        # Metrics
+        hm = _get_team_metrics(htid, season=game_season)
+        am = _get_team_metrics(atid, season=game_season)
 
-            league_avg = _LEAGUE_AVG_PPG
-            away_opp_pts = am.get("opp_pts", league_avg) or league_avg
-            home_opp_pts = hm.get("opp_pts", league_avg) or league_avg
-            away_def_raw = away_opp_pts / league_avg if league_avg > 0 else 1.0
-            home_def_raw = home_opp_pts / league_avg if league_avg > 0 else 1.0
+        league_avg = _LEAGUE_AVG_PPG
+        away_opp_pts = am.get("opp_pts", league_avg) or league_avg
+        home_opp_pts = hm.get("opp_pts", league_avg) or league_avg
+        away_def_raw = away_opp_pts / league_avg if league_avg > 0 else 1.0
+        home_def_raw = home_opp_pts / league_avg if league_avg > 0 else 1.0
 
-            # Fatigue
-            from src.analytics.weight_config import get_weight_config as _gwc
-            _w = _gwc()
-            hfat = compute_fatigue(htid, gdate, w=_w)
-            afat = compute_fatigue(atid, gdate, w=_w)
+        # Fatigue
+        from src.analytics.weight_config import get_weight_config as _gwc
+        _w = _gwc()
+        hfat = compute_fatigue(htid, gdate, w=_w)
+        afat = compute_fatigue(atid, gdate, w=_w)
 
-            # Ratings
-            home_off = hm.get("off_rating", _RATING_FALLBACK) or _RATING_FALLBACK
-            away_off = am.get("off_rating", _RATING_FALLBACK) or _RATING_FALLBACK
-            home_def = hm.get("def_rating", _RATING_FALLBACK) or _RATING_FALLBACK
-            away_def = am.get("def_rating", _RATING_FALLBACK) or _RATING_FALLBACK
+        # Ratings
+        home_off = hm.get("off_rating", _RATING_FALLBACK) or _RATING_FALLBACK
+        away_off = am.get("off_rating", _RATING_FALLBACK) or _RATING_FALLBACK
+        home_def = hm.get("def_rating", _RATING_FALLBACK) or _RATING_FALLBACK
+        away_def = am.get("def_rating", _RATING_FALLBACK) or _RATING_FALLBACK
 
-            # Pace
-            home_pace = hm.get("pace", _PACE_FALLBACK) or _PACE_FALLBACK
-            away_pace = am.get("pace", _PACE_FALLBACK) or _PACE_FALLBACK
+        # Pace
+        home_pace = hm.get("pace", _PACE_FALLBACK) or _PACE_FALLBACK
+        away_pace = am.get("pace", _PACE_FALLBACK) or _PACE_FALLBACK
 
-            # Four Factors
-            h_efg = hm.get("ff_efg_pct", 0) or 0
-            a_efg = am.get("ff_efg_pct", 0) or 0
-            h_tov = hm.get("ff_tm_tov_pct", 0) or 0
-            a_tov = am.get("ff_tm_tov_pct", 0) or 0
-            h_oreb = hm.get("ff_oreb_pct", 0) or 0
-            a_oreb = am.get("ff_oreb_pct", 0) or 0
-            h_fta = hm.get("ff_fta_rate", 0) or 0
-            a_fta = am.get("ff_fta_rate", 0) or 0
+        # Four Factors
+        h_efg = hm.get("ff_efg_pct", 0) or 0
+        a_efg = am.get("ff_efg_pct", 0) or 0
+        h_tov = hm.get("ff_tm_tov_pct", 0) or 0
+        a_tov = am.get("ff_tm_tov_pct", 0) or 0
+        h_oreb = hm.get("ff_oreb_pct", 0) or 0
+        a_oreb = am.get("ff_oreb_pct", 0) or 0
+        h_fta = hm.get("ff_fta_rate", 0) or 0
+        a_fta = am.get("ff_fta_rate", 0) or 0
 
-            h_opp_efg = hm.get("opp_efg_pct", 0) or 0
-            a_opp_efg = am.get("opp_efg_pct", 0) or 0
-            h_opp_tov = hm.get("opp_tm_tov_pct", 0) or 0
-            a_opp_tov = am.get("opp_tm_tov_pct", 0) or 0
-            h_opp_oreb = hm.get("opp_oreb_pct", 0) or 0
-            a_opp_oreb = am.get("opp_oreb_pct", 0) or 0
-            h_opp_fta = hm.get("opp_fta_rate", 0) or 0
-            a_opp_fta = am.get("opp_fta_rate", 0) or 0
+        h_opp_efg = hm.get("opp_efg_pct", 0) or 0
+        a_opp_efg = am.get("opp_efg_pct", 0) or 0
+        h_opp_tov = hm.get("opp_tm_tov_pct", 0) or 0
+        a_opp_tov = am.get("opp_tm_tov_pct", 0) or 0
+        h_opp_oreb = hm.get("opp_oreb_pct", 0) or 0
+        a_opp_oreb = am.get("opp_oreb_pct", 0) or 0
+        h_opp_fta = hm.get("opp_fta_rate", 0) or 0
+        a_opp_fta = am.get("opp_fta_rate", 0) or 0
 
-            # Clutch
-            h_clutch = {"net_rating": hm.get("clutch_net_rating", 0) or 0,
-                        "efg_pct": hm.get("clutch_efg_pct", 0) or 0}
-            a_clutch = {"net_rating": am.get("clutch_net_rating", 0) or 0,
-                        "efg_pct": am.get("clutch_efg_pct", 0) or 0}
+        # Clutch
+        h_clutch = {"net_rating": hm.get("clutch_net_rating", 0) or 0,
+                    "efg_pct": hm.get("clutch_efg_pct", 0) or 0}
+        a_clutch = {"net_rating": am.get("clutch_net_rating", 0) or 0,
+                    "efg_pct": am.get("clutch_efg_pct", 0) or 0}
 
-            # Hustle (normalize to per-game)
-            h_gp = max(1, hm.get("gp", 1) or 1)
-            a_gp = max(1, am.get("gp", 1) or 1)
-            h_hustle = {"deflections": (hm.get("deflections", 0) or 0) / h_gp,
-                        "contested": (hm.get("contested_shots", 0) or 0) / h_gp,
-                        "loose_balls": (hm.get("loose_balls_recovered", 0) or 0) / h_gp}
-            a_hustle = {"deflections": (am.get("deflections", 0) or 0) / a_gp,
-                        "contested": (am.get("contested_shots", 0) or 0) / a_gp,
-                        "loose_balls": (am.get("loose_balls_recovered", 0) or 0) / a_gp}
+        # Hustle (normalize to per-game)
+        h_gp = max(1, hm.get("gp", 1) or 1)
+        a_gp = max(1, am.get("gp", 1) or 1)
+        h_hustle = {"deflections": (hm.get("deflections", 0) or 0) / h_gp,
+                    "contested": (hm.get("contested_shots", 0) or 0) / h_gp,
+                    "loose_balls": (hm.get("loose_balls_recovered", 0) or 0) / h_gp}
+        a_hustle = {"deflections": (am.get("deflections", 0) or 0) / a_gp,
+                    "contested": (am.get("contested_shots", 0) or 0) / a_gp,
+                    "loose_balls": (am.get("loose_balls_recovered", 0) or 0) / a_gp}
 
-            # Process stats (already per-game from Misc API)
-            h_process = {
-                "paint": hm.get("points_in_paint", 0) or 0,
-                "fb": hm.get("fast_break_pts", 0) or 0,
-                "sec": hm.get("second_chance_pts", 0) or 0,
-                "off_tov": hm.get("pts_off_tov", 0) or 0,
-                "opp_paint": hm.get("opp_pts_paint", 0) or 0,
-                "opp_fb": hm.get("opp_pts_fb", 0) or 0,
-                "opp_sec": hm.get("opp_pts_2nd_chance", 0) or 0,
-                "opp_off_tov": hm.get("opp_pts_off_tov", 0) or 0,
-            }
-            a_process = {
-                "paint": am.get("points_in_paint", 0) or 0,
-                "fb": am.get("fast_break_pts", 0) or 0,
-                "sec": am.get("second_chance_pts", 0) or 0,
-                "off_tov": am.get("pts_off_tov", 0) or 0,
-                "opp_paint": am.get("opp_pts_paint", 0) or 0,
-                "opp_fb": am.get("opp_pts_fb", 0) or 0,
-                "opp_sec": am.get("opp_pts_2nd_chance", 0) or 0,
-                "opp_off_tov": am.get("opp_pts_off_tov", 0) or 0,
-            }
+        # Process stats (already per-game from Misc API)
+        h_process = {
+            "paint": hm.get("points_in_paint", 0) or 0,
+            "fb": hm.get("fast_break_pts", 0) or 0,
+            "sec": hm.get("second_chance_pts", 0) or 0,
+            "off_tov": hm.get("pts_off_tov", 0) or 0,
+            "opp_paint": hm.get("opp_pts_paint", 0) or 0,
+            "opp_fb": hm.get("opp_pts_fb", 0) or 0,
+            "opp_sec": hm.get("opp_pts_2nd_chance", 0) or 0,
+            "opp_off_tov": hm.get("opp_pts_off_tov", 0) or 0,
+        }
+        a_process = {
+            "paint": am.get("points_in_paint", 0) or 0,
+            "fb": am.get("fast_break_pts", 0) or 0,
+            "sec": am.get("second_chance_pts", 0) or 0,
+            "off_tov": am.get("pts_off_tov", 0) or 0,
+            "opp_paint": am.get("opp_pts_paint", 0) or 0,
+            "opp_fb": am.get("opp_pts_fb", 0) or 0,
+            "opp_sec": am.get("opp_pts_2nd_chance", 0) or 0,
+            "opp_off_tov": am.get("opp_pts_off_tov", 0) or 0,
+        }
 
-            # ── V2.1 features ──
-            from src.analytics.elo import get_team_elo
-            from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots, compute_fg3_luck
+        # ── V2.1 features ──
+        from src.analytics.elo import get_team_elo
+        from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots, compute_fg3_luck
 
-            _home_travel = compute_travel(htid, gdate, atid, is_home=True)
-            _away_travel = compute_travel(atid, gdate, htid, is_home=False)
-            _home_momentum = compute_momentum(htid, gdate, season=game_season)
-            _away_momentum = compute_momentum(atid, gdate, season=game_season)
-            _home_sched = compute_schedule_spots(htid, gdate, atid, season=game_season)
-            _away_sched = compute_schedule_spots(atid, gdate, htid, season=game_season)
+        _home_travel = compute_travel(htid, gdate, atid, is_home=True)
+        _away_travel = compute_travel(atid, gdate, htid, is_home=False)
+        _home_momentum = compute_momentum(htid, gdate, season=game_season)
+        _away_momentum = compute_momentum(atid, gdate, season=game_season)
+        _home_sched = compute_schedule_spots(htid, gdate, atid, season=game_season)
+        _away_sched = compute_schedule_spots(atid, gdate, htid, season=game_season)
 
-            # On/Off impact
-            _home_onoff = 0.0
-            _away_onoff = 0.0
-            for _side, _tid, _target in [("home", htid, "_home_onoff"), ("away", atid, "_away_onoff")]:
-                from src.database import db as _db
-                _impact_rows = _db.fetch_all(
-                    "SELECT pi.net_rating_diff, pi.on_court_minutes "
-                    "FROM player_impact pi "
-                    "WHERE pi.season = ? AND pi.team_id = ? AND pi.on_court_minutes > 0",
-                    (game_season, _tid),
-                )
-                _total_impact = sum(
-                    r["net_rating_diff"] * min(r["on_court_minutes"], 30) / 30.0
-                    for r in _impact_rows
-                    if r.get("net_rating_diff") is not None
-                ) if _impact_rows else 0.0
-                if _side == "home":
-                    _home_onoff = _total_impact
-                else:
-                    _away_onoff = _total_impact
-
-            # Spread sharp edge
-            _spread_sharp = 0.0
+        # On/Off impact
+        _home_onoff = 0.0
+        _away_onoff = 0.0
+        for _side, _tid, _target in [("home", htid, "_home_onoff"), ("away", atid, "_away_onoff")]:
             from src.database import db as _db
-            _odds_row = _db.fetch_all(
-                "SELECT spread_home_money, spread_home_public FROM game_odds "
-                "WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?",
-                (gdate, htid, atid),
+            _impact_rows = _db.fetch_all(
+                "SELECT pi.net_rating_diff, pi.on_court_minutes "
+                "FROM player_impact pi "
+                "WHERE pi.season = ? AND pi.team_id = ? AND pi.on_court_minutes > 0",
+                (game_season, _tid),
             )
-            if _odds_row:
-                _sm = _odds_row[0].get("spread_home_money", 0) or 0
-                _sp = _odds_row[0].get("spread_home_public", 0) or 0
-                _spread_sharp = float(_sm - _sp)
+            _total_impact = sum(
+                r["net_rating_diff"] * min(r["on_court_minutes"], 30) / 30.0
+                for r in _impact_rows
+                if r.get("net_rating_diff") is not None
+            ) if _impact_rows else 0.0
+            if _side == "home":
+                _home_onoff = _total_impact
+            else:
+                _away_onoff = _total_impact
 
-            return GameInput(
-                game_date=gdate,
-                season=game_season,
-                home_team_id=htid,
-                away_team_id=atid,
-                actual_home_score=g.get("home_score", 0),
-                actual_away_score=g.get("away_score", 0),
-                home_proj={k: v for k, v in home_proj.items() if not k.startswith("_")},
-                away_proj={k: v for k, v in away_proj.items() if not k.startswith("_")},
-                home_def_factor_raw=home_def_raw,
-                away_def_factor_raw=away_def_raw,
-                home_court=home_court,
-                home_rest_days=hfat["rest_days"],
-                away_rest_days=afat["rest_days"],
-                home_b2b=hfat["b2b"],
-                away_b2b=afat["b2b"],
-                home_3in4=hfat["three_in_four"],
-                away_3in4=afat["three_in_four"],
-                home_4in6=hfat["four_in_six"],
-                away_4in6=afat["four_in_six"],
-                home_same_day=hfat["rest_days"] == 0,
-                away_same_day=afat["rest_days"] == 0,
-                home_off=home_off,
-                away_off=away_off,
-                home_def=home_def,
-                away_def=away_def,
-                home_pace=home_pace,
-                away_pace=away_pace,
-                home_ff={"efg": h_efg, "tov": h_tov, "oreb": h_oreb, "fta": h_fta,
-                         "opp_efg": h_opp_efg, "opp_tov": h_opp_tov,
-                         "opp_oreb": h_opp_oreb, "opp_fta": h_opp_fta},
-                away_ff={"efg": a_efg, "tov": a_tov, "oreb": a_oreb, "fta": a_fta,
-                         "opp_efg": a_opp_efg, "opp_tov": a_opp_tov,
-                         "opp_oreb": a_opp_oreb, "opp_fta": a_opp_fta},
-                home_clutch=h_clutch,
-                away_clutch=a_clutch,
-                home_hustle=h_hustle,
-                away_hustle=a_hustle,
-                ml_home_public=g.get("ml_home_public") or 0,
-                ml_home_money=g.get("ml_home_money") or 0,
-                vegas_spread=g.get("vegas_spread") or 0.0,
-                vegas_home_ml=g.get("vegas_home_ml") or 0,
-                vegas_away_ml=g.get("vegas_away_ml") or 0,
-                # ── V2.1 fields ──
-                # Elo
-                home_elo=get_team_elo(htid, gdate, game_season),
-                away_elo=get_team_elo(atid, gdate, game_season),
-                # Travel
-                home_travel_miles=_home_travel["travel_miles"],
-                away_travel_miles=_away_travel["travel_miles"],
-                home_tz_crossings=_home_travel["tz_crossings"],
-                away_tz_crossings=_away_travel["tz_crossings"],
-                home_cum_travel_7d=_home_travel["cum_travel_7d"],
-                away_cum_travel_7d=_away_travel["cum_travel_7d"],
-                # Momentum
-                home_streak=_home_momentum["streak"],
-                away_streak=_away_momentum["streak"],
-                home_mov_trend=_home_momentum["mov_trend"],
-                away_mov_trend=_away_momentum["mov_trend"],
-                # Schedule
-                home_lookahead=_home_sched["lookahead"],
-                away_lookahead=_away_sched["lookahead"],
-                home_letdown=_home_sched["letdown"],
-                away_letdown=_away_sched["letdown"],
-                home_road_trip_game=_home_sched["road_trip_game"],
-                away_road_trip_game=_away_sched["road_trip_game"],
-                # SRS
-                home_srs=hm.get("srs", 0.0) or 0.0,
-                away_srs=am.get("srs", 0.0) or 0.0,
-                # On/Off
-                home_onoff_impact=_home_onoff,
-                away_onoff_impact=_away_onoff,
-                # Pace diff
-                pace_diff=abs(home_pace - away_pace),
-                # Spread sharp edge
-                spread_sharp_edge=_spread_sharp,
-                # 3PT luck
-                home_fg3_luck=compute_fg3_luck(htid, gdate, season=game_season),
-                away_fg3_luck=compute_fg3_luck(atid, gdate, season=game_season),
-                # Process stats
-                home_process=h_process,
-                away_process=a_process,
-            )
+        # Spread sharp edge
+        _spread_sharp = 0.0
+        from src.database import db as _db
+        _odds_row = _db.fetch_all(
+            "SELECT spread_home_money, spread_home_public FROM game_odds "
+            "WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?",
+            (gdate, htid, atid),
+        )
+        if _odds_row:
+            _sm = _odds_row[0].get("spread_home_money", 0) or 0
+            _sp = _odds_row[0].get("spread_home_public", 0) or 0
+            _spread_sharp = float(_sm - _sp)
+
+        return GameInput(
+            game_date=gdate,
+            season=game_season,
+            home_team_id=htid,
+            away_team_id=atid,
+            actual_home_score=g.get("home_score", 0),
+            actual_away_score=g.get("away_score", 0),
+            home_proj={k: v for k, v in home_proj.items() if not k.startswith("_")},
+            away_proj={k: v for k, v in away_proj.items() if not k.startswith("_")},
+            home_def_factor_raw=home_def_raw,
+            away_def_factor_raw=away_def_raw,
+            home_court=home_court,
+            home_rest_days=hfat["rest_days"],
+            away_rest_days=afat["rest_days"],
+            home_b2b=hfat["b2b"],
+            away_b2b=afat["b2b"],
+            home_3in4=hfat["three_in_four"],
+            away_3in4=afat["three_in_four"],
+            home_4in6=hfat["four_in_six"],
+            away_4in6=afat["four_in_six"],
+            home_same_day=hfat["rest_days"] == 0,
+            away_same_day=afat["rest_days"] == 0,
+            home_off=home_off,
+            away_off=away_off,
+            home_def=home_def,
+            away_def=away_def,
+            home_pace=home_pace,
+            away_pace=away_pace,
+            home_ff={"efg": h_efg, "tov": h_tov, "oreb": h_oreb, "fta": h_fta,
+                     "opp_efg": h_opp_efg, "opp_tov": h_opp_tov,
+                     "opp_oreb": h_opp_oreb, "opp_fta": h_opp_fta},
+            away_ff={"efg": a_efg, "tov": a_tov, "oreb": a_oreb, "fta": a_fta,
+                     "opp_efg": a_opp_efg, "opp_tov": a_opp_tov,
+                     "opp_oreb": a_opp_oreb, "opp_fta": a_opp_fta},
+            home_clutch=h_clutch,
+            away_clutch=a_clutch,
+            home_hustle=h_hustle,
+            away_hustle=a_hustle,
+            ml_home_public=g.get("ml_home_public") or 0,
+            ml_home_money=g.get("ml_home_money") or 0,
+            vegas_spread=g.get("vegas_spread") or 0.0,
+            vegas_home_ml=g.get("vegas_home_ml") or 0,
+            vegas_away_ml=g.get("vegas_away_ml") or 0,
+            # ── V2.1 fields ──
+            # Elo
+            home_elo=get_team_elo(htid, gdate, game_season),
+            away_elo=get_team_elo(atid, gdate, game_season),
+            # Travel
+            home_travel_miles=_home_travel["travel_miles"],
+            away_travel_miles=_away_travel["travel_miles"],
+            home_tz_crossings=_home_travel["tz_crossings"],
+            away_tz_crossings=_away_travel["tz_crossings"],
+            home_cum_travel_7d=_home_travel["cum_travel_7d"],
+            away_cum_travel_7d=_away_travel["cum_travel_7d"],
+            # Momentum
+            home_streak=_home_momentum["streak"],
+            away_streak=_away_momentum["streak"],
+            home_mov_trend=_home_momentum["mov_trend"],
+            away_mov_trend=_away_momentum["mov_trend"],
+            # Schedule
+            home_lookahead=_home_sched["lookahead"],
+            away_lookahead=_away_sched["lookahead"],
+            home_letdown=_home_sched["letdown"],
+            away_letdown=_away_sched["letdown"],
+            home_road_trip_game=_home_sched["road_trip_game"],
+            away_road_trip_game=_away_sched["road_trip_game"],
+            # SRS
+            home_srs=hm.get("srs", 0.0) or 0.0,
+            away_srs=am.get("srs", 0.0) or 0.0,
+            # On/Off
+            home_onoff_impact=_home_onoff,
+            away_onoff_impact=_away_onoff,
+            # Pace diff
+            pace_diff=abs(home_pace - away_pace),
+            # Spread sharp edge
+            spread_sharp_edge=_spread_sharp,
+            # 3PT luck
+            home_fg3_luck=compute_fg3_luck(htid, gdate, season=game_season),
+            away_fg3_luck=compute_fg3_luck(atid, gdate, season=game_season),
+            # Process stats
+            home_process=h_process,
+            away_process=a_process,
+        )
 
     # Compute new games in parallel
     new_results = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=max_workers, initializer=ensure_thread_local_db) as executor:
         futures = {executor.submit(_precompute_one, g): g for g in new_games}
         for future in as_completed(futures):
             game = futures[future]
