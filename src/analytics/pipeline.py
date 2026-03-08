@@ -108,10 +108,11 @@ def _is_fresh(step_name: str, max_age_hours: float = 24) -> bool:
 
 def _mark_step_done(step_name: str):
     """Mark a step as completed in sync_meta."""
-    from src.analytics.memory_store import InMemoryDataStore
-
-    store = InMemoryDataStore()
-    count, last_date = store.get_game_count_and_last_date()
+    row = db.fetch_one(
+        "SELECT COUNT(*) as cnt, MAX(game_date) as last_date FROM player_stats"
+    )
+    count = row["cnt"] if row else 0
+    last_date = row["last_date"] or "" if row else ""
 
     db.execute(
         """
