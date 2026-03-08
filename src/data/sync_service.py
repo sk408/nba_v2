@@ -78,11 +78,7 @@ def clear_sync_cache():
         invalidate_stats_caches()
     except (ImportError, ModuleNotFoundError):
         pass
-    try:
-        from src.analytics.prediction_quality import invalidate_odds_cache
-        invalidate_odds_cache()
-    except (ImportError, ModuleNotFoundError):
-        pass
+    # TODO: re-implement odds cache invalidation when prediction_quality module is restored
     logger.info("Cleared sync freshness caches (precompute cache preserved)")
 
 
@@ -146,17 +142,16 @@ def nuke_synced_data(callback: Optional[Callable] = None):
         emit(f"  Deleted: {csv}")
 
     # 3. Invalidate all in-memory caches
+    # TODO: re-implement odds cache invalidation when prediction_quality module is restored
     try:
         from src.analytics.prediction import invalidate_residual_cache, invalidate_tuning_cache, invalidate_elo_cache
         from src.analytics.stats_engine import invalidate_stats_caches
-        from src.analytics.prediction_quality import invalidate_odds_cache
         from src.analytics.weight_config import invalidate_weight_cache
         from src.analytics.backtester import invalidate_actual_results_cache
         invalidate_residual_cache()
         invalidate_tuning_cache()
         invalidate_elo_cache()
         invalidate_stats_caches()
-        invalidate_odds_cache()
         invalidate_weight_cache()
         invalidate_actual_results_cache()
     except Exception as e:

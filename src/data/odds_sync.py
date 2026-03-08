@@ -132,13 +132,7 @@ def sync_odds_for_date(game_date: str, callback: Optional[Callable] = None) -> i
         except Exception as e:
             logger.error(f"Failed to parse odds for game {game.get('id')}: {e}")
             
-    # Invalidate odds cache if we saved new data
-    if saved_count > 0:
-        try:
-            from src.analytics.prediction_quality import invalidate_odds_cache
-            invalidate_odds_cache()
-        except ImportError:
-            pass
+    # TODO: re-implement odds cache invalidation when prediction_quality module is restored
 
     if callback:
         if saved_count > 0:
