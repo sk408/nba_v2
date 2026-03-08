@@ -1282,6 +1282,49 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
             callback("Loading memory store for fast lookups...")
         _store.load()
 
+    # ── Pre-build invariant lookup caches (read once, used per-game) ──
+    import bisect
+
+    # Elo: team_id -> sorted [(game_date, elo), ...]
+    _elo_rows = db.fetch_all(
+        "SELECT team_id, game_date, elo FROM elo_ratings ORDER BY team_id, game_date"
+    )
+    _elo_by_team: dict = {}
+    for _r in (_elo_rows or []):
+        _elo_by_team.setdefault(_r["team_id"], []).append((_r["game_date"], _r["elo"]))
+
+    def _cached_elo(team_id: int, game_date: str) -> float:
+        entries = _elo_by_team.get(team_id)
+        if not entries:
+            return 1500.0
+        idx = bisect.bisect_left(entries, (game_date,)) - 1
+        return entries[idx][1] if idx >= 0 else 1500.0
+
+    # On/Off impact: (team_id, season) -> weighted_sum
+    _impact_rows = db.fetch_all(
+        "SELECT team_id, season, net_rating_diff, on_court_minutes "
+        "FROM player_impact WHERE on_court_minutes > 0"
+    )
+    _onoff_cache: dict = {}
+    for _r in (_impact_rows or []):
+        _key = (_r["team_id"], _r["season"])
+        nrd = _r["net_rating_diff"]
+        if nrd is not None:
+            _onoff_cache[_key] = _onoff_cache.get(_key, 0.0) + nrd * min(_r["on_court_minutes"], 30) / 30.0
+
+    # Odds: (game_date, home_team_id, away_team_id) -> row dict
+    _odds_rows = db.fetch_all(
+        "SELECT game_date, home_team_id, away_team_id, spread_home_money, spread_home_public "
+        "FROM game_odds"
+    )
+    _odds_cache: dict = {}
+    for _r in (_odds_rows or []):
+        _odds_cache[(_r["game_date"], _r["home_team_id"], _r["away_team_id"])] = _r
+
+    if callback:
+        callback(f"Cached {len(_elo_by_team)} team Elo histories, "
+                 f"{len(_onoff_cache)} on/off entries, {len(_odds_cache)} odds rows")
+
     cfg = get_config()
     max_workers = cfg.get("worker_threads", 4)
     _pc_lock = threading.Lock()
@@ -1393,7 +1436,6 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
         }
 
         # ── V2.1 features ──
-        from src.analytics.elo import get_team_elo
         from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots, compute_fg3_luck
 
         _home_travel = compute_travel(htid, gdate, atid, is_home=True)
@@ -1403,38 +1445,16 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
         _home_sched = compute_schedule_spots(htid, gdate, atid, season=game_season)
         _away_sched = compute_schedule_spots(atid, gdate, htid, season=game_season)
 
-        # On/Off impact
-        _home_onoff = 0.0
-        _away_onoff = 0.0
-        for _side, _tid, _target in [("home", htid, "_home_onoff"), ("away", atid, "_away_onoff")]:
-            from src.database import db as _db
-            _impact_rows = _db.fetch_all(
-                "SELECT pi.net_rating_diff, pi.on_court_minutes "
-                "FROM player_impact pi "
-                "WHERE pi.season = ? AND pi.team_id = ? AND pi.on_court_minutes > 0",
-                (game_season, _tid),
-            )
-            _total_impact = sum(
-                r["net_rating_diff"] * min(r["on_court_minutes"], 30) / 30.0
-                for r in _impact_rows
-                if r.get("net_rating_diff") is not None
-            ) if _impact_rows else 0.0
-            if _side == "home":
-                _home_onoff = _total_impact
-            else:
-                _away_onoff = _total_impact
+        # On/Off impact (from pre-built cache)
+        _home_onoff = _onoff_cache.get((htid, game_season), 0.0)
+        _away_onoff = _onoff_cache.get((atid, game_season), 0.0)
 
-        # Spread sharp edge
+        # Spread sharp edge (from pre-built cache)
         _spread_sharp = 0.0
-        from src.database import db as _db
-        _odds_row = _db.fetch_all(
-            "SELECT spread_home_money, spread_home_public FROM game_odds "
-            "WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?",
-            (gdate, htid, atid),
-        )
-        if _odds_row:
-            _sm = _odds_row[0].get("spread_home_money", 0) or 0
-            _sp = _odds_row[0].get("spread_home_public", 0) or 0
+        _odds_entry = _odds_cache.get((gdate, htid, atid))
+        if _odds_entry:
+            _sm = _odds_entry.get("spread_home_money", 0) or 0
+            _sp = _odds_entry.get("spread_home_public", 0) or 0
             _spread_sharp = float(_sm - _sp)
 
         return GameInput(
@@ -1481,9 +1501,9 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
             vegas_home_ml=g.get("vegas_home_ml") or 0,
             vegas_away_ml=g.get("vegas_away_ml") or 0,
             # ── V2.1 fields ──
-            # Elo
-            home_elo=get_team_elo(htid, gdate, game_season),
-            away_elo=get_team_elo(atid, gdate, game_season),
+            # Elo (from pre-built cache)
+            home_elo=_cached_elo(htid, gdate),
+            away_elo=_cached_elo(atid, gdate),
             # Travel
             home_travel_miles=_home_travel["travel_miles"],
             away_travel_miles=_away_travel["travel_miles"],
