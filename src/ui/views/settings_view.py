@@ -237,7 +237,8 @@ class SettingsView(QWidget):
         desc = QLabel(
             "Controls when optimized weights are allowed to save. "
             "The gate uses validation loss plus upset-lift quality. "
-            "ROI can be optionally enabled as an additional hard gate."
+            "ROI can be optionally enabled as an additional hard gate, "
+            "and long-dog one-possession quality can be used as a near-loss tiebreak."
         )
         desc.setProperty("class", "text-secondary")
         desc.setWordWrap(True)
@@ -253,10 +254,24 @@ class SettingsView(QWidget):
         self._sg_use_roi_gate_chk.toggled.connect(self._on_roi_gate_toggled)
         gl.addWidget(self._sg_use_roi_gate_chk, 1, 0, 1, 4)
 
+        self._sg_use_long_dog_tiebreak_chk = QCheckBox(
+            "Enable long-dog one-possession tiebreak"
+        )
+        self._sg_use_long_dog_tiebreak_chk.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 600;"
+        )
+        self._sg_use_long_dog_tiebreak_chk.setToolTip(
+            "Allows near-equal-loss saves only when long-dog one-possession quality improves."
+        )
+        self._sg_use_long_dog_tiebreak_chk.toggled.connect(
+            self._on_long_dog_tiebreak_toggled
+        )
+        gl.addWidget(self._sg_use_long_dog_tiebreak_chk, 2, 0, 1, 4)
+
         auto_note = QLabel("Count fields: set to 0 for auto thresholds by validation sample size.")
         auto_note.setProperty("class", "muted")
         auto_note.setWordWrap(True)
-        gl.addWidget(auto_note, 2, 0, 1, 4)
+        gl.addWidget(auto_note, 3, 0, 1, 4)
 
         label_style = f"color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 600;"
 
@@ -363,6 +378,31 @@ class SettingsView(QWidget):
             0.0, 20.0, 0.05, 2, "optimizer_save_roi_lb95_slack", " pp",
             "How far the ROI lower bound may trail baseline.",
         )
+        self._sg_long_dog_min_payout_spin = _double_spin(
+            1.01, 10.0, 0.05, 2, "optimizer_save_long_dog_min_payout", "x",
+            "Minimum underdog payout multiplier for long-dog one-possession checks.",
+        )
+        self._sg_long_dog_onepos_margin_spin = _double_spin(
+            0.0, 20.0, 0.5, 1, "optimizer_save_long_dog_onepos_margin", " pts",
+            "Maximum loss margin (points) for long-dog one-possession success.",
+        )
+        self._sg_long_dog_min_count_spin = _int_spin(
+            0, 5000, "optimizer_save_long_dog_min_count",
+            "Minimum long-dog sample size for tiebreak. 0 = auto by validation sample.",
+            "Auto",
+        )
+        self._sg_long_dog_prior_weight_spin = _double_spin(
+            0.0, 500.0, 1.0, 1, "optimizer_save_long_dog_prior_weight",
+            tooltip="Shrinkage strength for long-dog one-possession rate.",
+        )
+        self._sg_min_long_dog_onepos_lift_spin = _double_spin(
+            0.0, 20.0, 0.05, 2, "optimizer_save_min_long_dog_onepos_lift", " pp",
+            "Required shrunk long-dog one-possession lift for tiebreak saves.",
+        )
+        self._sg_long_dog_tiebreak_loss_window_spin = _double_spin(
+            0.0, 1.0, 0.001, 3, "optimizer_save_long_dog_tiebreak_loss_window",
+            tooltip="Maximum allowed loss regression when using long-dog tiebreak.",
+        )
 
         pairs = [
             ("Loss Margin", self._sg_loss_margin_spin, "Compression Floor", self._sg_compression_floor_spin),
@@ -373,7 +413,7 @@ class SettingsView(QWidget):
             ("Min Shrunk Upset Lift", self._sg_min_shrunk_upset_lift_spin, "Min ROI Lift", self._sg_min_roi_lift_spin),
         ]
 
-        row_idx = 3
+        row_idx = 4
         for left_name, left_widget, right_name, right_widget in pairs:
             left_lbl = QLabel(left_name)
             left_lbl.setStyleSheet(label_style)
@@ -403,6 +443,38 @@ class SettingsView(QWidget):
             3,
             alignment=Qt.AlignmentFlag.AlignLeft,
         )
+        row_idx += 1
+
+        long_dog_pairs = [
+            (
+                "Long-Dog Min Payout",
+                self._sg_long_dog_min_payout_spin,
+                "Long-Dog OnePos Margin",
+                self._sg_long_dog_onepos_margin_spin,
+            ),
+            (
+                "Long-Dog Min Count",
+                self._sg_long_dog_min_count_spin,
+                "Long-Dog Prior Weight",
+                self._sg_long_dog_prior_weight_spin,
+            ),
+            (
+                "Min Long-Dog 1P Lift",
+                self._sg_min_long_dog_onepos_lift_spin,
+                "Tiebreak Loss Window",
+                self._sg_long_dog_tiebreak_loss_window_spin,
+            ),
+        ]
+        for left_name, left_widget, right_name, right_widget in long_dog_pairs:
+            left_lbl = QLabel(left_name)
+            left_lbl.setStyleSheet(label_style)
+            right_lbl = QLabel(right_name)
+            right_lbl.setStyleSheet(label_style)
+            gl.addWidget(left_lbl, row_idx, 0)
+            gl.addWidget(left_widget, row_idx, 1, alignment=Qt.AlignmentFlag.AlignLeft)
+            gl.addWidget(right_lbl, row_idx, 2)
+            gl.addWidget(right_widget, row_idx, 3, alignment=Qt.AlignmentFlag.AlignLeft)
+            row_idx += 1
 
         gl.setColumnStretch(0, 1)
         gl.setColumnStretch(1, 0)
@@ -727,6 +799,19 @@ class SettingsView(QWidget):
         for widget in roi_widgets:
             widget.setEnabled(bool(enabled))
 
+    def _set_long_dog_controls_enabled(self, enabled: bool):
+        """Enable/disable long-dog tiebreak controls."""
+        long_dog_widgets = (
+            self._sg_long_dog_min_payout_spin,
+            self._sg_long_dog_onepos_margin_spin,
+            self._sg_long_dog_min_count_spin,
+            self._sg_long_dog_prior_weight_spin,
+            self._sg_min_long_dog_onepos_lift_spin,
+            self._sg_long_dog_tiebreak_loss_window_spin,
+        )
+        for widget in long_dog_widgets:
+            widget.setEnabled(bool(enabled))
+
     def _load_current_settings(self):
         """Read config values and populate all controls."""
         try:
@@ -775,6 +860,15 @@ class SettingsView(QWidget):
             (self._sg_min_shrunk_upset_lift_spin, "optimizer_save_min_shrunk_upset_lift", 0.40),
             (self._sg_min_roi_lift_spin, "optimizer_save_min_roi_lift", 0.15),
             (self._sg_roi_lb95_slack_spin, "optimizer_save_roi_lb95_slack", 0.35),
+            (self._sg_long_dog_min_payout_spin, "optimizer_save_long_dog_min_payout", 3.0),
+            (self._sg_long_dog_onepos_margin_spin, "optimizer_save_long_dog_onepos_margin", 3.0),
+            (self._sg_long_dog_prior_weight_spin, "optimizer_save_long_dog_prior_weight", 25.0),
+            (self._sg_min_long_dog_onepos_lift_spin, "optimizer_save_min_long_dog_onepos_lift", 0.75),
+            (
+                self._sg_long_dog_tiebreak_loss_window_spin,
+                "optimizer_save_long_dog_tiebreak_loss_window",
+                0.01,
+            ),
         ]
         for widget, key, fallback in gate_float_bindings:
             try:
@@ -788,6 +882,7 @@ class SettingsView(QWidget):
         gate_int_bindings = [
             (self._sg_min_upset_count_spin, "optimizer_save_min_upset_count", 0),
             (self._sg_min_ml_bets_spin, "optimizer_save_min_ml_bets", 0),
+            (self._sg_long_dog_min_count_spin, "optimizer_save_long_dog_min_count", 40),
         ]
         for widget, key, fallback in gate_int_bindings:
             try:
@@ -803,6 +898,14 @@ class SettingsView(QWidget):
         self._sg_use_roi_gate_chk.setChecked(roi_gate_enabled)
         self._sg_use_roi_gate_chk.blockSignals(False)
         self._set_roi_controls_enabled(roi_gate_enabled)
+        long_dog_gate_enabled = self._to_bool(
+            get("optimizer_save_use_long_dog_tiebreak_gate", True),
+            True,
+        )
+        self._sg_use_long_dog_tiebreak_chk.blockSignals(True)
+        self._sg_use_long_dog_tiebreak_chk.setChecked(long_dog_gate_enabled)
+        self._sg_use_long_dog_tiebreak_chk.blockSignals(False)
+        self._set_long_dog_controls_enabled(long_dog_gate_enabled)
 
         # Sync freshness
         freshness = get("sync_freshness_hours", 4)
@@ -887,6 +990,11 @@ class SettingsView(QWidget):
         """Toggle ROI hard-gate mode and ROI control availability."""
         self._on_gate_bool_changed("optimizer_save_use_roi_gate", checked)
         self._set_roi_controls_enabled(checked)
+
+    def _on_long_dog_tiebreak_toggled(self, checked: bool):
+        """Toggle long-dog tiebreak mode and control availability."""
+        self._on_gate_bool_changed("optimizer_save_use_long_dog_tiebreak_gate", checked)
+        self._set_long_dog_controls_enabled(checked)
 
     def _on_gate_bool_changed(self, key: str, checked: bool):
         """Persist bool-based optimizer save gate settings."""

@@ -36,6 +36,9 @@ _BACKTEST_CACHE_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "data", "backtest_cache"
 )
 _BACKTEST_CACHE_TTL = 3600  # 1 hour
+ONE_POSSESSION_DOG_MARGIN = 3.0
+LONG_DOG_MIN_PAYOUT = 3.0
+_BACKTEST_METRICS_VERSION = 2
 
 # In-memory cache (module-level singleton)
 _mem_cache: Optional[Dict[str, Any]] = None
@@ -43,9 +46,60 @@ _mem_cache_hash: Optional[str] = None
 _mem_cache_lock = threading.Lock()
 
 
-def _cache_hash(n_games: int, w: WeightConfig) -> str:
+def _get_competitive_dog_margin() -> float:
+    """Read competitive-dog margin setting with fallback."""
+    from src.config import get as get_setting
+    try:
+        return max(0.0, float(get_setting("optimizer_competitive_dog_margin", 7.5)))
+    except (TypeError, ValueError):
+        return 7.5
+
+
+def _get_long_dog_min_payout() -> float:
+    """Read minimum long-dog payout multiplier with fallback."""
+    from src.config import get as get_setting
+    try:
+        return max(1.0, float(get_setting("optimizer_save_long_dog_min_payout", 3.0)))
+    except (TypeError, ValueError):
+        return 3.0
+
+
+def _get_long_dog_onepos_margin() -> float:
+    """Read long-dog one-possession margin with fallback."""
+    from src.config import get as get_setting
+    try:
+        return max(
+            0.0,
+            float(
+                get_setting(
+                    "optimizer_save_long_dog_onepos_margin",
+                    ONE_POSSESSION_DOG_MARGIN,
+                )
+            ),
+        )
+    except (TypeError, ValueError):
+        return ONE_POSSESSION_DOG_MARGIN
+
+
+def _cache_hash(
+    n_games: int,
+    w: WeightConfig,
+    competitive_dog_margin: float,
+    long_dog_min_payout: float,
+    long_dog_onepos_margin: float,
+) -> str:
     """Deterministic hash of game count + weight config for cache invalidation."""
-    payload = json.dumps({"n": n_games, "w": w.to_dict()}, sort_keys=True)
+    payload = json.dumps(
+        {
+            "n": n_games,
+            "w": w.to_dict(),
+            "competitive_dog_margin": competitive_dog_margin,
+            "long_dog_min_payout": long_dog_min_payout,
+            "long_dog_onepos_margin": long_dog_onepos_margin,
+            "metrics_v": _BACKTEST_METRICS_VERSION,
+        },
+        sort_keys=True,
+    )
     return hashlib.md5(payload.encode()).hexdigest()
 
 
@@ -111,6 +165,9 @@ def _build_per_game_result(
     game: GameInput,
     pred: Prediction,
     abbr: Dict[int, str],
+    competitive_dog_margin: float,
+    long_dog_min_payout: float,
+    long_dog_onepos_margin: float,
 ) -> Dict[str, Any]:
     """Build a single per-game result dict from a GameInput + Prediction."""
     home_abbr = abbr.get(game.home_team_id, str(game.home_team_id))
@@ -135,6 +192,9 @@ def _build_per_game_result(
     model_picks_home = pred.game_score > 0
     is_upset_pick = model_picks_home != vegas_fav_home
     upset_correct = is_upset_pick and model_correct
+    dog_actual_margin = -actual_spread if vegas_fav_home else actual_spread
+    competitive_dog = is_upset_pick and (dog_actual_margin >= -competitive_dog_margin)
+    one_possession_dog = is_upset_pick and (dog_actual_margin >= -ONE_POSSESSION_DOG_MARGIN)
 
     # ML payout for model's pick
     if model_picks_home:
@@ -142,6 +202,8 @@ def _build_per_game_result(
     else:
         ml_line = game.vegas_away_ml
     ml_payout = _ml_payout_multiplier(ml_line)
+    long_dog_pick = is_upset_pick and (ml_payout >= long_dog_min_payout)
+    long_dog_onepos = long_dog_pick and (dog_actual_margin >= -long_dog_onepos_margin)
 
     # Profit: +payout-1 if correct, -1 if wrong
     if ml_payout > 0:
@@ -168,6 +230,10 @@ def _build_per_game_result(
         "vegas_spread": game.vegas_spread,
         "is_upset_pick": is_upset_pick,
         "upset_correct": upset_correct,
+        "competitive_dog": competitive_dog,
+        "one_possession_dog": one_possession_dog,
+        "long_dog_pick": long_dog_pick,
+        "long_dog_onepos": long_dog_onepos,
         "ml_payout": ml_payout,
         "ml_profit": ml_profit,
     }
@@ -188,6 +254,13 @@ def _aggregate_from_per_game(per_game: List[Dict]) -> Dict[str, Any]:
             "upset_accuracy": 0.0,
             "upset_count": 0,
             "upset_correct": 0,
+            "competitive_dog_rate": 0.0,
+            "competitive_dog_count": 0,
+            "one_possession_dog_rate": 0.0,
+            "one_possession_dog_count": 0,
+            "long_dog_onepos_rate": 0.0,
+            "long_dog_onepos_count": 0,
+            "long_dog_count": 0,
             "ml_roi": 0.0,
             "ml_win_rate": 0.0,
             "spread_mae": 0.0,
@@ -216,6 +289,13 @@ def _aggregate_from_per_game(per_game: List[Dict]) -> Dict[str, Any]:
     upset_correct_count = sum(1 for g in per_game if g["upset_correct"])
     upset_rate = upset_count / max(1, total) * 100.0
     upset_accuracy = upset_correct_count / max(1, upset_count) * 100.0
+    competitive_dog_count = sum(1 for g in per_game if g.get("competitive_dog"))
+    competitive_dog_rate = competitive_dog_count / max(1, upset_count) * 100.0
+    one_possession_dog_count = sum(1 for g in per_game if g.get("one_possession_dog"))
+    one_possession_dog_rate = one_possession_dog_count / max(1, upset_count) * 100.0
+    long_dog_count = sum(1 for g in per_game if g.get("long_dog_pick"))
+    long_dog_onepos_count = sum(1 for g in per_game if g.get("long_dog_onepos"))
+    long_dog_onepos_rate = long_dog_onepos_count / max(1, long_dog_count) * 100.0
 
     # ML ROI
     bets = [g for g in per_game if g["ml_payout"] > 0]
@@ -243,6 +323,13 @@ def _aggregate_from_per_game(per_game: List[Dict]) -> Dict[str, Any]:
         "upset_accuracy": upset_accuracy,
         "upset_count": upset_count,
         "upset_correct": upset_correct_count,
+        "competitive_dog_rate": competitive_dog_rate,
+        "competitive_dog_count": competitive_dog_count,
+        "one_possession_dog_rate": one_possession_dog_rate,
+        "one_possession_dog_count": one_possession_dog_count,
+        "long_dog_onepos_rate": long_dog_onepos_rate,
+        "long_dog_onepos_count": long_dog_onepos_count,
+        "long_dog_count": long_dog_count,
         "ml_roi": ml_roi,
         "ml_win_rate": ml_win_rate,
         "spread_mae": spread_mae,
@@ -278,7 +365,16 @@ def run_backtest(
         return {"fundamentals": {}, "sharp": {}, "comparison": {}}
 
     w = get_weight_config()
-    h = _cache_hash(len(games), w)
+    competitive_dog_margin = _get_competitive_dog_margin()
+    long_dog_min_payout = _get_long_dog_min_payout()
+    long_dog_onepos_margin = _get_long_dog_onepos_margin()
+    h = _cache_hash(
+        len(games),
+        w,
+        competitive_dog_margin,
+        long_dog_min_payout,
+        long_dog_onepos_margin,
+    )
 
     # Check memory cache
     with _mem_cache_lock:
@@ -321,12 +417,26 @@ def run_backtest(
     for i, game in enumerate(games):
         # Fundamentals-only prediction
         fund_pred = predict(game, w, include_sharp=False)
-        fund_result = _build_per_game_result(game, fund_pred, abbr)
+        fund_result = _build_per_game_result(
+            game,
+            fund_pred,
+            abbr,
+            competitive_dog_margin,
+            long_dog_min_payout,
+            long_dog_onepos_margin,
+        )
         fund_per_game.append(fund_result)
 
         # Sharp prediction
         sharp_pred = predict(game, w, include_sharp=True)
-        sharp_result = _build_per_game_result(game, sharp_pred, abbr)
+        sharp_result = _build_per_game_result(
+            game,
+            sharp_pred,
+            abbr,
+            competitive_dog_margin,
+            long_dog_min_payout,
+            long_dog_onepos_margin,
+        )
 
         # Tag whether sharp flipped this pick
         sharp_result["sharp_flipped"] = fund_pred.pick != sharp_pred.pick
@@ -341,6 +451,14 @@ def run_backtest(
     # ── Step 3: Aggregate from per-game results ──
     fund_metrics = _aggregate_from_per_game(fund_per_game)
     sharp_metrics = _aggregate_from_per_game(sharp_per_game)
+    fund_metrics["competitive_dog_margin"] = competitive_dog_margin
+    sharp_metrics["competitive_dog_margin"] = competitive_dog_margin
+    fund_metrics["one_possession_dog_margin"] = ONE_POSSESSION_DOG_MARGIN
+    sharp_metrics["one_possession_dog_margin"] = ONE_POSSESSION_DOG_MARGIN
+    fund_metrics["long_dog_min_payout"] = long_dog_min_payout
+    sharp_metrics["long_dog_min_payout"] = long_dog_min_payout
+    fund_metrics["long_dog_onepos_margin"] = long_dog_onepos_margin
+    sharp_metrics["long_dog_onepos_margin"] = long_dog_onepos_margin
 
     # ── Step 4: A/B comparison ──
     sharp_flipped_picks = sum(1 for g in sharp_per_game if g.get("sharp_flipped"))
@@ -415,7 +533,8 @@ def export_backtest_csv(results: Dict[str, Any], filepath: str, mode: str = "fun
         "actual_home_score", "actual_away_score", "actual_winner",
         "model_pick", "model_correct",
         "game_score", "confidence", "vegas_spread",
-        "is_upset_pick", "upset_correct",
+        "is_upset_pick", "upset_correct", "competitive_dog", "one_possession_dog",
+        "long_dog_pick", "long_dog_onepos",
         "ml_payout", "ml_profit",
     ]
 
@@ -458,6 +577,16 @@ def backtest_summary(results: Optional[Dict[str, Any]] = None,
         f"({f.get('upset_count', 0)} picks)",
         f"  Upset acc:     {f.get('upset_accuracy', 0):.1f}% "
         f"({f.get('upset_correct', 0)} correct)",
+        f"  Comp dog rate: {f.get('competitive_dog_rate', 0):.1f}% "
+        f"({f.get('competitive_dog_count', 0)} of {f.get('upset_count', 0)}), "
+        f"margin <= {f.get('competitive_dog_margin', 7.5):.1f}",
+        f"  One-pos dogs:  {f.get('one_possession_dog_rate', 0):.1f}% "
+        f"({f.get('one_possession_dog_count', 0)} of {f.get('upset_count', 0)}), "
+        f"margin <= {f.get('one_possession_dog_margin', ONE_POSSESSION_DOG_MARGIN):.1f}",
+        f"  Long-dog 1-pos:{f.get('long_dog_onepos_rate', 0):.1f}% "
+        f"({f.get('long_dog_onepos_count', 0)} of {f.get('long_dog_count', 0)}), "
+        f"payout >= {f.get('long_dog_min_payout', LONG_DOG_MIN_PAYOUT):.2f}x, "
+        f"margin <= {f.get('long_dog_onepos_margin', ONE_POSSESSION_DOG_MARGIN):.1f}",
         f"  ML ROI:        {f.get('ml_roi', 0):+.1f}%",
         f"  Spread MAE:    {f.get('spread_mae', 0):.1f}",
         "",
@@ -467,6 +596,16 @@ def backtest_summary(results: Optional[Dict[str, Any]] = None,
         f"({s.get('upset_count', 0)} picks)",
         f"  Upset acc:     {s.get('upset_accuracy', 0):.1f}% "
         f"({s.get('upset_correct', 0)} correct)",
+        f"  Comp dog rate: {s.get('competitive_dog_rate', 0):.1f}% "
+        f"({s.get('competitive_dog_count', 0)} of {s.get('upset_count', 0)}), "
+        f"margin <= {s.get('competitive_dog_margin', 7.5):.1f}",
+        f"  One-pos dogs:  {s.get('one_possession_dog_rate', 0):.1f}% "
+        f"({s.get('one_possession_dog_count', 0)} of {s.get('upset_count', 0)}), "
+        f"margin <= {s.get('one_possession_dog_margin', ONE_POSSESSION_DOG_MARGIN):.1f}",
+        f"  Long-dog 1-pos:{s.get('long_dog_onepos_rate', 0):.1f}% "
+        f"({s.get('long_dog_onepos_count', 0)} of {s.get('long_dog_count', 0)}), "
+        f"payout >= {s.get('long_dog_min_payout', LONG_DOG_MIN_PAYOUT):.2f}x, "
+        f"margin <= {s.get('long_dog_onepos_margin', ONE_POSSESSION_DOG_MARGIN):.1f}",
         f"  ML ROI:        {s.get('ml_roi', 0):+.1f}%",
         "",
         "--- Comparison ---",

@@ -44,6 +44,12 @@ COMPRESSION_PENALTY_MULT = 80.0
 # Can be overridden by config key: optimizer_min_ml_payout.
 MIN_ML_PAYOUT = 1.50
 
+# One-possession underdog threshold (diagnostic only).
+ONE_POSSESSION_DOG_MARGIN = 3.0
+
+# Long-dog payout filter for one-possession diagnostics/tiebreaks.
+LONG_DOG_MIN_PAYOUT = 3.0
+
 
 def _safe_float_setting(key: str, default: float) -> float:
     """Read a float setting with defensive fallback."""
@@ -152,6 +158,32 @@ def _passes_robust_save_gate(
     )
     hybrid_margin = _safe_float_setting("optimizer_save_hybrid_margin", loss_margin)
     max_val_loss_regress = _safe_float_setting("optimizer_save_max_val_loss_regress", 0.02)
+    use_long_dog_tiebreak_gate = _safe_bool_setting(
+        "optimizer_save_use_long_dog_tiebreak_gate",
+        True,
+    )
+    long_dog_min_count_default = max(20, int(n_validation_games * 0.03))
+    long_dog_min_count_cfg = _safe_int_setting(
+        "optimizer_save_long_dog_min_count",
+        long_dog_min_count_default,
+    )
+    long_dog_min_count = (
+        long_dog_min_count_default
+        if long_dog_min_count_cfg <= 0
+        else long_dog_min_count_cfg
+    )
+    long_dog_prior_weight = _safe_float_setting(
+        "optimizer_save_long_dog_prior_weight",
+        25.0,
+    )
+    min_long_dog_onepos_lift = _safe_float_setting(
+        "optimizer_save_min_long_dog_onepos_lift",
+        0.75,
+    )
+    long_dog_tiebreak_loss_window = _safe_float_setting(
+        "optimizer_save_long_dog_tiebreak_loss_window",
+        0.01,
+    )
 
     baseline_loss = float(baseline.get("loss", float("inf")))
     candidate_loss = float(candidate.get("loss", float("inf")))
@@ -230,6 +262,29 @@ def _passes_robust_save_gate(
         candidate_ml_roi_lb95 >= (baseline_ml_roi - roi_lb95_slack)
     )
 
+    baseline_long_dog_count = int(baseline.get("long_dog_count", 0))
+    candidate_long_dog_count = int(candidate.get("long_dog_count", 0))
+    baseline_long_dog_onepos_count = int(baseline.get("long_dog_onepos_count", 0))
+    candidate_long_dog_onepos_count = int(candidate.get("long_dog_onepos_count", 0))
+    baseline_long_dog_onepos_rate = float(baseline.get("long_dog_onepos_rate", 0.0))
+    candidate_long_dog_onepos_rate = float(candidate.get("long_dog_onepos_rate", 0.0))
+    candidate_long_dog_onepos_shrunk = _shrunk_rate_pct(
+        candidate_long_dog_onepos_count,
+        candidate_long_dog_count,
+        baseline_long_dog_onepos_rate,
+        long_dog_prior_weight,
+    )
+    long_dog_onepos_lift = (
+        candidate_long_dog_onepos_shrunk - baseline_long_dog_onepos_rate
+    )
+    long_dog_sample_ok = (
+        baseline_long_dog_count >= long_dog_min_count
+        and candidate_long_dog_count >= long_dog_min_count
+    )
+    long_dog_edge_ok = (
+        long_dog_sample_ok and long_dog_onepos_lift >= min_long_dog_onepos_lift
+    )
+
     # Upset is the primary signal. ROI can be optionally enabled as a hard gate.
     # When ROI gate is off, keep ROI diagnostics but do not block saves on ROI.
     if use_roi_gate and roi_sample_ok and upset_sample_ok:
@@ -242,7 +297,22 @@ def _passes_robust_save_gate(
         # If upset sample is still too small, don't block solely on edge gate.
         edge_ok = True
 
-    save_ok = loss_improved and winner_guard and favorites_guard and compression_ok and edge_ok
+    core_guards_ok = winner_guard and favorites_guard and compression_ok and edge_ok
+    near_val_loss_ok = candidate_loss <= (baseline_loss + long_dog_tiebreak_loss_window)
+    near_hybrid_loss_ok = (
+        candidate_hybrid_loss <= (baseline_hybrid_loss + long_dog_tiebreak_loss_window)
+        if (use_hybrid_loss_gate and has_all_loss)
+        else True
+    )
+    long_dog_tiebreak_loss_ok = near_val_loss_ok and near_hybrid_loss_ok
+    long_dog_tiebreak_ok = (
+        use_long_dog_tiebreak_gate
+        and not loss_improved
+        and core_guards_ok
+        and long_dog_tiebreak_loss_ok
+        and long_dog_edge_ok
+    )
+    save_ok = (loss_improved and core_guards_ok) or long_dog_tiebreak_ok
 
     reasons: List[str] = []
     if not loss_improved:
@@ -307,6 +377,30 @@ def _passes_robust_save_gate(
                     f"upset rate {upset_rate:.1f}% outside "
                     f"[{min_upset_rate:.1f}, {max_upset_rate:.1f}]"
                 )
+    if not save_ok and not loss_improved and use_long_dog_tiebreak_gate:
+        if not long_dog_tiebreak_loss_ok:
+            if not near_val_loss_ok:
+                reasons.append(
+                    f"long-dog tiebreak loss window failed "
+                    f"({candidate_loss - baseline_loss:+.3f} > +{long_dog_tiebreak_loss_window:.3f})"
+                )
+            if use_hybrid_loss_gate and has_all_loss and not near_hybrid_loss_ok:
+                reasons.append(
+                    "long-dog tiebreak hybrid window failed "
+                    f"({candidate_hybrid_loss - baseline_hybrid_loss:+.3f} > "
+                    f"+{long_dog_tiebreak_loss_window:.3f})"
+                )
+        if not long_dog_sample_ok:
+            reasons.append(
+                f"long-dog sample too small "
+                f"(baseline {baseline_long_dog_count}, candidate {candidate_long_dog_count}, "
+                f"need >= {long_dog_min_count})"
+            )
+        elif not long_dog_edge_ok:
+            reasons.append(
+                "long-dog one-possession lift too small "
+                f"({long_dog_onepos_lift:+.2f}pp < +{min_long_dog_onepos_lift:.2f}pp)"
+            )
 
     details: Dict[str, Any] = {
         "ml_min_payout": float(candidate.get("ml_min_payout", MIN_ML_PAYOUT)),
@@ -339,7 +433,31 @@ def _passes_robust_save_gate(
         "min_ml_bets": min_ml_bets,
         "min_roi_lift": min_roi_lift,
         "roi_lb95_slack": roi_lb95_slack,
+        "use_long_dog_tiebreak_gate": use_long_dog_tiebreak_gate,
+        "long_dog_min_count": long_dog_min_count,
+        "long_dog_prior_weight": long_dog_prior_weight,
+        "min_long_dog_onepos_lift": min_long_dog_onepos_lift,
+        "long_dog_tiebreak_loss_window": long_dog_tiebreak_loss_window,
+        "baseline_long_dog_count": baseline_long_dog_count,
+        "candidate_long_dog_count": candidate_long_dog_count,
+        "baseline_long_dog_onepos_count": baseline_long_dog_onepos_count,
+        "candidate_long_dog_onepos_count": candidate_long_dog_onepos_count,
+        "baseline_long_dog_onepos_rate": baseline_long_dog_onepos_rate,
+        "candidate_long_dog_onepos_rate": candidate_long_dog_onepos_rate,
+        "candidate_long_dog_onepos_shrunk": candidate_long_dog_onepos_shrunk,
+        "long_dog_onepos_lift": long_dog_onepos_lift,
+        "long_dog_sample_ok": long_dog_sample_ok,
+        "long_dog_edge_ok": long_dog_edge_ok,
+        "near_val_loss_ok": near_val_loss_ok,
+        "near_hybrid_loss_ok": near_hybrid_loss_ok,
+        "long_dog_tiebreak_loss_ok": long_dog_tiebreak_loss_ok,
+        "long_dog_tiebreak_ok": long_dog_tiebreak_ok,
+        "long_dog_min_payout": float(candidate.get("long_dog_min_payout", LONG_DOG_MIN_PAYOUT)),
+        "long_dog_onepos_margin": float(
+            candidate.get("long_dog_onepos_margin", ONE_POSSESSION_DOG_MARGIN)
+        ),
         "loss_improved": loss_improved,
+        "core_guards_ok": core_guards_ok,
         "winner_guard": winner_guard,
         "favorites_guard": favorites_guard,
         "compression_ok": compression_ok,
@@ -355,7 +473,10 @@ def _passes_robust_save_gate(
         "shrunk_upset_accuracy": shrunk_upset_accuracy,
         "shrunk_upset_lift": shrunk_upset_lift,
     }
-    reason = "pass" if save_ok else "; ".join(reasons)
+    if save_ok and long_dog_tiebreak_ok and not loss_improved:
+        reason = "pass (long-dog one-possession tiebreak)"
+    else:
+        reason = "pass" if save_ok else "; ".join(reasons)
     return save_ok, reason, details
 
 
@@ -586,6 +707,21 @@ class VectorizedGames:
         self._upset_bonus_mult = float(
             np.clip(_safe_float_setting("upset_bonus_mult", 0.5), 0.0, upset_bonus_max)
         )
+        self._competitive_dog_margin = max(
+            0.0,
+            _safe_float_setting("optimizer_competitive_dog_margin", 7.5),
+        )
+        self._long_dog_min_payout = max(
+            1.0,
+            _safe_float_setting("optimizer_save_long_dog_min_payout", LONG_DOG_MIN_PAYOUT),
+        )
+        self._long_dog_onepos_margin = max(
+            0.0,
+            _safe_float_setting(
+                "optimizer_save_long_dog_onepos_margin",
+                ONE_POSSESSION_DOG_MARGIN,
+            ),
+        )
         self._min_ml_payout = max(
             1.0,
             _safe_float_setting("optimizer_min_ml_payout", MIN_ML_PAYOUT),
@@ -750,6 +886,36 @@ class VectorizedGames:
         upset_rate = float(upset_count) / max(1, self.n) * 100.0
         upset_accuracy = float(np.sum(upset_correct)) / max(1, upset_count) * 100.0
         upset_correct_count = int(np.sum(upset_correct))
+        dog_actual_margin = np.where(vegas_fav_home, -self.actual_spread, self.actual_spread)
+        competitive_dog = model_picks_upset & (
+            dog_actual_margin >= -self._competitive_dog_margin
+        )
+        competitive_dog_count = int(np.sum(competitive_dog))
+        competitive_dog_rate = (
+            float(competitive_dog_count) / max(1, upset_count) * 100.0
+        )
+        one_possession_dog = model_picks_upset & (
+            dog_actual_margin >= -ONE_POSSESSION_DOG_MARGIN
+        )
+        one_possession_dog_count = int(np.sum(one_possession_dog))
+        one_possession_dog_rate = (
+            float(one_possession_dog_count) / max(1, upset_count) * 100.0
+        )
+        dog_ml_line = np.where(vegas_fav_home, self.vegas_away_ml, self.vegas_home_ml)
+        dog_payout_mult = np.where(
+            dog_ml_line < 0,
+            1.0 + 100.0 / np.maximum(np.abs(dog_ml_line), 1),
+            np.where(dog_ml_line > 0, 1.0 + dog_ml_line / 100.0, 0.0),
+        )
+        long_dog_pick = model_picks_upset & (dog_payout_mult >= self._long_dog_min_payout)
+        long_dog_onepos = long_dog_pick & (
+            dog_actual_margin >= -self._long_dog_onepos_margin
+        )
+        long_dog_count = int(np.sum(long_dog_pick))
+        long_dog_onepos_count = int(np.sum(long_dog_onepos))
+        long_dog_onepos_rate = (
+            float(long_dog_onepos_count) / max(1, long_dog_count) * 100.0
+        )
 
         # ML ROI (diagnostic only — not in loss function, skip in fast mode)
         ml_roi = -4.54
@@ -825,6 +991,17 @@ class VectorizedGames:
             "upset_accuracy": upset_accuracy,
             "upset_correct_count": upset_correct_count,
             "upset_count": upset_count,
+            "competitive_dog_rate": competitive_dog_rate,
+            "competitive_dog_count": competitive_dog_count,
+            "competitive_dog_margin": self._competitive_dog_margin,
+            "one_possession_dog_rate": one_possession_dog_rate,
+            "one_possession_dog_count": one_possession_dog_count,
+            "one_possession_dog_margin": ONE_POSSESSION_DOG_MARGIN,
+            "long_dog_count": long_dog_count,
+            "long_dog_onepos_count": long_dog_onepos_count,
+            "long_dog_onepos_rate": long_dog_onepos_rate,
+            "long_dog_min_payout": self._long_dog_min_payout,
+            "long_dog_onepos_margin": self._long_dog_onepos_margin,
             "ml_roi": ml_roi,
             "ml_win_rate": ml_win_rate,
             "ml_bet_count": ml_bet_count,
@@ -881,13 +1058,22 @@ def optimize_weights(
     if callback:
         callback(f"Baseline (train): Winner={baseline_train['winner_pct']:.1f}%, "
                  f"Upset={baseline_train['upset_accuracy']:.1f}% @ {baseline_train['upset_rate']:.1f}% rate, "
+                 f"CompDog={baseline_train.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={baseline_train.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={baseline_train.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={baseline_train['loss']:.3f}")
         callback(f"Baseline (valid): Winner={baseline_val['winner_pct']:.1f}%, "
                  f"Upset={baseline_val['upset_accuracy']:.1f}% @ {baseline_val['upset_rate']:.1f}% rate, "
+                 f"CompDog={baseline_val.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={baseline_val.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={baseline_val.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Favorites={baseline_val['favorites_pct']:.1f}%, "
                  f"Loss={baseline_val['loss']:.3f}")
         callback(f"Baseline (all):   Winner={baseline_all['winner_pct']:.1f}%, "
                  f"Upset={baseline_all['upset_accuracy']:.1f}% @ {baseline_all['upset_rate']:.1f}% rate, "
+                 f"CompDog={baseline_all.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={baseline_all.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={baseline_all.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={baseline_all['loss']:.3f}")
 
     best_w = baseline_w
@@ -1180,15 +1366,24 @@ def optimize_weights(
         callback(f"  Train:  Winner={best_train_result['winner_pct']:.1f}%, "
                  f"Upset={best_train_result['upset_accuracy']:.1f}% "
                  f"@ {best_train_result['upset_rate']:.1f}% rate, "
+                 f"CompDog={best_train_result.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={best_train_result.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={best_train_result.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={best_train_loss:.3f}")
         callback(f"  Valid:  Winner={best_val['winner_pct']:.1f}%, "
                  f"Upset={best_val['upset_accuracy']:.1f}% "
                  f"@ {best_val['upset_rate']:.1f}% rate, "
+                 f"CompDog={best_val.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={best_val.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={best_val.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Favorites={best_val['favorites_pct']:.1f}%, "
                  f"Loss={best_val['loss']:.3f}")
         callback(f"  All:    Winner={best_all['winner_pct']:.1f}%, "
                  f"Upset={best_all['upset_accuracy']:.1f}% "
                  f"@ {best_all['upset_rate']:.1f}% rate, "
+                 f"CompDog={best_all.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={best_all.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={best_all.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={best_all['loss']:.3f}")
 
     # Save gate: robust anti-gaming guardrails on validation
@@ -1208,12 +1403,19 @@ def optimize_weights(
             "Save gate diagnostics: "
             f"loss(val) {baseline_val.get('loss', 0.0):.3f}->{best_val.get('loss', 0.0):.3f}, "
             f"loss(all) {baseline_all.get('loss', 0.0):.3f}->{best_all.get('loss', 0.0):.3f}, "
+            f"compDog(val) {baseline_val.get('competitive_dog_rate', 0.0):.1f}%"
+            f"->{best_val.get('competitive_dog_rate', 0.0):.1f}%, "
+            f"onePosDog(val) {baseline_val.get('one_possession_dog_rate', 0.0):.1f}%"
+            f"->{best_val.get('one_possession_dog_rate', 0.0):.1f}%, "
+            f"longDog1P(val) {baseline_val.get('long_dog_onepos_rate', 0.0):.1f}%"
+            f"->{best_val.get('long_dog_onepos_rate', 0.0):.1f}%, "
             f"hybrid {float(save_details.get('baseline_hybrid_loss', baseline_val.get('loss', 0.0))):.3f}"
             f"->{float(save_details.get('candidate_hybrid_loss', best_val.get('loss', 0.0))):.3f}, "
             f"ROI {baseline_val.get('ml_roi', 0.0):+.2f}%->{best_val.get('ml_roi', 0.0):+.2f}% "
             f"(lb95 {best_val.get('ml_roi_lb95', 0.0):+.2f}%), "
             f"min ML payout {best_val.get('ml_min_payout', MIN_ML_PAYOUT):.2f}x, "
             f"ROI gate {'ON' if bool(save_details.get('use_roi_gate', False)) else 'OFF'}, "
+            f"long-dog tiebreak {'ON' if bool(save_details.get('use_long_dog_tiebreak_gate', False)) else 'OFF'}, "
             f"hybrid loss gate {'ON' if bool(save_details.get('use_hybrid_loss_gate', False)) else 'OFF'}, "
             f"shrunk upset lift {float(save_details.get('shrunk_upset_lift', 0.0)):+.2f}pp"
         )
@@ -1231,10 +1433,11 @@ def optimize_weights(
         last_saved_w[0] = best_w
         did_save = True
         if callback:
+            gate_note = "" if save_reason == "pass" else f", {save_reason}"
             callback(f"Saved optimized weights "
                      f"(val Winner: {baseline_winner_pct:.1f}% -> {best_winner_pct:.1f}%, "
                      f"vs Favorites baseline: {favorites_pct:.1f}%, "
-                     f"dW={weight_delta:.6f})")
+                     f"dW={weight_delta:.6f}{gate_note})")
     elif save_ok:
         save_ok = False
         save_reason = (f"no-op weight update (dW {weight_delta:.6f} "
@@ -1293,10 +1496,16 @@ def compare_modes(
         callback(f"Fundamentals only:  Winner={fund_result['winner_pct']:.1f}%, "
                  f"Upset={fund_result['upset_accuracy']:.1f}% "
                  f"@ {fund_result['upset_rate']:.1f}% rate, "
+                 f"CompDog={fund_result.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={fund_result.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={fund_result.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"ML ROI={fund_result['ml_roi']:+.1f}%")
         callback(f"Fundamentals+Sharp: Winner={sharp_result['winner_pct']:.1f}%, "
                  f"Upset={sharp_result['upset_accuracy']:.1f}% "
                  f"@ {sharp_result['upset_rate']:.1f}% rate, "
+                 f"CompDog={sharp_result.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={sharp_result.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={sharp_result.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"ML ROI={sharp_result['ml_roi']:+.1f}%")
 
     # Compute which picks were flipped by sharp money
@@ -1441,10 +1650,19 @@ def coordinate_descent(
 
     if callback:
         callback(f"CD baseline (train): Winner={baseline_train['winner_pct']:.1f}%, "
+                 f"CompDog={baseline_train.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={baseline_train.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={baseline_train.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={baseline_train['loss']:.3f}")
         callback(f"CD baseline (valid): Winner={baseline_val['winner_pct']:.1f}%, "
+                 f"CompDog={baseline_val.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={baseline_val.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={baseline_val.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Favorites={baseline_val['favorites_pct']:.1f}%")
         callback(f"CD baseline (all):   Winner={baseline_all['winner_pct']:.1f}%, "
+                 f"CompDog={baseline_all.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={baseline_all.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={baseline_all.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={baseline_all['loss']:.3f}")
 
     best_w_dict = w_dict.copy()
@@ -1559,22 +1777,38 @@ def coordinate_descent(
     if callback:
         callback("--- CD Final ---")
         callback(f"  Train:  Winner={final_train['winner_pct']:.1f}%, "
+                 f"CompDog={final_train.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={final_train.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={final_train.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={final_train['loss']:.3f}")
         callback(f"  Valid:  Winner={best_winner_pct:.1f}% "
+                 f"CompDog={final_val.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={final_val.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={final_val.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"(was {baseline_winner_pct:.1f}%), "
                  f"Favorites={favorites_pct:.1f}%")
         callback(f"  All:    Winner={final_all['winner_pct']:.1f}% "
+                 f"CompDog={final_all.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={final_all.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={final_all.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={final_all['loss']:.3f}")
         callback(
             "  Save gate diagnostics: "
             f"loss(val) {baseline_val.get('loss', 0.0):.3f}->{final_val.get('loss', 0.0):.3f}, "
             f"loss(all) {baseline_all.get('loss', 0.0):.3f}->{final_all.get('loss', 0.0):.3f}, "
+            f"compDog(val) {baseline_val.get('competitive_dog_rate', 0.0):.1f}%"
+            f"->{final_val.get('competitive_dog_rate', 0.0):.1f}%, "
+            f"onePosDog(val) {baseline_val.get('one_possession_dog_rate', 0.0):.1f}%"
+            f"->{final_val.get('one_possession_dog_rate', 0.0):.1f}%, "
+            f"longDog1P(val) {baseline_val.get('long_dog_onepos_rate', 0.0):.1f}%"
+            f"->{final_val.get('long_dog_onepos_rate', 0.0):.1f}%, "
             f"hybrid {float(save_details.get('baseline_hybrid_loss', baseline_val.get('loss', 0.0))):.3f}"
             f"->{float(save_details.get('candidate_hybrid_loss', final_val.get('loss', 0.0))):.3f}, "
             f"ROI {baseline_val.get('ml_roi', 0.0):+.2f}%->{final_val.get('ml_roi', 0.0):+.2f}% "
             f"(lb95 {final_val.get('ml_roi_lb95', 0.0):+.2f}%), "
             f"min ML payout {final_val.get('ml_min_payout', MIN_ML_PAYOUT):.2f}x, "
             f"ROI gate {'ON' if bool(save_details.get('use_roi_gate', False)) else 'OFF'}, "
+            f"long-dog tiebreak {'ON' if bool(save_details.get('use_long_dog_tiebreak_gate', False)) else 'OFF'}, "
             f"hybrid loss gate {'ON' if bool(save_details.get('use_hybrid_loss_gate', False)) else 'OFF'}, "
             f"shrunk upset lift {float(save_details.get('shrunk_upset_lift', 0.0)):+.2f}pp"
         )
@@ -1591,9 +1825,10 @@ def coordinate_descent(
         invalidate_weight_cache()
         did_save = True
         if callback:
+            gate_note = "" if save_reason == "pass" else f", {save_reason}"
             callback(f"CD saved improved weights "
                      f"({baseline_winner_pct:.1f}% -> {best_winner_pct:.1f}%, "
-                     f"dW={weight_delta:.6f})")
+                     f"dW={weight_delta:.6f}{gate_note})")
     elif save and save_ok:
         save_ok = False
         save_reason = (f"no-op weight update (dW {weight_delta:.6f} "

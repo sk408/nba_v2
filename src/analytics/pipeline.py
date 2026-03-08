@@ -461,6 +461,12 @@ def run_overnight(
         emit(f"  NEW BEST! Winner={f_met.get('winner_pct', 0):.1f}%, "
              f"Upset={f_met.get('upset_accuracy', 0):.0f}% @ "
              f"{f_met.get('upset_rate', 0):.0f}% rate, "
+             f"CompDog={f_met.get('competitive_dog_rate', 0):.0f}% "
+             f"({f_met.get('competitive_dog_count', 0)}/{f_met.get('upset_count', 0)}), "
+             f"OnePosDog={f_met.get('one_possession_dog_rate', 0):.0f}% "
+             f"({f_met.get('one_possession_dog_count', 0)}/{f_met.get('upset_count', 0)}), "
+             f"LongDog1P={f_met.get('long_dog_onepos_rate', 0):.0f}% "
+             f"({f_met.get('long_dog_onepos_count', 0)}/{f_met.get('long_dog_count', 0)}), "
              f"ML ROI={f_met.get('ml_roi', 0):+.1f}%")
 
     emit(f"Pass 1 complete in {fmt_elapsed(pass1_elapsed)} | "
@@ -531,6 +537,12 @@ def run_overnight(
                 emit(f"  NEW BEST! Winner={cur_winner:.1f}%, "
                      f"Upset={fund.get('upset_accuracy', 0):.0f}% @ "
                      f"{fund.get('upset_rate', 0):.0f}% rate, "
+                     f"CompDog={fund.get('competitive_dog_rate', 0):.0f}% "
+                     f"({fund.get('competitive_dog_count', 0)}/{fund.get('upset_count', 0)}), "
+                     f"OnePosDog={fund.get('one_possession_dog_rate', 0):.0f}% "
+                     f"({fund.get('one_possession_dog_count', 0)}/{fund.get('upset_count', 0)}), "
+                     f"LongDog1P={fund.get('long_dog_onepos_rate', 0):.0f}% "
+                     f"({fund.get('long_dog_onepos_count', 0)}/{fund.get('long_dog_count', 0)}), "
                      f"ML ROI={fund.get('ml_roi', 0):+.1f}%")
             else:
                 emit(f"  No improvement ({cur_winner:.1f}% vs best {best_winner:.1f}%)")
@@ -565,6 +577,12 @@ def run_overnight(
         emit(f"Best: Winner={f_met.get('winner_pct', 0):.1f}%, "
              f"Upset acc={f_met.get('upset_accuracy', 0):.0f}% @ "
              f"{f_met.get('upset_rate', 0):.0f}%, "
+             f"CompDog={f_met.get('competitive_dog_rate', 0):.0f}% "
+             f"({f_met.get('competitive_dog_count', 0)}/{f_met.get('upset_count', 0)}), "
+             f"OnePosDog={f_met.get('one_possession_dog_rate', 0):.0f}% "
+             f"({f_met.get('one_possession_dog_count', 0)}/{f_met.get('upset_count', 0)}), "
+             f"LongDog1P={f_met.get('long_dog_onepos_rate', 0):.0f}% "
+             f"({f_met.get('long_dog_onepos_count', 0)}/{f_met.get('long_dog_count', 0)}), "
              f"ML ROI={f_met.get('ml_roi', 0):+.1f}%")
     emit(f"{'=' * 60}")
 

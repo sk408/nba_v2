@@ -27,6 +27,8 @@ _DEFAULTS: Dict[str, Any] = {
     "prediction_mode": "fundamentals",  # "fundamentals" or "fundamentals_sharp"
     "upset_bonus_mult": 0.5,  # optimizer upset reward multiplier
     "upset_bonus_mult_max": 5.0,  # hard cap for upset bonus tuning
+    # Diagnostic threshold: dog pick counted "competitive" if it loses by <= this margin
+    "optimizer_competitive_dog_margin": 7.5,
     # Moneyline filter for optimizer ROI diagnostics (1.50 == risk 100 to return 150 total)
     "optimizer_min_ml_payout": 1.50,
     # Optimizer anti-gaming save gate settings
@@ -48,6 +50,14 @@ _DEFAULTS: Dict[str, Any] = {
     "optimizer_save_hybrid_val_weight": 0.70,
     "optimizer_save_hybrid_margin": 0.003,
     "optimizer_save_max_val_loss_regress": 0.020,
+    # Long-dog one-possession tiebreak (diagnostic/secondary gate)
+    "optimizer_save_use_long_dog_tiebreak_gate": True,
+    "optimizer_save_long_dog_min_payout": 3.0,
+    "optimizer_save_long_dog_onepos_margin": 3.0,
+    "optimizer_save_long_dog_min_count": 40,
+    "optimizer_save_long_dog_prior_weight": 25.0,
+    "optimizer_save_min_long_dog_onepos_lift": 0.75,
+    "optimizer_save_long_dog_tiebreak_loss_window": 0.010,
     # Optuna controls
     "optuna_top_n_validation": 10,
     "optuna_stagnation_threshold": 500,
