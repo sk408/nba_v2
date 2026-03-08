@@ -582,7 +582,10 @@ class VectorizedGames:
                                     + self._process_sec_edge + self._process_tov_edge)
 
         from src.config import get as get_setting
-        self._upset_bonus_mult = float(get_setting("upset_bonus_mult", 0.5))
+        upset_bonus_max = max(0.0, _safe_float_setting("upset_bonus_mult_max", 5.0))
+        self._upset_bonus_mult = float(
+            np.clip(_safe_float_setting("upset_bonus_mult", 0.5), 0.0, upset_bonus_max)
+        )
         self._min_ml_payout = max(
             1.0,
             _safe_float_setting("optimizer_min_ml_payout", MIN_ML_PAYOUT),

@@ -26,6 +26,7 @@ _DEFAULTS: Dict[str, Any] = {
     "optimizer_log_interval": 300,
     "prediction_mode": "fundamentals",  # "fundamentals" or "fundamentals_sharp"
     "upset_bonus_mult": 0.5,  # optimizer upset reward multiplier
+    "upset_bonus_mult_max": 5.0,  # hard cap for upset bonus tuning
     # Moneyline filter for optimizer ROI diagnostics (1.50 == risk 100 to return 150 total)
     "optimizer_min_ml_payout": 1.50,
     # Optimizer anti-gaming save gate settings
@@ -103,6 +104,19 @@ def get(key: str, default: Any = None) -> Any:
 
 def set_value(key: str, value: Any):
     s = load_settings()
+    if key == "upset_bonus_mult":
+        try:
+            upset_bonus = float(value)
+        except (TypeError, ValueError):
+            upset_bonus = float(_DEFAULTS["upset_bonus_mult"])
+        try:
+            upset_bonus_max = float(
+                s.get("upset_bonus_mult_max", _DEFAULTS["upset_bonus_mult_max"])
+            )
+        except (TypeError, ValueError):
+            upset_bonus_max = float(_DEFAULTS["upset_bonus_mult_max"])
+        upset_bonus_max = max(0.0, upset_bonus_max)
+        value = min(max(0.0, upset_bonus), upset_bonus_max)
     s[key] = value
     save_settings(s)
 

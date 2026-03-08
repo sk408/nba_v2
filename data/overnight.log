@@ -1,69 +1,473 @@
-2026-03-07 22:15:07,593  INFO      src.analytics.pipeline  === Overnight Optimization: 8.0h budget ===
-2026-03-07 22:15:07,593  INFO      src.analytics.pipeline  No-save auto-stop enabled: 4 consecutive passes.
-2026-03-07 22:15:07,593  INFO      src.analytics.pipeline  
+2026-03-07 23:05:57,207  INFO      src.analytics.pipeline  === Overnight Optimization: 8.0h budget ===
+2026-03-07 23:05:57,207  INFO      src.analytics.pipeline  No-save auto-stop enabled: 4 consecutive passes.
+2026-03-07 23:05:57,208  INFO      src.analytics.pipeline  
 --- Pass 1: Full Pipeline ---
-2026-03-07 22:15:07,594  INFO      src.analytics.pipeline  [Step 1/10] backup...
-2026-03-07 22:15:07,598  INFO      src.analytics.pipeline    [backup] Backup saved: 20260307_221507_pre_pipeline.json
-2026-03-07 22:15:07,598  INFO      src.analytics.pipeline    backup completed in 0.0s
-2026-03-07 22:15:07,599  INFO      src.analytics.pipeline  [Step 2/10] sync...
-2026-03-07 22:15:07,654  INFO      src.analytics.pipeline    [sync] === 1/8 Reference data ===
-2026-03-07 22:15:07,655  INFO      src.analytics.pipeline    [sync] Reference data is fresh, skipping...
-2026-03-07 22:15:07,655  INFO      src.analytics.pipeline    [sync] === 2/8 Player game logs ===
-2026-03-07 22:15:07,655  INFO      src.analytics.pipeline    [sync] Syncing player game logs...
-2026-03-07 22:15:07,655  INFO      src.analytics.pipeline    [sync] Game logs are fresh (synced < 4h ago), skipping...
-2026-03-07 22:15:07,655  INFO      src.analytics.pipeline    [sync] === 3/8 Historical seasons ===
-2026-03-07 22:15:07,656  INFO      src.analytics.pipeline    [sync] Historical season 2019-20 already synced, skipping...
-2026-03-07 22:15:07,656  INFO      src.analytics.pipeline    [sync] Historical season 2020-21 already synced, skipping...
-2026-03-07 22:15:07,656  INFO      src.analytics.pipeline    [sync] Historical season 2021-22 already synced, skipping...
-2026-03-07 22:15:07,656  INFO      src.analytics.pipeline    [sync] Historical season 2022-23 already synced, skipping...
-2026-03-07 22:15:07,656  INFO      src.analytics.pipeline    [sync] Historical season 2023-24 already synced, skipping...
-2026-03-07 22:15:07,657  INFO      src.analytics.pipeline    [sync] Historical season 2024-25 already synced, skipping...
-2026-03-07 22:15:07,657  INFO      src.analytics.pipeline    [sync] === 4/8 Injuries ===
-2026-03-07 22:15:07,657  INFO      src.analytics.pipeline    [sync] Scraping injury data...
-2026-03-07 22:15:08,103  INFO      src.data.injury_scraper  Got 113 injuries from ESPN
-2026-03-07 22:15:08,781  INFO      src.data.injury_scraper  Got 114 injuries from CBS
-2026-03-07 22:15:08,781  INFO      src.data.injury_scraper  Total merged injuries: 118
-2026-03-07 22:15:09,569  INFO      src.analytics.pipeline    [sync] Updated 107 player injuries
-2026-03-07 22:15:09,571  INFO      src.analytics.pipeline    [sync] Injury sync complete: 107 injuries
-2026-03-07 22:15:09,572  INFO      src.analytics.pipeline    [sync] === 5/8 Injury history ===
-2026-03-07 22:15:09,572  INFO      src.analytics.pipeline    [sync] Injury history is fresh, skipping...
-2026-03-07 22:15:09,572  INFO      src.analytics.pipeline    [sync] === 6/8 Team metrics ===
-2026-03-07 22:15:09,573  INFO      src.analytics.pipeline    [sync] Team metrics are fresh, skipping...
-2026-03-07 22:15:09,573  INFO      src.analytics.pipeline    [sync] === 7/8 Player impact ===
-2026-03-07 22:15:09,573  INFO      src.analytics.pipeline    [sync] Player impact is fresh, skipping...
-2026-03-07 22:15:09,573  INFO      src.analytics.pipeline    [sync] === 8/8 Vegas odds ===
-2026-03-07 22:15:09,575  INFO      src.analytics.pipeline    [sync] Odds sync is fresh, skipping...
-2026-03-07 22:15:09,575  INFO      src.analytics.pipeline    [sync] Full data sync complete!
-2026-03-07 22:15:09,576  INFO      src.analytics.pipeline    sync completed in 2.0s
-2026-03-07 22:15:09,577  INFO      src.analytics.pipeline  [Step 3/10] seed_arenas...
-2026-03-07 22:15:09,577  INFO      src.analytics.pipeline    [seed_arenas] Seeding arena data...
-2026-03-07 22:15:09,646  INFO      src.data.arenas  Seeded 30 arenas into database
-2026-03-07 22:15:09,647  INFO      src.analytics.pipeline    seed_arenas completed in 0.1s
-2026-03-07 22:15:09,648  INFO      src.analytics.pipeline  [Step 4/10] bbref_sync...
-2026-03-07 22:15:09,648  INFO      src.analytics.pipeline    [bbref_sync] Syncing Basketball-Reference stats...
-2026-03-07 22:15:13,809  INFO      src.data.bbref_scraper  BBRef: fetched team advanced stats for 15 teams
-2026-03-07 22:15:13,810  INFO      src.data.bbref_scraper  BBRef: updated team_metrics for 15 teams
-2026-03-07 22:15:17,623  INFO      src.data.bbref_scraper  BBRef: fetched advanced stats for 549 players
-2026-03-07 22:15:17,666  INFO      src.data.bbref_scraper  BBRef: updated player_impact for 549 players
-2026-03-07 22:15:17,666  INFO      src.analytics.pipeline    bbref_sync completed in 8.0s
-2026-03-07 22:15:17,668  INFO      src.analytics.pipeline  [Step 5/10] referee_sync...
-2026-03-07 22:15:17,669  INFO      src.analytics.pipeline    [referee_sync] Syncing referee tendencies...
-2026-03-07 22:15:17,670  INFO      src.data.referee_scraper  Fetching referee stats from https://www.nbastuffer.com/2025-2026-nba-referee-stats/
-2026-03-07 22:15:18,723  INFO      src.data.referee_scraper  Parsed 122 referees for season 2025-26
-2026-03-07 22:15:19,055  INFO      src.data.referee_scraper  Synced 122 referees for season 2025-26
-2026-03-07 22:15:19,056  INFO      src.analytics.pipeline    referee_sync completed in 1.4s
-2026-03-07 22:15:19,058  INFO      src.analytics.pipeline  [Step 6/10] elo_compute...
-2026-03-07 22:15:19,059  INFO      src.analytics.pipeline    [elo_compute] Computing Elo ratings...
-2026-03-07 22:15:19,072  INFO      src.analytics.elo  Computing Elo for 943 games in season 2025-26
-2026-03-07 22:15:19,103  INFO      src.analytics.elo  Stored 1886 Elo rating rows (943 games)
-2026-03-07 22:15:19,103  INFO      src.analytics.pipeline    elo_compute completed in 0.0s
-2026-03-07 22:15:19,106  INFO      src.analytics.pipeline  [Step 7/10] precompute...
-2026-03-07 22:15:20,068  INFO      src.analytics.prediction  Loaded precompute cache from disk (7994 games)
-2026-03-07 22:15:20,291  INFO      src.analytics.pipeline    [precompute] Loaded 7994 precomputed games from cache (0 new)
-2026-03-07 22:15:20,292  INFO      src.analytics.pipeline    [precompute] Precomputed 7994 games
-2026-03-07 22:15:20,292  INFO      src.analytics.pipeline    precompute completed in 1.2s
-2026-03-07 22:15:20,294  INFO      src.analytics.pipeline  [Step 8/10] optimize_fundamentals...
-2026-03-07 22:15:20,875  INFO      src.analytics.pipeline    [optimize_fundamentals] Walk-forward: 6395 train (2019-10-22 to 2025-01-12), 1599 validation (2025-01-12 to 2026-03-07)
-2026-03-07 22:15:20,879  INFO      src.analytics.pipeline    [optimize_fundamentals] Baseline (train): Winner=67.1%, Upset=49.4% @ 20.4% rate, Loss=-87.224
-2026-03-07 22:15:20,879  INFO      src.analytics.pipeline    [optimize_fundamentals] Baseline (valid): Winner=62.4%, Upset=39.1% @ 27.5% rate, Favorites=68.4%, Loss=-83.865
-2026-03-07 22:15:20,879  INFO      src.analytics.pipeline    [optimize_fundamentals] Baseline (all):   Winner=66.1%, Upset=46.8% @ 21.8% rate, Loss=-86.552
+2026-03-07 23:05:57,209  INFO      src.analytics.pipeline  [Step 1/10] backup...
+2026-03-07 23:05:57,220  INFO      src.analytics.pipeline    [backup] Backup saved: 20260307_230557_pre_pipeline.json
+2026-03-07 23:05:57,221  INFO      src.analytics.pipeline    backup completed in 0.0s
+2026-03-07 23:05:57,224  INFO      src.analytics.pipeline  [Step 2/10] sync...
+2026-03-07 23:05:57,293  INFO      src.analytics.pipeline    [sync] === 1/8 Reference data ===
+2026-03-07 23:05:57,294  INFO      src.analytics.pipeline    [sync] Reference data is fresh, skipping...
+2026-03-07 23:05:57,294  INFO      src.analytics.pipeline    [sync] === 2/8 Player game logs ===
+2026-03-07 23:05:57,294  INFO      src.analytics.pipeline    [sync] Syncing player game logs...
+2026-03-07 23:05:57,304  INFO      src.analytics.pipeline    [sync] Bulk fetch: game logs from 03/06/2026...
+2026-03-07 23:06:03,956  INFO      src.analytics.pipeline    [sync] Saved 281 game log entries for 272 players
+2026-03-07 23:06:03,965  INFO      src.analytics.pipeline    [sync] Player game logs sync complete
+2026-03-07 23:06:03,966  INFO      src.analytics.pipeline    [sync] === 3/8 Historical seasons ===
+2026-03-07 23:06:03,966  INFO      src.analytics.pipeline    [sync] Historical season 2019-20 already synced, skipping...
+2026-03-07 23:06:03,966  INFO      src.analytics.pipeline    [sync] Historical season 2020-21 already synced, skipping...
+2026-03-07 23:06:03,967  INFO      src.analytics.pipeline    [sync] Historical season 2021-22 already synced, skipping...
+2026-03-07 23:06:03,967  INFO      src.analytics.pipeline    [sync] Historical season 2022-23 already synced, skipping...
+2026-03-07 23:06:03,967  INFO      src.analytics.pipeline    [sync] Historical season 2023-24 already synced, skipping...
+2026-03-07 23:06:03,967  INFO      src.analytics.pipeline    [sync] Historical season 2024-25 already synced, skipping...
+2026-03-07 23:06:03,967  INFO      src.analytics.pipeline    [sync] === 4/8 Injuries ===
+2026-03-07 23:06:03,968  INFO      src.analytics.pipeline    [sync] Scraping injury data...
+2026-03-07 23:06:04,461  INFO      src.data.injury_scraper  Got 113 injuries from ESPN
+2026-03-07 23:06:05,072  INFO      src.data.injury_scraper  Got 114 injuries from CBS
+2026-03-07 23:06:05,072  INFO      src.data.injury_scraper  Total merged injuries: 118
+2026-03-07 23:06:05,833  INFO      src.analytics.pipeline    [sync] Updated 107 player injuries
+2026-03-07 23:06:05,835  INFO      src.analytics.pipeline    [sync] Injury sync complete: 107 injuries
+2026-03-07 23:06:05,835  INFO      src.analytics.pipeline    [sync] === 5/8 Injury history ===
+2026-03-07 23:06:05,836  INFO      src.analytics.pipeline    [sync] Building injury history from game logs...
+2026-03-07 23:06:05,862  INFO      src.analytics.pipeline    [sync] Found schedules for 30 teams
+2026-03-07 23:06:06,532  INFO      src.analytics.pipeline    [sync] Processed 533 players, found 80467 missed games
+2026-03-07 23:06:06,548  INFO      src.analytics.pipeline    [sync] Injury history built: 80467 records
+2026-03-07 23:06:06,548  INFO      src.analytics.pipeline    [sync] === 6/8 Team metrics ===
+2026-03-07 23:06:06,549  INFO      src.analytics.pipeline    [sync] Fetching team estimated metrics...
+2026-03-07 23:06:07,491  INFO      src.analytics.pipeline    [sync] Fetching advanced team stats...
+2026-03-07 23:06:08,358  INFO      src.analytics.pipeline    [sync] Fetching four factors...
+2026-03-07 23:06:09,249  INFO      src.analytics.pipeline    [sync] Fetching opponent stats...
+2026-03-07 23:06:10,143  INFO      src.analytics.pipeline    [sync] Fetching home splits...
+2026-03-07 23:06:19,135  INFO      src.analytics.pipeline    [sync] Fetching road splits...
+2026-03-07 23:06:23,695  INFO      src.analytics.pipeline    [sync] Fetching clutch stats...
+2026-03-07 23:06:24,591  INFO      src.analytics.pipeline    [sync] Fetching hustle stats...
+2026-03-07 23:06:25,458  INFO      src.analytics.pipeline    [sync] Fetching process stats...
+2026-03-07 23:06:26,362  INFO      src.analytics.pipeline    [sync] Team metrics sync complete
+2026-03-07 23:06:26,362  INFO      src.analytics.pipeline    [sync] === 7/8 Player impact ===
+2026-03-07 23:06:26,362  INFO      src.analytics.pipeline    [sync] Fetching player estimated metrics...
+2026-03-07 23:06:27,265  INFO      src.analytics.pipeline    [sync] Fetching player on/off data per team...
+2026-03-07 23:07:30,891  INFO      src.analytics.pipeline    [sync] On/off: 10/30 teams...
+2026-03-07 23:08:30,861  INFO      src.analytics.pipeline    [sync] On/off: 20/30 teams...
+2026-03-07 23:09:19,269  INFO      src.analytics.pipeline    [sync] On/off: 30/30 teams...
+2026-03-07 23:09:19,291  INFO      src.analytics.pipeline    [sync] Player impact sync complete
+2026-03-07 23:09:19,292  INFO      src.analytics.pipeline    [sync] === 8/8 Vegas odds ===
+2026-03-07 23:09:19,294  INFO      src.analytics.pipeline    [sync] Syncing historical Vegas odds...
+2026-03-07 23:09:20,084  INFO      src.analytics.pipeline    [sync] Found 0 dates needing odds/sharp money backfill. Starting...
+2026-03-07 23:09:20,085  INFO      src.analytics.pipeline    [sync] Odds backfill complete! Saved/updated odds for 0 games.
+2026-03-07 23:09:20,097  INFO      src.analytics.pipeline    [sync] Odds sync complete: 0 games updated.
+2026-03-07 23:09:20,097  INFO      src.analytics.pipeline    [sync] Full data sync complete!
+2026-03-07 23:09:20,098  INFO      src.analytics.pipeline    sync completed in 202.9s
+2026-03-07 23:09:20,100  INFO      src.analytics.pipeline  [Step 3/10] seed_arenas...
+2026-03-07 23:09:20,101  INFO      src.analytics.pipeline    [seed_arenas] Seeding arena data...
+2026-03-07 23:09:20,178  INFO      src.data.arenas  Seeded 30 arenas into database
+2026-03-07 23:09:20,178  INFO      src.analytics.pipeline    seed_arenas completed in 0.1s
+2026-03-07 23:09:20,181  INFO      src.analytics.pipeline  [Step 4/10] bbref_sync...
+2026-03-07 23:09:20,181  INFO      src.analytics.pipeline    [bbref_sync] Syncing Basketball-Reference stats...
+2026-03-07 23:09:24,556  INFO      src.data.bbref_scraper  BBRef: fetched team advanced stats for 15 teams
+2026-03-07 23:09:24,557  INFO      src.data.bbref_scraper  BBRef: updated team_metrics for 15 teams
+2026-03-07 23:09:28,433  INFO      src.data.bbref_scraper  BBRef: fetched advanced stats for 549 players
+2026-03-07 23:09:28,491  INFO      src.data.bbref_scraper  BBRef: updated player_impact for 549 players
+2026-03-07 23:09:28,492  INFO      src.analytics.pipeline    bbref_sync completed in 8.3s
+2026-03-07 23:09:28,494  INFO      src.analytics.pipeline  [Step 5/10] referee_sync...
+2026-03-07 23:09:28,494  INFO      src.analytics.pipeline    [referee_sync] Syncing referee tendencies...
+2026-03-07 23:09:28,495  INFO      src.data.referee_scraper  Fetching referee stats from https://www.nbastuffer.com/2025-2026-nba-referee-stats/
+2026-03-07 23:09:29,687  INFO      src.data.referee_scraper  Parsed 122 referees for season 2025-26
+2026-03-07 23:09:29,965  INFO      src.data.referee_scraper  Synced 122 referees for season 2025-26
+2026-03-07 23:09:29,966  INFO      src.analytics.pipeline    referee_sync completed in 1.5s
+2026-03-07 23:09:29,968  INFO      src.analytics.pipeline  [Step 6/10] elo_compute...
+2026-03-07 23:09:29,968  INFO      src.analytics.pipeline    [elo_compute] Computing Elo ratings...
+2026-03-07 23:09:29,976  INFO      src.analytics.elo  Computing Elo for 943 games in season 2025-26
+2026-03-07 23:09:29,999  INFO      src.analytics.elo  Stored 1886 Elo rating rows (943 games)
+2026-03-07 23:09:30,000  INFO      src.analytics.pipeline    elo_compute completed in 0.0s
+2026-03-07 23:09:30,002  INFO      src.analytics.pipeline  [Step 7/10] precompute...
+2026-03-07 23:09:30,186  INFO      src.analytics.prediction  Loaded precompute cache from disk (7994 games)
+2026-03-07 23:09:30,539  INFO      src.analytics.pipeline    [precompute] Precomputing 3 new games (7994 cached)...
+2026-03-07 23:09:30,548  INFO      src.analytics.pipeline    [precompute] Building historical roster & injury context...
+2026-03-07 23:09:31,301  INFO      src.analytics.prediction  Saved precompute context to disk (7997 games)
+2026-03-07 23:09:31,369  INFO      src.analytics.pipeline    [precompute] Loading memory store for fast lookups...
+2026-03-07 23:09:32,984  INFO      src.analytics.memory_store  Memory store loaded successfully
+2026-03-07 23:09:32,997  INFO      src.analytics.pipeline    [precompute] Cached 30 team Elo histories, 30 on/off entries, 8046 odds rows
+2026-03-07 23:09:33,287  INFO      src.analytics.prediction  Saved precompute cache to disk (7997 games)
+2026-03-07 23:09:33,295  INFO      src.analytics.pipeline    [precompute] Precomputed 7997 games total (3 new, 7994 cached)
+2026-03-07 23:09:33,296  INFO      src.analytics.pipeline    [precompute] Precomputed 7997 games
+2026-03-07 23:09:33,296  INFO      src.analytics.pipeline    precompute completed in 3.3s
+2026-03-07 23:09:33,298  INFO      src.analytics.pipeline  [Step 8/10] optimize_fundamentals...
+2026-03-07 23:09:33,763  INFO      src.analytics.pipeline    [optimize_fundamentals] Walk-forward: 6397 train (2019-10-22 to 2025-01-12), 1600 validation (2025-01-12 to 2026-03-07)
+2026-03-07 23:09:33,765  INFO      src.analytics.pipeline    [optimize_fundamentals] Baseline (train): Winner=66.2%, Upset=47.6% @ 24.8% rate, Loss=-78.005
+2026-03-07 23:09:33,766  INFO      src.analytics.pipeline    [optimize_fundamentals] Baseline (valid): Winner=60.8%, Upset=37.9% @ 31.3% rate, Favorites=68.4%, Loss=-72.688
+2026-03-07 23:09:33,766  INFO      src.analytics.pipeline    [optimize_fundamentals] Baseline (all):   Winner=65.1%, Upset=45.3% @ 26.1% rate, Loss=-76.941
+2026-03-07 23:10:07,377  INFO      src.analytics.pipeline    [optimize_fundamentals] Study 'fundamentals_5f72f6b7': 15839 prior trials on disk, loaded best 3000 to seed CMA-ES (IPOP), adding 3000 more
+2026-03-07 23:10:08,478  INFO      src.analytics.pipeline    [optimize_fundamentals] Trial 3000/3000: loss=-78.365 (Winner=68.3%, Upset=52.3% @ 19.3% rate)
+2026-03-07 23:10:08,478  INFO      src.analytics.pipeline    [optimize_fundamentals]   Best multipliers: pythag=5.496, road_trip=0.809, cum_travel_7d=3.233
+2026-03-07 23:10:08,489  INFO      src.analytics.pipeline    [optimize_fundamentals] Trial 3002/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:10:08,490  INFO      src.analytics.pipeline    [optimize_fundamentals]   Best multipliers: pythag=5.497, road_trip=0.808, cum_travel_7d=3.223
+2026-03-07 23:10:10,010  INFO      src.analytics.pipeline    [optimize_fundamentals] Trial 3300/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:10:10,019  INFO      src.analytics.pipeline    [optimize_fundamentals]   Stagnation: 300 trials without improvement (best loss=-78.396)
+2026-03-07 23:10:11,403  INFO      src.analytics.pipeline    [optimize_fundamentals] Trial 3600/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:10:11,411  INFO      src.analytics.pipeline    [optimize_fundamentals]   Stagnation: 600 trials without improvement (best loss=-78.396)
+2026-03-07 23:10:12,927  INFO      src.analytics.pipeline    [optimize_fundamentals] Trial 3900/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:10:12,937  INFO      src.analytics.pipeline    [optimize_fundamentals]   Stagnation: 900 trials without improvement (best loss=-78.396)
+2026-03-07 23:10:14,514  INFO      src.analytics.pipeline    [optimize_fundamentals] Trial 4200/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:10:14,526  INFO      src.analytics.pipeline    [optimize_fundamentals]   Stagnation: 1200 trials without improvement (best loss=-78.396)
+2026-03-07 23:10:14,526  INFO      src.analytics.pipeline    [optimize_fundamentals]   Early stopping: 1200 trials without improvement after 4202 total trials
+2026-03-07 23:10:16,682  INFO      src.analytics.pipeline    [optimize_fundamentals] Study has 4203 total trials (saving 0 to disk in background)
+2026-03-07 23:10:16,684  INFO      src.analytics.pipeline    [optimize_fundamentals] Validating top 100 training trials...
+2026-03-07 23:10:16,685  INFO      src.analytics.pipeline    [optimize_fundamentals]   #1 train loss=-90.102 (Winner=66.3%) -> val loss=-72.312 (Winner=60.4%)
+2026-03-07 23:10:16,687  INFO      src.analytics.pipeline    [optimize_fundamentals]   #2 train loss=-90.102 (Winner=66.3%) -> val loss=-72.250 (Winner=60.4%)
+2026-03-07 23:10:16,687  INFO      src.analytics.pipeline    [optimize_fundamentals]   #3 train loss=-90.086 (Winner=66.3%) -> val loss=-72.438 (Winner=60.6%)
+2026-03-07 23:10:16,689  INFO      src.analytics.pipeline    [optimize_fundamentals]   #4 train loss=-90.086 (Winner=66.3%) -> val loss=-72.188 (Winner=60.3%)
+2026-03-07 23:10:16,690  INFO      src.analytics.pipeline    [optimize_fundamentals]   #5 train loss=-90.086 (Winner=66.3%) -> val loss=-72.375 (Winner=60.5%)
+2026-03-07 23:10:16,725  INFO      src.analytics.pipeline    [optimize_fundamentals] Selected trial #99 (not #1) -- better validation performance
+2026-03-07 23:10:16,726  INFO      src.analytics.pipeline    [optimize_fundamentals] -- Walk-forward results --
+2026-03-07 23:10:16,726  INFO      src.analytics.pipeline    [optimize_fundamentals]   Train:  Winner=66.2%, Upset=47.8% @ 24.8% rate, Loss=-89.961
+2026-03-07 23:10:16,726  INFO      src.analytics.pipeline    [optimize_fundamentals]   Valid:  Winner=60.8%, Upset=38.0% @ 31.4% rate, Favorites=68.4%, Loss=-72.750
+2026-03-07 23:10:16,727  INFO      src.analytics.pipeline    [optimize_fundamentals]   All:    Winner=65.1%, Upset=45.4% @ 26.2% rate, Loss=-77.029
+2026-03-07 23:10:16,727  INFO      src.analytics.pipeline    [optimize_fundamentals] Save gate diagnostics: loss(val) -72.688->-72.750, loss(all) -76.941->-77.029, hybrid -74.814->-74.889, ROI +1.63%->+1.74% (lb95 -6.46%), min ML payout 1.50x, ROI gate OFF, hybrid loss gate ON, shrunk upset lift +6.05pp
+2026-03-07 23:10:16,830  INFO      src.analytics.pipeline    [optimize_fundamentals] Saved optimized weights (val Winner: 60.8% -> 60.8%, vs Favorites baseline: 68.4%, dW=0.973847)
+2026-03-07 23:10:16,842  INFO      src.analytics.pipeline    optimize_fundamentals completed in 43.5s
+2026-03-07 23:10:16,843  INFO      src.analytics.pipeline  [Step 9/10] optimize_sharp...
+2026-03-07 23:10:17,474  INFO      src.analytics.pipeline    [optimize_sharp] Walk-forward: 6397 train (2019-10-22 to 2025-01-12), 1600 validation (2025-01-12 to 2026-03-07)
+2026-03-07 23:10:17,478  INFO      src.analytics.pipeline    [optimize_sharp] Baseline (train): Winner=65.8%, Upset=46.8% @ 24.7% rate, Loss=-77.333
+2026-03-07 23:10:17,478  INFO      src.analytics.pipeline    [optimize_sharp] Baseline (valid): Winner=60.7%, Upset=37.8% @ 31.6% rate, Favorites=68.4%, Loss=-72.625
+2026-03-07 23:10:17,478  INFO      src.analytics.pipeline    [optimize_sharp] Baseline (all):   Winner=64.7%, Upset=44.6% @ 26.1% rate, Loss=-76.391
+2026-03-07 23:10:48,294  INFO      src.analytics.pipeline    [optimize_sharp] Study 'sharp_315a6ca8': 13694 prior trials on disk, loaded best 3000 to seed CMA-ES (IPOP), adding 3000 more
+2026-03-07 23:10:48,485  INFO      src.analytics.optimizer  Checkpoint saved: train loss=-78.380, val winner=62.3%, dW=29.552930
+2026-03-07 23:10:48,485  INFO      src.analytics.pipeline    [optimize_sharp] Trial 3000/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:10:48,486  INFO      src.analytics.pipeline    [optimize_sharp]   Best multipliers: pythag=1.058, road_trip=0.315, cum_travel_7d=3.707
+2026-03-07 23:10:49,622  INFO      src.analytics.pipeline    [optimize_sharp]   Stagnation: 300 trials without improvement (best loss=-78.380)
+2026-03-07 23:10:49,623  INFO      src.analytics.pipeline    [optimize_sharp] Trial 3300/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:10:50,930  INFO      src.analytics.pipeline    [optimize_sharp]   Stagnation: 600 trials without improvement (best loss=-78.380)
+2026-03-07 23:10:50,930  INFO      src.analytics.pipeline    [optimize_sharp] Trial 3600/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:10:52,149  INFO      src.analytics.pipeline    [optimize_sharp]   Stagnation: 900 trials without improvement (best loss=-78.380)
+2026-03-07 23:10:52,149  INFO      src.analytics.pipeline    [optimize_sharp] Trial 3900/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:10:53,406  INFO      src.analytics.pipeline    [optimize_sharp]   Stagnation: 1200 trials without improvement (best loss=-78.380)
+2026-03-07 23:10:53,406  INFO      src.analytics.pipeline    [optimize_sharp]   Early stopping: 1200 trials without improvement after 4200 total trials
+2026-03-07 23:10:53,407  INFO      src.analytics.pipeline    [optimize_sharp] Trial 4200/3000: loss=-78.349 (Winner=67.9%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:10:54,829  INFO      src.analytics.pipeline    [optimize_sharp] Study has 4201 total trials (saving 0 to disk in background)
+2026-03-07 23:10:54,832  INFO      src.analytics.pipeline    [optimize_sharp] Validating top 100 training trials...
+2026-03-07 23:10:54,833  INFO      src.analytics.pipeline    [optimize_sharp]   #1 train loss=-88.913 (Winner=68.0%) -> val loss=-73.125 (Winner=63.1%)
+2026-03-07 23:10:54,834  INFO      src.analytics.pipeline    [optimize_sharp]   #2 train loss=-88.913 (Winner=68.0%) -> val loss=-73.312 (Winner=63.2%)
+2026-03-07 23:10:54,835  INFO      src.analytics.pipeline    [optimize_sharp]   #3 train loss=-88.913 (Winner=68.0%) -> val loss=-73.438 (Winner=63.4%)
+2026-03-07 23:10:54,836  INFO      src.analytics.pipeline    [optimize_sharp]   #4 train loss=-88.913 (Winner=68.0%) -> val loss=-73.188 (Winner=63.1%)
+2026-03-07 23:10:54,837  INFO      src.analytics.pipeline    [optimize_sharp]   #5 train loss=-88.913 (Winner=68.0%) -> val loss=-73.312 (Winner=63.2%)
+2026-03-07 23:10:54,868  INFO      src.analytics.pipeline    [optimize_sharp] Selected trial #6 (not #1) -- better validation performance
+2026-03-07 23:10:54,869  INFO      src.analytics.pipeline    [optimize_sharp] -- Walk-forward results --
+2026-03-07 23:10:54,869  INFO      src.analytics.pipeline    [optimize_sharp]   Train:  Winner=68.0%, Upset=51.5% @ 20.3% rate, Loss=-88.913
+2026-03-07 23:10:54,870  INFO      src.analytics.pipeline    [optimize_sharp]   Valid:  Winner=63.5%, Upset=40.2% @ 25.0% rate, Favorites=68.4%, Loss=-73.562
+2026-03-07 23:10:54,870  INFO      src.analytics.pipeline    [optimize_sharp]   All:    Winner=67.1%, Upset=48.9% @ 21.2% rate, Loss=-77.479
+2026-03-07 23:10:54,870  INFO      src.analytics.pipeline    [optimize_sharp] Save gate diagnostics: loss(val) -72.625->-73.562, loss(all) -76.391->-77.479, hybrid -74.508->-75.521, ROI +1.56%->+1.96% (lb95 -5.81%), min ML payout 1.50x, ROI gate OFF, hybrid loss gate ON, shrunk upset lift +8.12pp
+2026-03-07 23:10:54,975  INFO      src.analytics.pipeline    [optimize_sharp] Saved optimized weights (val Winner: 60.7% -> 63.5%, vs Favorites baseline: 68.4%, dW=3.360336)
+2026-03-07 23:10:55,325  INFO      src.analytics.pipeline    optimize_sharp completed in 38.5s
+2026-03-07 23:10:55,326  INFO      src.analytics.pipeline  [Step 10/10] backtest...
+2026-03-07 23:10:55,328  INFO      src.analytics.pipeline    [backtest] Loading precomputed games...
+2026-03-07 23:10:55,344  INFO      src.analytics.pipeline    [backtest] Loaded 7997 precomputed games from cache (0 new)
+2026-03-07 23:10:55,350  INFO      src.analytics.pipeline    [backtest] Running backtest on 7997 games...
+2026-03-07 23:10:55,735  INFO      src.analytics.pipeline    [backtest]   Vectorized: Fund winner=66.5%, Sharp winner=67.1%
+2026-03-07 23:10:55,753  INFO      src.analytics.pipeline    [backtest]   Per-game: 799/7997 games processed
+2026-03-07 23:10:55,771  INFO      src.analytics.pipeline    [backtest]   Per-game: 1598/7997 games processed
+2026-03-07 23:10:55,788  INFO      src.analytics.pipeline    [backtest]   Per-game: 2397/7997 games processed
+2026-03-07 23:10:55,806  INFO      src.analytics.pipeline    [backtest]   Per-game: 3196/7997 games processed
+2026-03-07 23:10:55,823  INFO      src.analytics.pipeline    [backtest]   Per-game: 3995/7997 games processed
+2026-03-07 23:10:55,840  INFO      src.analytics.pipeline    [backtest]   Per-game: 4794/7997 games processed
+2026-03-07 23:10:55,857  INFO      src.analytics.pipeline    [backtest]   Per-game: 5593/7997 games processed
+2026-03-07 23:10:55,875  INFO      src.analytics.pipeline    [backtest]   Per-game: 6392/7997 games processed
+2026-03-07 23:10:55,895  INFO      src.analytics.pipeline    [backtest]   Per-game: 7191/7997 games processed
+2026-03-07 23:10:55,912  INFO      src.analytics.pipeline    [backtest]   Per-game: 7990/7997 games processed
+2026-03-07 23:10:55,912  INFO      src.analytics.pipeline    [backtest]   Per-game: 7997/7997 games processed
+2026-03-07 23:10:55,936  INFO      src.analytics.pipeline    [backtest]   Comparison: Sharp flipped 72 picks, 61 correct (84.7%), net value: +0.6% winner
+2026-03-07 23:10:55,959  INFO      src.analytics.pipeline    [backtest] Backtest complete: 7997 games, Fund=66.5%, Sharp=67.1%
+2026-03-07 23:10:55,972  INFO      src.analytics.pipeline    backtest completed in 0.6s
+2026-03-07 23:10:55,974  INFO      src.analytics.pipeline  
+Pipeline complete in 299s
+2026-03-07 23:10:55,975  INFO      src.analytics.pipeline    NEW BEST! Winner=66.5%, Upset=47% @ 21% rate, ML ROI=+2.8%
+2026-03-07 23:10:55,975  INFO      src.analytics.pipeline  Pass 1 complete in 4m 58s | 7h 55m remaining
+2026-03-07 23:10:55,975  INFO      src.analytics.pipeline  
+--- Pass 2: Optimization Loop (7h 55m remaining) ---
+2026-03-07 23:10:55,975  INFO      src.analytics.pipeline  [Loop 2] Optimizing fundamentals (3000 trials)...
+2026-03-07 23:10:56,491  INFO      src.analytics.pipeline    Walk-forward: 6397 train (2019-10-22 to 2025-01-12), 1600 validation (2025-01-12 to 2026-03-07)
+2026-03-07 23:10:56,494  INFO      src.analytics.pipeline    Baseline (train): Winner=67.2%, Upset=49.6% @ 20.4% rate, Loss=-77.271
+2026-03-07 23:10:56,494  INFO      src.analytics.pipeline    Baseline (valid): Winner=63.6%, Upset=40.5% @ 25.0% rate, Favorites=68.4%, Loss=-73.750
+2026-03-07 23:10:56,494  INFO      src.analytics.pipeline    Baseline (all):   Winner=66.5%, Upset=47.4% @ 21.3% rate, Loss=-76.566
+2026-03-07 23:10:57,869  INFO      src.analytics.pipeline    Study 'fundamentals_5f72f6b7': 4203 trials in memory, adding 3000 more
+2026-03-07 23:10:57,876  INFO      src.analytics.pipeline    Trial 4203/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:10:57,876  INFO      src.analytics.pipeline      Best multipliers: pythag=5.493, road_trip=0.808, cum_travel_7d=3.229
+2026-03-07 23:10:59,152  INFO      src.analytics.pipeline    Trial 4500/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:10:59,165  INFO      src.analytics.pipeline      Stagnation: 300 trials without improvement (best loss=-78.396)
+2026-03-07 23:11:00,563  INFO      src.analytics.pipeline    Trial 4800/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:11:00,576  INFO      src.analytics.pipeline      Stagnation: 600 trials without improvement (best loss=-78.396)
+2026-03-07 23:11:02,001  INFO      src.analytics.pipeline    Trial 5100/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:11:02,016  INFO      src.analytics.pipeline      Stagnation: 900 trials without improvement (best loss=-78.396)
+2026-03-07 23:11:03,361  INFO      src.analytics.pipeline    Trial 5400/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:11:03,376  INFO      src.analytics.pipeline      Stagnation: 1200 trials without improvement (best loss=-78.396)
+2026-03-07 23:11:03,376  INFO      src.analytics.pipeline      Early stopping: 1200 trials without improvement after 5403 total trials
+2026-03-07 23:11:05,478  INFO      src.analytics.pipeline    Study has 5404 total trials (saving 1201 to disk in background)
+2026-03-07 23:11:05,482  INFO      src.analytics.pipeline    Validating top 100 training trials...
+2026-03-07 23:11:05,483  INFO      src.analytics.pipeline      #1 train loss=-90.102 (Winner=66.3%) -> val loss=-72.312 (Winner=60.4%)
+2026-03-07 23:11:05,488  INFO      src.analytics.pipeline      #2 train loss=-90.102 (Winner=66.3%) -> val loss=-72.250 (Winner=60.4%)
+2026-03-07 23:11:05,490  INFO      src.analytics.pipeline      #3 train loss=-90.086 (Winner=66.3%) -> val loss=-72.438 (Winner=60.6%)
+2026-03-07 23:11:05,492  INFO      src.analytics.pipeline      #4 train loss=-90.086 (Winner=66.3%) -> val loss=-72.188 (Winner=60.3%)
+2026-03-07 23:11:05,498  INFO      src.analytics.pipeline      #5 train loss=-90.086 (Winner=66.3%) -> val loss=-72.375 (Winner=60.5%)
+2026-03-07 23:11:05,655  INFO      src.analytics.pipeline    Selected trial #99 (not #1) -- better validation performance
+2026-03-07 23:11:05,656  INFO      src.analytics.pipeline    -- Walk-forward results --
+2026-03-07 23:11:05,657  INFO      src.analytics.pipeline      Train:  Winner=66.2%, Upset=47.8% @ 24.8% rate, Loss=-89.961
+2026-03-07 23:11:05,657  INFO      src.analytics.pipeline      Valid:  Winner=60.8%, Upset=38.0% @ 31.4% rate, Favorites=68.4%, Loss=-72.750
+2026-03-07 23:11:05,657  INFO      src.analytics.pipeline      All:    Winner=65.1%, Upset=45.4% @ 26.2% rate, Loss=-77.029
+2026-03-07 23:11:05,657  INFO      src.analytics.pipeline    Save gate diagnostics: loss(val) -73.750->-72.750, loss(all) -76.566->-77.029, hybrid -75.158->-74.889, ROI +2.34%->+1.74% (lb95 -6.46%), min ML payout 1.50x, ROI gate OFF, hybrid loss gate ON, shrunk upset lift +6.05pp
+2026-03-07 23:11:05,657  INFO      src.analytics.pipeline    Validation save gate rejected: loss gate failed (val -72.750 vs -73.750; hybrid -74.889 vs -75.158); needs val improve >= 0.0001 or hybrid improve >= 0.0010; validation loss regression too large (+1.000 > +0.7500) - keeping current weights
+2026-03-07 23:11:05,705  INFO      src.analytics.pipeline    Fundamentals: no change
+2026-03-07 23:11:05,706  INFO      src.analytics.pipeline  [Loop 2] Optimizing sharp (3000 trials)...
+2026-03-07 23:11:06,165  INFO      src.analytics.pipeline    Walk-forward: 6397 train (2019-10-22 to 2025-01-12), 1600 validation (2025-01-12 to 2026-03-07)
+2026-03-07 23:11:06,202  INFO      src.analytics.pipeline    Baseline (train): Winner=68.0%, Upset=51.6% @ 20.3% rate, Loss=-78.459
+2026-03-07 23:11:06,202  INFO      src.analytics.pipeline    Baseline (valid): Winner=63.5%, Upset=40.2% @ 25.0% rate, Favorites=68.4%, Loss=-73.562
+2026-03-07 23:11:06,202  INFO      src.analytics.pipeline    Baseline (all):   Winner=67.1%, Upset=48.9% @ 21.2% rate, Loss=-77.479
+2026-03-07 23:11:07,612  INFO      src.analytics.pipeline    Study 'sharp_315a6ca8': 4201 trials in memory, adding 3000 more
+2026-03-07 23:11:11,004  INFO      src.analytics.pipeline      Stagnation: 300 trials without improvement (best loss=-78.459)
+2026-03-07 23:11:11,005  INFO      src.analytics.pipeline    Trial 4500/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:11:14,664  INFO      src.analytics.pipeline      Stagnation: 600 trials without improvement (best loss=-78.459)
+2026-03-07 23:11:14,664  INFO      src.analytics.pipeline    Trial 4800/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:11:18,220  INFO      src.analytics.pipeline      Stagnation: 900 trials without improvement (best loss=-78.459)
+2026-03-07 23:11:18,220  INFO      src.analytics.pipeline    Trial 5100/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:11:21,810  INFO      src.analytics.pipeline      Stagnation: 1200 trials without improvement (best loss=-78.459)
+2026-03-07 23:11:21,810  INFO      src.analytics.pipeline      Early stopping: 1200 trials without improvement after 5400 total trials
+2026-03-07 23:11:21,811  INFO      src.analytics.pipeline    Trial 5400/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:11:24,073  INFO      src.analytics.pipeline    Study has 5401 total trials (saving 1200 to disk in background)
+2026-03-07 23:11:24,077  INFO      src.analytics.pipeline    Validating top 100 training trials...
+2026-03-07 23:11:24,091  INFO      src.analytics.pipeline      #1 train loss=-88.913 (Winner=68.0%) -> val loss=-73.125 (Winner=63.1%)
+2026-03-07 23:11:24,129  INFO      src.analytics.pipeline      #2 train loss=-88.913 (Winner=68.0%) -> val loss=-73.312 (Winner=63.2%)
+2026-03-07 23:11:24,138  INFO      src.analytics.pipeline      #3 train loss=-88.913 (Winner=68.0%) -> val loss=-73.438 (Winner=63.4%)
+2026-03-07 23:11:24,140  INFO      src.analytics.pipeline      #4 train loss=-88.913 (Winner=68.0%) -> val loss=-73.188 (Winner=63.1%)
+2026-03-07 23:11:24,140  INFO      src.analytics.pipeline      #5 train loss=-88.913 (Winner=68.0%) -> val loss=-73.312 (Winner=63.2%)
+2026-03-07 23:11:24,280  INFO      src.analytics.pipeline    Selected trial #6 (not #1) -- better validation performance
+2026-03-07 23:11:24,283  INFO      src.analytics.pipeline    -- Walk-forward results --
+2026-03-07 23:11:24,284  INFO      src.analytics.pipeline      Train:  Winner=68.0%, Upset=51.5% @ 20.3% rate, Loss=-88.913
+2026-03-07 23:11:24,284  INFO      src.analytics.pipeline      Valid:  Winner=63.5%, Upset=40.2% @ 25.0% rate, Favorites=68.4%, Loss=-73.562
+2026-03-07 23:11:24,285  INFO      src.analytics.pipeline      All:    Winner=67.1%, Upset=48.9% @ 21.2% rate, Loss=-77.479
+2026-03-07 23:11:24,286  INFO      src.analytics.pipeline    Save gate diagnostics: loss(val) -73.562->-73.562, loss(all) -77.479->-77.479, hybrid -75.521->-75.521, ROI +1.96%->+1.96% (lb95 -5.81%), min ML payout 1.50x, ROI gate OFF, hybrid loss gate ON, shrunk upset lift +8.12pp
+2026-03-07 23:11:24,286  INFO      src.analytics.pipeline    Validation save gate rejected: loss gate failed (val -73.562 vs -73.562; hybrid -75.521 vs -75.521); needs val improve >= 0.0001 or hybrid improve >= 0.0010 - keeping current weights
+2026-03-07 23:11:24,337  INFO      src.analytics.pipeline    Sharp: no change
+2026-03-07 23:11:24,338  INFO      src.analytics.pipeline  [Loop 2] Backtest...
+2026-03-07 23:11:24,338  INFO      src.analytics.pipeline    Loading precomputed games...
+2026-03-07 23:11:24,352  INFO      src.analytics.pipeline    Loaded 7997 precomputed games from cache (0 new)
+2026-03-07 23:11:24,410  INFO      src.analytics.pipeline    Backtest results loaded from disk cache (7997 games)
+2026-03-07 23:11:24,422  INFO      src.analytics.pipeline    No improvement (66.5% vs best 66.5%)
+2026-03-07 23:11:24,423  INFO      src.analytics.pipeline    Pass 2 took 0m 28s | avg 0m 28s/pass
+2026-03-07 23:11:24,423  INFO      src.analytics.pipeline    Save gate: no weights saved this pass (1/4)
+2026-03-07 23:11:24,423  INFO      src.analytics.pipeline  
+--- Pass 3: Optimization Loop (7h 54m remaining) ---
+2026-03-07 23:11:24,423  INFO      src.analytics.pipeline  [Loop 3] Optimizing fundamentals (3000 trials)...
+2026-03-07 23:11:24,911  INFO      src.analytics.pipeline    Walk-forward: 6397 train (2019-10-22 to 2025-01-12), 1600 validation (2025-01-12 to 2026-03-07)
+2026-03-07 23:11:24,921  INFO      src.analytics.pipeline    Baseline (train): Winner=67.2%, Upset=49.6% @ 20.4% rate, Loss=-77.271
+2026-03-07 23:11:24,922  INFO      src.analytics.pipeline    Baseline (valid): Winner=63.6%, Upset=40.5% @ 25.0% rate, Favorites=68.4%, Loss=-73.750
+2026-03-07 23:11:24,922  INFO      src.analytics.pipeline    Baseline (all):   Winner=66.5%, Upset=47.4% @ 21.3% rate, Loss=-76.566
+2026-03-07 23:11:26,643  INFO      src.analytics.pipeline    Study 'fundamentals_5f72f6b7': 5404 trials in memory, adding 3000 more
+2026-03-07 23:11:26,677  INFO      src.analytics.pipeline    Trial 5404/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:11:26,679  INFO      src.analytics.pipeline      Best multipliers: pythag=5.504, road_trip=0.812, cum_travel_7d=3.225
+2026-03-07 23:11:30,158  INFO      src.analytics.pipeline    Trial 5700/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:11:30,200  INFO      src.analytics.pipeline      Stagnation: 300 trials without improvement (best loss=-78.396)
+2026-03-07 23:11:33,897  INFO      src.analytics.pipeline    Trial 6000/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:11:33,969  INFO      src.analytics.pipeline      Stagnation: 600 trials without improvement (best loss=-78.396)
+2026-03-07 23:11:37,736  INFO      src.analytics.pipeline    Trial 6300/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:11:37,785  INFO      src.analytics.pipeline      Stagnation: 900 trials without improvement (best loss=-78.396)
+2026-03-07 23:11:41,493  INFO      src.analytics.pipeline    Trial 6600/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:11:41,551  INFO      src.analytics.pipeline      Stagnation: 1200 trials without improvement (best loss=-78.396)
+2026-03-07 23:11:41,552  INFO      src.analytics.pipeline      Early stopping: 1200 trials without improvement after 6604 total trials
+2026-03-07 23:11:44,111  INFO      src.analytics.pipeline    Study has 6605 total trials (saving 1201 to disk in background)
+2026-03-07 23:11:44,115  INFO      src.analytics.pipeline    Validating top 100 training trials...
+2026-03-07 23:11:44,124  INFO      src.analytics.pipeline      #1 train loss=-90.102 (Winner=66.3%) -> val loss=-72.312 (Winner=60.4%)
+2026-03-07 23:11:44,140  INFO      src.analytics.pipeline      #2 train loss=-90.102 (Winner=66.3%) -> val loss=-72.250 (Winner=60.4%)
+2026-03-07 23:11:44,141  INFO      src.analytics.pipeline      #3 train loss=-90.086 (Winner=66.3%) -> val loss=-72.438 (Winner=60.6%)
+2026-03-07 23:11:44,142  INFO      src.analytics.pipeline      #4 train loss=-90.086 (Winner=66.3%) -> val loss=-72.188 (Winner=60.3%)
+2026-03-07 23:11:44,143  INFO      src.analytics.pipeline      #5 train loss=-90.086 (Winner=66.3%) -> val loss=-72.375 (Winner=60.5%)
+2026-03-07 23:11:44,284  INFO      src.analytics.pipeline    Selected trial #99 (not #1) -- better validation performance
+2026-03-07 23:11:44,285  INFO      src.analytics.pipeline    -- Walk-forward results --
+2026-03-07 23:11:44,285  INFO      src.analytics.pipeline      Train:  Winner=66.2%, Upset=47.8% @ 24.8% rate, Loss=-89.961
+2026-03-07 23:11:44,286  INFO      src.analytics.pipeline      Valid:  Winner=60.8%, Upset=38.0% @ 31.4% rate, Favorites=68.4%, Loss=-72.750
+2026-03-07 23:11:44,286  INFO      src.analytics.pipeline      All:    Winner=65.1%, Upset=45.4% @ 26.2% rate, Loss=-77.029
+2026-03-07 23:11:44,286  INFO      src.analytics.pipeline    Save gate diagnostics: loss(val) -73.750->-72.750, loss(all) -76.566->-77.029, hybrid -75.158->-74.889, ROI +2.34%->+1.74% (lb95 -6.46%), min ML payout 1.50x, ROI gate OFF, hybrid loss gate ON, shrunk upset lift +6.05pp
+2026-03-07 23:11:44,286  INFO      src.analytics.pipeline    Validation save gate rejected: loss gate failed (val -72.750 vs -73.750; hybrid -74.889 vs -75.158); needs val improve >= 0.0001 or hybrid improve >= 0.0010; validation loss regression too large (+1.000 > +0.7500) - keeping current weights
+2026-03-07 23:11:44,346  INFO      src.analytics.pipeline    Fundamentals: no change
+2026-03-07 23:11:44,347  INFO      src.analytics.pipeline  [Loop 3] Optimizing sharp (3000 trials)...
+2026-03-07 23:11:44,823  INFO      src.analytics.pipeline    Walk-forward: 6397 train (2019-10-22 to 2025-01-12), 1600 validation (2025-01-12 to 2026-03-07)
+2026-03-07 23:11:44,842  INFO      src.analytics.pipeline    Baseline (train): Winner=68.0%, Upset=51.6% @ 20.3% rate, Loss=-78.459
+2026-03-07 23:11:44,843  INFO      src.analytics.pipeline    Baseline (valid): Winner=63.5%, Upset=40.2% @ 25.0% rate, Favorites=68.4%, Loss=-73.562
+2026-03-07 23:11:44,843  INFO      src.analytics.pipeline    Baseline (all):   Winner=67.1%, Upset=48.9% @ 21.2% rate, Loss=-77.479
+2026-03-07 23:11:46,610  INFO      src.analytics.pipeline    Study 'sharp_315a6ca8': 5401 trials in memory, adding 3000 more
+2026-03-07 23:11:50,292  INFO      src.analytics.pipeline      Stagnation: 300 trials without improvement (best loss=-78.459)
+2026-03-07 23:11:50,292  INFO      src.analytics.pipeline    Trial 5700/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:11:54,095  INFO      src.analytics.pipeline      Stagnation: 600 trials without improvement (best loss=-78.459)
+2026-03-07 23:11:54,095  INFO      src.analytics.pipeline    Trial 6000/3000: loss=-78.302 (Winner=67.9%, Upset=51.4% @ 20.2% rate)
+2026-03-07 23:11:57,987  INFO      src.analytics.pipeline      Stagnation: 900 trials without improvement (best loss=-78.459)
+2026-03-07 23:11:57,988  INFO      src.analytics.pipeline    Trial 6300/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:12:02,034  INFO      src.analytics.pipeline      Stagnation: 1200 trials without improvement (best loss=-78.459)
+2026-03-07 23:12:02,034  INFO      src.analytics.pipeline      Early stopping: 1200 trials without improvement after 6600 total trials
+2026-03-07 23:12:02,034  INFO      src.analytics.pipeline    Trial 6600/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:12:04,664  INFO      src.analytics.pipeline    Study has 6601 total trials (saving 1200 to disk in background)
+2026-03-07 23:12:04,669  INFO      src.analytics.pipeline    Validating top 100 training trials...
+2026-03-07 23:12:04,675  INFO      src.analytics.pipeline      #1 train loss=-88.913 (Winner=68.0%) -> val loss=-73.125 (Winner=63.1%)
+2026-03-07 23:12:04,703  INFO      src.analytics.pipeline      #2 train loss=-88.913 (Winner=68.0%) -> val loss=-73.312 (Winner=63.2%)
+2026-03-07 23:12:04,705  INFO      src.analytics.pipeline      #3 train loss=-88.913 (Winner=68.0%) -> val loss=-73.438 (Winner=63.4%)
+2026-03-07 23:12:04,707  INFO      src.analytics.pipeline      #4 train loss=-88.913 (Winner=68.0%) -> val loss=-73.188 (Winner=63.1%)
+2026-03-07 23:12:04,707  INFO      src.analytics.pipeline      #5 train loss=-88.913 (Winner=68.0%) -> val loss=-73.312 (Winner=63.2%)
+2026-03-07 23:12:04,864  INFO      src.analytics.pipeline    Selected trial #6 (not #1) -- better validation performance
+2026-03-07 23:12:04,865  INFO      src.analytics.pipeline    -- Walk-forward results --
+2026-03-07 23:12:04,866  INFO      src.analytics.pipeline      Train:  Winner=68.0%, Upset=51.5% @ 20.3% rate, Loss=-88.913
+2026-03-07 23:12:04,866  INFO      src.analytics.pipeline      Valid:  Winner=63.5%, Upset=40.2% @ 25.0% rate, Favorites=68.4%, Loss=-73.562
+2026-03-07 23:12:04,867  INFO      src.analytics.pipeline      All:    Winner=67.1%, Upset=48.9% @ 21.2% rate, Loss=-77.479
+2026-03-07 23:12:04,867  INFO      src.analytics.pipeline    Save gate diagnostics: loss(val) -73.562->-73.562, loss(all) -77.479->-77.479, hybrid -75.521->-75.521, ROI +1.96%->+1.96% (lb95 -5.81%), min ML payout 1.50x, ROI gate OFF, hybrid loss gate ON, shrunk upset lift +8.12pp
+2026-03-07 23:12:04,867  INFO      src.analytics.pipeline    Validation save gate rejected: loss gate failed (val -73.562 vs -73.562; hybrid -75.521 vs -75.521); needs val improve >= 0.0001 or hybrid improve >= 0.0010 - keeping current weights
+2026-03-07 23:12:04,930  INFO      src.analytics.pipeline    Sharp: no change
+2026-03-07 23:12:04,930  INFO      src.analytics.pipeline  [Loop 3] Backtest...
+2026-03-07 23:12:04,931  INFO      src.analytics.pipeline    Loading precomputed games...
+2026-03-07 23:12:04,944  INFO      src.analytics.pipeline    Loaded 7997 precomputed games from cache (0 new)
+2026-03-07 23:12:04,984  INFO      src.analytics.pipeline    Backtest results loaded from disk cache (7997 games)
+2026-03-07 23:12:05,006  INFO      src.analytics.pipeline    No improvement (66.5% vs best 66.5%)
+2026-03-07 23:12:05,006  INFO      src.analytics.pipeline    Pass 3 took 0m 40s | avg 0m 34s/pass
+2026-03-07 23:12:05,006  INFO      src.analytics.pipeline    Save gate: no weights saved this pass (2/4)
+2026-03-07 23:12:05,006  INFO      src.analytics.pipeline  
+--- Pass 4: Optimization Loop (7h 53m remaining) ---
+2026-03-07 23:12:05,007  INFO      src.analytics.pipeline  [Loop 4] Optimizing fundamentals (3000 trials)...
+2026-03-07 23:12:05,511  INFO      src.analytics.pipeline    Walk-forward: 6397 train (2019-10-22 to 2025-01-12), 1600 validation (2025-01-12 to 2026-03-07)
+2026-03-07 23:12:05,537  INFO      src.analytics.pipeline    Baseline (train): Winner=67.2%, Upset=49.6% @ 20.4% rate, Loss=-77.271
+2026-03-07 23:12:05,537  INFO      src.analytics.pipeline    Baseline (valid): Winner=63.6%, Upset=40.5% @ 25.0% rate, Favorites=68.4%, Loss=-73.750
+2026-03-07 23:12:05,538  INFO      src.analytics.pipeline    Baseline (all):   Winner=66.5%, Upset=47.4% @ 21.3% rate, Loss=-76.566
+2026-03-07 23:12:07,667  INFO      src.analytics.pipeline    Study 'fundamentals_5f72f6b7': 6605 trials in memory, adding 3000 more
+2026-03-07 23:12:07,697  INFO      src.analytics.pipeline    Trial 6605/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:12:07,697  INFO      src.analytics.pipeline      Best multipliers: pythag=5.511, road_trip=0.810, cum_travel_7d=3.221
+2026-03-07 23:12:11,484  INFO      src.analytics.pipeline    Trial 6900/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:12:11,541  INFO      src.analytics.pipeline      Stagnation: 300 trials without improvement (best loss=-78.396)
+2026-03-07 23:12:15,362  INFO      src.analytics.pipeline    Trial 7200/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:12:15,429  INFO      src.analytics.pipeline      Stagnation: 600 trials without improvement (best loss=-78.396)
+2026-03-07 23:12:19,452  INFO      src.analytics.pipeline    Trial 7500/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:12:19,516  INFO      src.analytics.pipeline      Stagnation: 900 trials without improvement (best loss=-78.396)
+2026-03-07 23:12:23,561  INFO      src.analytics.pipeline    Trial 7800/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:12:23,616  INFO      src.analytics.pipeline      Stagnation: 1200 trials without improvement (best loss=-78.396)
+2026-03-07 23:12:23,617  INFO      src.analytics.pipeline      Early stopping: 1200 trials without improvement after 7805 total trials
+2026-03-07 23:12:27,498  INFO      src.analytics.pipeline    Study has 7806 total trials (saving 1201 to disk in background)
+2026-03-07 23:12:27,503  INFO      src.analytics.pipeline    Validating top 100 training trials...
+2026-03-07 23:12:27,518  INFO      src.analytics.pipeline      #1 train loss=-90.102 (Winner=66.3%) -> val loss=-72.312 (Winner=60.4%)
+2026-03-07 23:12:27,549  INFO      src.analytics.pipeline      #2 train loss=-90.102 (Winner=66.3%) -> val loss=-72.250 (Winner=60.4%)
+2026-03-07 23:12:27,551  INFO      src.analytics.pipeline      #3 train loss=-90.086 (Winner=66.3%) -> val loss=-72.438 (Winner=60.6%)
+2026-03-07 23:12:27,554  INFO      src.analytics.pipeline      #4 train loss=-90.086 (Winner=66.3%) -> val loss=-72.188 (Winner=60.3%)
+2026-03-07 23:12:27,555  INFO      src.analytics.pipeline      #5 train loss=-90.086 (Winner=66.3%) -> val loss=-72.375 (Winner=60.5%)
+2026-03-07 23:12:27,834  INFO      src.analytics.pipeline    Selected trial #99 (not #1) -- better validation performance
+2026-03-07 23:12:27,836  INFO      src.analytics.pipeline    -- Walk-forward results --
+2026-03-07 23:12:27,836  INFO      src.analytics.pipeline      Train:  Winner=66.2%, Upset=47.8% @ 24.8% rate, Loss=-89.961
+2026-03-07 23:12:27,836  INFO      src.analytics.pipeline      Valid:  Winner=60.8%, Upset=38.0% @ 31.4% rate, Favorites=68.4%, Loss=-72.750
+2026-03-07 23:12:27,837  INFO      src.analytics.pipeline      All:    Winner=65.1%, Upset=45.4% @ 26.2% rate, Loss=-77.029
+2026-03-07 23:12:27,837  INFO      src.analytics.pipeline    Save gate diagnostics: loss(val) -73.750->-72.750, loss(all) -76.566->-77.029, hybrid -75.158->-74.889, ROI +2.34%->+1.74% (lb95 -6.46%), min ML payout 1.50x, ROI gate OFF, hybrid loss gate ON, shrunk upset lift +6.05pp
+2026-03-07 23:12:27,837  INFO      src.analytics.pipeline    Validation save gate rejected: loss gate failed (val -72.750 vs -73.750; hybrid -74.889 vs -75.158); needs val improve >= 0.0001 or hybrid improve >= 0.0010; validation loss regression too large (+1.000 > +0.7500) - keeping current weights
+2026-03-07 23:12:27,919  INFO      src.analytics.pipeline    Fundamentals: no change
+2026-03-07 23:12:27,919  INFO      src.analytics.pipeline  [Loop 4] Optimizing sharp (3000 trials)...
+2026-03-07 23:12:28,514  INFO      src.analytics.pipeline    Walk-forward: 6397 train (2019-10-22 to 2025-01-12), 1600 validation (2025-01-12 to 2026-03-07)
+2026-03-07 23:12:28,540  INFO      src.analytics.pipeline    Baseline (train): Winner=68.0%, Upset=51.6% @ 20.3% rate, Loss=-78.459
+2026-03-07 23:12:28,541  INFO      src.analytics.pipeline    Baseline (valid): Winner=63.5%, Upset=40.2% @ 25.0% rate, Favorites=68.4%, Loss=-73.562
+2026-03-07 23:12:28,541  INFO      src.analytics.pipeline    Baseline (all):   Winner=67.1%, Upset=48.9% @ 21.2% rate, Loss=-77.479
+2026-03-07 23:12:31,528  INFO      src.analytics.pipeline    Study 'sharp_315a6ca8': 6601 trials in memory, adding 3000 more
+2026-03-07 23:12:36,780  INFO      src.analytics.pipeline      Stagnation: 300 trials without improvement (best loss=-78.459)
+2026-03-07 23:12:36,781  INFO      src.analytics.pipeline    Trial 6900/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:12:42,215  INFO      src.analytics.pipeline      Stagnation: 600 trials without improvement (best loss=-78.459)
+2026-03-07 23:12:42,216  INFO      src.analytics.pipeline    Trial 7200/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:12:47,748  INFO      src.analytics.pipeline      Stagnation: 900 trials without improvement (best loss=-78.459)
+2026-03-07 23:12:47,748  INFO      src.analytics.pipeline    Trial 7500/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:12:52,799  INFO      src.analytics.pipeline      Stagnation: 1200 trials without improvement (best loss=-78.459)
+2026-03-07 23:12:52,800  INFO      src.analytics.pipeline      Early stopping: 1200 trials without improvement after 7800 total trials
+2026-03-07 23:12:52,801  INFO      src.analytics.pipeline    Trial 7800/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:12:55,927  INFO      src.analytics.pipeline    Study has 7801 total trials (saving 1200 to disk in background)
+2026-03-07 23:12:55,931  INFO      src.analytics.pipeline    Validating top 100 training trials...
+2026-03-07 23:12:55,941  INFO      src.analytics.pipeline      #1 train loss=-88.913 (Winner=68.0%) -> val loss=-73.125 (Winner=63.1%)
+2026-03-07 23:12:55,960  INFO      src.analytics.pipeline      #2 train loss=-88.913 (Winner=68.0%) -> val loss=-73.312 (Winner=63.2%)
+2026-03-07 23:12:55,962  INFO      src.analytics.pipeline      #3 train loss=-88.913 (Winner=68.0%) -> val loss=-73.438 (Winner=63.4%)
+2026-03-07 23:12:55,964  INFO      src.analytics.pipeline      #4 train loss=-88.913 (Winner=68.0%) -> val loss=-73.188 (Winner=63.1%)
+2026-03-07 23:12:55,964  INFO      src.analytics.pipeline      #5 train loss=-88.913 (Winner=68.0%) -> val loss=-73.312 (Winner=63.2%)
+2026-03-07 23:12:56,115  INFO      src.analytics.pipeline    Selected trial #6 (not #1) -- better validation performance
+2026-03-07 23:12:56,117  INFO      src.analytics.pipeline    -- Walk-forward results --
+2026-03-07 23:12:56,117  INFO      src.analytics.pipeline      Train:  Winner=68.0%, Upset=51.5% @ 20.3% rate, Loss=-88.913
+2026-03-07 23:12:56,119  INFO      src.analytics.pipeline      Valid:  Winner=63.5%, Upset=40.2% @ 25.0% rate, Favorites=68.4%, Loss=-73.562
+2026-03-07 23:12:56,119  INFO      src.analytics.pipeline      All:    Winner=67.1%, Upset=48.9% @ 21.2% rate, Loss=-77.479
+2026-03-07 23:12:56,119  INFO      src.analytics.pipeline    Save gate diagnostics: loss(val) -73.562->-73.562, loss(all) -77.479->-77.479, hybrid -75.521->-75.521, ROI +1.96%->+1.96% (lb95 -5.81%), min ML payout 1.50x, ROI gate OFF, hybrid loss gate ON, shrunk upset lift +8.12pp
+2026-03-07 23:12:56,120  INFO      src.analytics.pipeline    Validation save gate rejected: loss gate failed (val -73.562 vs -73.562; hybrid -75.521 vs -75.521); needs val improve >= 0.0001 or hybrid improve >= 0.0010 - keeping current weights
+2026-03-07 23:12:56,200  INFO      src.analytics.pipeline    Sharp: no change
+2026-03-07 23:12:56,201  INFO      src.analytics.pipeline  [Loop 4] Backtest...
+2026-03-07 23:12:56,201  INFO      src.analytics.pipeline    Loading precomputed games...
+2026-03-07 23:12:56,215  INFO      src.analytics.pipeline    Loaded 7997 precomputed games from cache (0 new)
+2026-03-07 23:12:56,252  INFO      src.analytics.pipeline    Backtest results loaded from disk cache (7997 games)
+2026-03-07 23:12:56,270  INFO      src.analytics.pipeline    No improvement (66.5% vs best 66.5%)
+2026-03-07 23:12:56,271  INFO      src.analytics.pipeline    Pass 4 took 0m 51s | avg 0m 40s/pass
+2026-03-07 23:12:56,271  INFO      src.analytics.pipeline    Save gate: no weights saved this pass (3/4)
+2026-03-07 23:12:56,272  INFO      src.analytics.pipeline  
+--- Pass 5: Optimization Loop (7h 53m remaining) ---
+2026-03-07 23:12:56,272  INFO      src.analytics.pipeline  [Loop 5] Optimizing fundamentals (3000 trials)...
+2026-03-07 23:12:56,754  INFO      src.analytics.pipeline    Walk-forward: 6397 train (2019-10-22 to 2025-01-12), 1600 validation (2025-01-12 to 2026-03-07)
+2026-03-07 23:12:56,783  INFO      src.analytics.pipeline    Baseline (train): Winner=67.2%, Upset=49.6% @ 20.4% rate, Loss=-77.271
+2026-03-07 23:12:56,783  INFO      src.analytics.pipeline    Baseline (valid): Winner=63.6%, Upset=40.5% @ 25.0% rate, Favorites=68.4%, Loss=-73.750
+2026-03-07 23:12:56,783  INFO      src.analytics.pipeline    Baseline (all):   Winner=66.5%, Upset=47.4% @ 21.3% rate, Loss=-76.566
+2026-03-07 23:13:00,008  INFO      src.analytics.pipeline    Study 'fundamentals_5f72f6b7': 7806 trials in memory, adding 3000 more
+2026-03-07 23:13:00,046  INFO      src.analytics.pipeline    Trial 7806/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:13:00,046  INFO      src.analytics.pipeline      Best multipliers: pythag=5.509, road_trip=0.814, cum_travel_7d=3.226
+2026-03-07 23:13:04,188  INFO      src.analytics.pipeline    Trial 8100/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:13:04,291  INFO      src.analytics.pipeline      Stagnation: 300 trials without improvement (best loss=-78.396)
+2026-03-07 23:13:08,798  INFO      src.analytics.pipeline    Trial 8400/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:13:08,887  INFO      src.analytics.pipeline      Stagnation: 600 trials without improvement (best loss=-78.396)
+2026-03-07 23:13:13,216  INFO      src.analytics.pipeline    Trial 8700/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:13:13,320  INFO      src.analytics.pipeline      Stagnation: 900 trials without improvement (best loss=-78.396)
+2026-03-07 23:13:17,645  INFO      src.analytics.pipeline    Trial 9000/3000: loss=-78.396 (Winner=68.3%, Upset=52.4% @ 19.3% rate)
+2026-03-07 23:13:17,744  INFO      src.analytics.pipeline      Stagnation: 1200 trials without improvement (best loss=-78.396)
+2026-03-07 23:13:17,745  INFO      src.analytics.pipeline      Early stopping: 1200 trials without improvement after 9006 total trials
+2026-03-07 23:13:20,595  INFO      src.analytics.pipeline    Study has 9007 total trials (saving 1201 to disk in background)
+2026-03-07 23:13:20,601  INFO      src.analytics.pipeline    Validating top 100 training trials...
+2026-03-07 23:13:20,612  INFO      src.analytics.pipeline      #1 train loss=-90.102 (Winner=66.3%) -> val loss=-72.312 (Winner=60.4%)
+2026-03-07 23:13:20,633  INFO      src.analytics.pipeline      #2 train loss=-90.102 (Winner=66.3%) -> val loss=-72.250 (Winner=60.4%)
+2026-03-07 23:13:20,634  INFO      src.analytics.pipeline      #3 train loss=-90.086 (Winner=66.3%) -> val loss=-72.438 (Winner=60.6%)
+2026-03-07 23:13:20,636  INFO      src.analytics.pipeline      #4 train loss=-90.086 (Winner=66.3%) -> val loss=-72.188 (Winner=60.3%)
+2026-03-07 23:13:20,636  INFO      src.analytics.pipeline      #5 train loss=-90.086 (Winner=66.3%) -> val loss=-72.375 (Winner=60.5%)
+2026-03-07 23:13:20,780  INFO      src.analytics.pipeline    Selected trial #99 (not #1) -- better validation performance
+2026-03-07 23:13:20,782  INFO      src.analytics.pipeline    -- Walk-forward results --
+2026-03-07 23:13:20,782  INFO      src.analytics.pipeline      Train:  Winner=66.2%, Upset=47.8% @ 24.8% rate, Loss=-89.961
+2026-03-07 23:13:20,783  INFO      src.analytics.pipeline      Valid:  Winner=60.8%, Upset=38.0% @ 31.4% rate, Favorites=68.4%, Loss=-72.750
+2026-03-07 23:13:20,783  INFO      src.analytics.pipeline      All:    Winner=65.1%, Upset=45.4% @ 26.2% rate, Loss=-77.029
+2026-03-07 23:13:20,783  INFO      src.analytics.pipeline    Save gate diagnostics: loss(val) -73.750->-72.750, loss(all) -76.566->-77.029, hybrid -75.158->-74.889, ROI +2.34%->+1.74% (lb95 -6.46%), min ML payout 1.50x, ROI gate OFF, hybrid loss gate ON, shrunk upset lift +6.05pp
+2026-03-07 23:13:20,784  INFO      src.analytics.pipeline    Validation save gate rejected: loss gate failed (val -72.750 vs -73.750; hybrid -74.889 vs -75.158); needs val improve >= 0.0001 or hybrid improve >= 0.0010; validation loss regression too large (+1.000 > +0.7500) - keeping current weights
+2026-03-07 23:13:20,866  INFO      src.analytics.pipeline    Fundamentals: no change
+2026-03-07 23:13:20,867  INFO      src.analytics.pipeline  [Loop 5] Optimizing sharp (3000 trials)...
+2026-03-07 23:13:21,332  INFO      src.analytics.pipeline    Walk-forward: 6397 train (2019-10-22 to 2025-01-12), 1600 validation (2025-01-12 to 2026-03-07)
+2026-03-07 23:13:21,349  INFO      src.analytics.pipeline    Baseline (train): Winner=68.0%, Upset=51.6% @ 20.3% rate, Loss=-78.459
+2026-03-07 23:13:21,349  INFO      src.analytics.pipeline    Baseline (valid): Winner=63.5%, Upset=40.2% @ 25.0% rate, Favorites=68.4%, Loss=-73.562
+2026-03-07 23:13:21,349  INFO      src.analytics.pipeline    Baseline (all):   Winner=67.1%, Upset=48.9% @ 21.2% rate, Loss=-77.479
+2026-03-07 23:13:24,686  INFO      src.analytics.pipeline    Study 'sharp_315a6ca8': 7801 trials in memory, adding 3000 more
+2026-03-07 23:13:28,989  INFO      src.analytics.pipeline      Stagnation: 300 trials without improvement (best loss=-78.459)
+2026-03-07 23:13:28,990  INFO      src.analytics.pipeline    Trial 8100/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:13:33,341  INFO      src.analytics.pipeline      Stagnation: 600 trials without improvement (best loss=-78.459)
+2026-03-07 23:13:33,341  INFO      src.analytics.pipeline    Trial 8400/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:13:37,685  INFO      src.analytics.pipeline      Stagnation: 900 trials without improvement (best loss=-78.459)
+2026-03-07 23:13:37,685  INFO      src.analytics.pipeline    Trial 8700/3000: loss=-78.380 (Winner=68.0%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:13:42,253  INFO      src.analytics.pipeline      Stagnation: 1200 trials without improvement (best loss=-78.459)
+2026-03-07 23:13:42,254  INFO      src.analytics.pipeline      Early stopping: 1200 trials without improvement after 9000 total trials
+2026-03-07 23:13:42,254  INFO      src.analytics.pipeline    Trial 9000/3000: loss=-78.349 (Winner=67.9%, Upset=51.5% @ 20.2% rate)
+2026-03-07 23:13:45,313  INFO      src.analytics.pipeline    Study has 9001 total trials (saving 1200 to disk in background)
+2026-03-07 23:13:45,319  INFO      src.analytics.pipeline    Validating top 100 training trials...
+2026-03-07 23:13:45,334  INFO      src.analytics.pipeline      #1 train loss=-88.913 (Winner=68.0%) -> val loss=-73.125 (Winner=63.1%)
+2026-03-07 23:13:45,353  INFO      src.analytics.pipeline      #2 train loss=-88.913 (Winner=68.0%) -> val loss=-73.312 (Winner=63.2%)
+2026-03-07 23:13:45,355  INFO      src.analytics.pipeline      #3 train loss=-88.913 (Winner=68.0%) -> val loss=-73.438 (Winner=63.4%)
+2026-03-07 23:13:45,357  INFO      src.analytics.pipeline      #4 train loss=-88.913 (Winner=68.0%) -> val loss=-73.188 (Winner=63.1%)
+2026-03-07 23:13:45,358  INFO      src.analytics.pipeline      #5 train loss=-88.913 (Winner=68.0%) -> val loss=-73.312 (Winner=63.2%)
+2026-03-07 23:13:45,648  INFO      src.analytics.pipeline    Selected trial #6 (not #1) -- better validation performance
+2026-03-07 23:13:45,652  INFO      src.analytics.pipeline    -- Walk-forward results --
+2026-03-07 23:13:45,652  INFO      src.analytics.pipeline      Train:  Winner=68.0%, Upset=51.5% @ 20.3% rate, Loss=-88.913
+2026-03-07 23:13:45,653  INFO      src.analytics.pipeline      Valid:  Winner=63.5%, Upset=40.2% @ 25.0% rate, Favorites=68.4%, Loss=-73.562
+2026-03-07 23:13:45,653  INFO      src.analytics.pipeline      All:    Winner=67.1%, Upset=48.9% @ 21.2% rate, Loss=-77.479
+2026-03-07 23:13:45,654  INFO      src.analytics.pipeline    Save gate diagnostics: loss(val) -73.562->-73.562, loss(all) -77.479->-77.479, hybrid -75.521->-75.521, ROI +1.96%->+1.96% (lb95 -5.81%), min ML payout 1.50x, ROI gate OFF, hybrid loss gate ON, shrunk upset lift +8.12pp
+2026-03-07 23:13:45,655  INFO      src.analytics.pipeline    Validation save gate rejected: loss gate failed (val -73.562 vs -73.562; hybrid -75.521 vs -75.521); needs val improve >= 0.0001 or hybrid improve >= 0.0010 - keeping current weights
+2026-03-07 23:13:45,760  INFO      src.analytics.pipeline    Sharp: no change
+2026-03-07 23:13:45,761  INFO      src.analytics.pipeline  [Loop 5] Backtest...
+2026-03-07 23:13:45,762  INFO      src.analytics.pipeline    Loading precomputed games...
+2026-03-07 23:13:45,783  INFO      src.analytics.pipeline    Loaded 7997 precomputed games from cache (0 new)
+2026-03-07 23:13:45,837  INFO      src.analytics.pipeline    Backtest results loaded from disk cache (7997 games)
+2026-03-07 23:13:45,859  INFO      src.analytics.pipeline    No improvement (66.5% vs best 66.5%)
+2026-03-07 23:13:45,860  INFO      src.analytics.pipeline    Pass 5 took 0m 49s | avg 0m 42s/pass
+2026-03-07 23:13:45,861  INFO      src.analytics.pipeline    Save gate: no weights saved this pass (4/4)
+2026-03-07 23:13:45,861  INFO      src.analytics.pipeline  Stopping overnight early: reached 4 consecutive no-save passes.
+2026-03-07 23:13:45,862  INFO      src.analytics.pipeline  
+============================================================
+2026-03-07 23:13:45,862  INFO      src.analytics.pipeline  Overnight complete: 5 passes in 7m 48s
+2026-03-07 23:13:45,863  INFO      src.analytics.pipeline  Best: Winner=66.5%, Upset acc=47% @ 21%, ML ROI=+2.8%
+2026-03-07 23:13:45,864  INFO      src.analytics.pipeline  ============================================================

@@ -194,7 +194,7 @@ class SettingsView(QWidget):
         row.setSpacing(12)
 
         self._upset_slider = QSlider(Qt.Orientation.Horizontal)
-        self._upset_slider.setRange(0, 200)  # 0.0 to 2.0 in 0.01 steps
+        self._upset_slider.setRange(0, 500)  # 0.0 to 5.0 in 0.01 steps
         self._upset_slider.setTickInterval(10)
         self._upset_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self._upset_slider.setSizePolicy(
@@ -219,9 +219,9 @@ class SettingsView(QWidget):
         min_lbl.setProperty("class", "muted")
         range_row.addWidget(min_lbl)
         range_row.addStretch()
-        max_lbl = QLabel("2.0")
-        max_lbl.setProperty("class", "muted")
-        range_row.addWidget(max_lbl)
+        self._upset_max_lbl = QLabel("5.0")
+        self._upset_max_lbl.setProperty("class", "muted")
+        range_row.addWidget(self._upset_max_lbl)
         gl.addLayout(range_row)
 
         apply_card_shadow(group)
@@ -743,10 +743,22 @@ class SettingsView(QWidget):
             self._mode_fund.setChecked(True)
 
         # Upset bonus
-        upset_val = get("upset_bonus_mult", 0.5)
+        try:
+            upset_max = float(get("upset_bonus_mult_max", 5.0))
+        except (TypeError, ValueError):
+            upset_max = 5.0
+        upset_max = max(0.0, upset_max)
+        try:
+            upset_val = float(get("upset_bonus_mult", 0.5))
+        except (TypeError, ValueError):
+            upset_val = 0.5
+        upset_val = min(max(0.0, upset_val), upset_max)
+        upset_slider_max = max(1, int(round(upset_max * 100.0)))
         self._upset_slider.blockSignals(True)
-        self._upset_slider.setValue(int(upset_val * 100))
+        self._upset_slider.setRange(0, upset_slider_max)
+        self._upset_slider.setValue(int(round(upset_val * 100.0)))
         self._upset_slider.blockSignals(False)
+        self._upset_max_lbl.setText(f"{upset_max:.1f}")
         self._upset_value_lbl.setText(f"{upset_val:.2f}")
 
         # Optimizer save gate
