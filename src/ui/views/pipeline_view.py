@@ -1,8 +1,9 @@
 """Pipeline tab -- run/monitor pipeline, view step state, manage snapshots.
 
-V2 design: 6-step pipeline (backup, sync, precompute, optimize x2, backtest)
-with real-time progress log, step indicators, elapsed timers, and snapshot
-management for weight configs.
+V2 design: 10-step pipeline (backup, sync, seed_arenas, bbref_sync,
+referee_sync, elo_compute, precompute, optimize x2, backtest) with real-time
+progress log, step indicators, elapsed timers, and snapshot management for
+weight configs.
 """
 
 import json
@@ -37,10 +38,14 @@ TEXT_PRIMARY = "#e2e8f0"
 TEXT_MUTED = "#94a3b8"
 TEXT_DIM = "#64748b"
 
-# Pipeline steps (name, display label)
+# Pipeline steps (name, display label) — must match PIPELINE_STEPS in pipeline.py
 STEP_LABELS = [
     ("backup", "Backup"),
     ("sync", "Data Sync"),
+    ("seed_arenas", "Arenas"),
+    ("bbref_sync", "BBRef"),
+    ("referee_sync", "Referees"),
+    ("elo_compute", "Elo"),
     ("precompute", "Precompute"),
     ("optimize_fundamentals", "Optimize Fund."),
     ("optimize_sharp", "Optimize Sharp"),
