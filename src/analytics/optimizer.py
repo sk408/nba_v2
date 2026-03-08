@@ -373,8 +373,8 @@ class VectorizedGames:
         # ──────────────────────────────────────────────────────────
 
         # Winner accuracy
-        pred_home_win = game_score > 0.5
-        pred_away_win = game_score < -0.5
+        pred_home_win = game_score > 0
+        pred_away_win = game_score < 0
         actual_home_win = self.actual_spread > 0.5
         actual_away_win = self.actual_spread < -0.5
         actual_push = np.abs(self.actual_spread) <= 0.5
