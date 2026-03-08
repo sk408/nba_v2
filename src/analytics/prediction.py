@@ -1295,11 +1295,13 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
             away_proj = aggregate_projection(atid, htid, is_home=0, as_of_date=gdate,
                                              roster=away_roster)
 
+            # Season for this game
+            game_season = _game_date_to_season(gdate)
+
             # Home court
-            home_court = get_home_court_advantage(htid)
+            home_court = get_home_court_advantage(htid, season=game_season)
 
             # Metrics
-            game_season = _game_date_to_season(gdate)
             hm = _get_team_metrics(htid, season=game_season)
             am = _get_team_metrics(atid, season=game_season)
 
@@ -1388,10 +1390,10 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
 
             _home_travel = compute_travel(htid, gdate, atid, is_home=True)
             _away_travel = compute_travel(atid, gdate, htid, is_home=False)
-            _home_momentum = compute_momentum(htid, gdate)
-            _away_momentum = compute_momentum(atid, gdate)
-            _home_sched = compute_schedule_spots(htid, gdate, atid)
-            _away_sched = compute_schedule_spots(atid, gdate, htid)
+            _home_momentum = compute_momentum(htid, gdate, season=game_season)
+            _away_momentum = compute_momentum(atid, gdate, season=game_season)
+            _home_sched = compute_schedule_spots(htid, gdate, atid, season=game_season)
+            _away_sched = compute_schedule_spots(atid, gdate, htid, season=game_season)
 
             # On/Off impact
             _home_onoff = 0.0
@@ -1505,8 +1507,8 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
                 # Spread sharp edge
                 spread_sharp_edge=_spread_sharp,
                 # 3PT luck
-                home_fg3_luck=compute_fg3_luck(htid, gdate),
-                away_fg3_luck=compute_fg3_luck(atid, gdate),
+                home_fg3_luck=compute_fg3_luck(htid, gdate, season=game_season),
+                away_fg3_luck=compute_fg3_luck(atid, gdate, season=game_season),
                 # Process stats
                 home_process=h_process,
                 away_process=a_process,

@@ -397,22 +397,23 @@ def get_home_court_advantage(team_id: int, season: Optional[str] = None) -> floa
 
     NOTE: home_pts / road_pts are stored as **per-game** averages (from
     LeagueDashTeamStats with per_mode=PerGame), so we must NOT divide by GP.
-    Results cached in memory per team_id.
+    Results cached in memory per (team_id, season).
     """
-    with _hca_cache_lock:
-        if team_id in _hca_cache:
-            return _hca_cache[team_id]
-
     from src.config import get_season
     if season is None:
         season = get_season()
+
+    cache_key = (team_id, season)
+    with _hca_cache_lock:
+        if cache_key in _hca_cache:
+            return _hca_cache[cache_key]
     row = db.fetch_one(
         "SELECT home_pts, road_pts, home_gp, road_gp FROM team_metrics WHERE team_id = ? AND season = ?",
         (team_id, season)
     )
     if not row or not row["home_gp"] or not row["road_gp"]:
         with _hca_cache_lock:
-            _hca_cache[team_id] = _HOME_COURT_FALLBACK
+            _hca_cache[cache_key] = _HOME_COURT_FALLBACK
         return _HOME_COURT_FALLBACK
 
     home_ppg = row["home_pts"]   # already per-game
@@ -420,7 +421,7 @@ def get_home_court_advantage(team_id: int, season: Optional[str] = None) -> floa
     hca = home_ppg - road_ppg
     result = max(_HOME_COURT_CLAMP[0], min(_HOME_COURT_CLAMP[1], hca))
     with _hca_cache_lock:
-        _hca_cache[team_id] = result
+        _hca_cache[cache_key] = result
     return result
 
 
@@ -694,19 +695,19 @@ def compute_travel(team_id: int, game_date: str, opponent_team_id: int,
     return result
 
 
-def compute_momentum(team_id: int, game_date: str) -> Dict[str, Any]:
+def compute_momentum(team_id: int, game_date: str, season: Optional[str] = None) -> Dict[str, Any]:
     """Compute momentum features: win/loss streak and margin-of-victory trend.
 
     Returns {"streak": int, "mov_trend": float}
     - streak: positive = consecutive wins, negative = consecutive losses (capped +-10)
     - mov_trend: average margin of victory over last 5 games (positive = winning by more)
     """
-    from src.config import get_season
-
     result = {"streak": 0, "mov_trend": 0.0}
 
     try:
-        season = get_season()
+        if season is None:
+            from src.config import get_season
+            season = get_season()
 
         # Get recent game results for this team
         rows = db.fetch_all(
@@ -769,7 +770,7 @@ def compute_momentum(team_id: int, game_date: str) -> Dict[str, Any]:
     return result
 
 
-def compute_fg3_luck(team_id: int, game_date: str) -> float:
+def compute_fg3_luck(team_id: int, game_date: str, season: Optional[str] = None) -> float:
     """Compute 3-point shooting luck signal for regression-to-mean adjustment.
 
     Returns the difference between recent 3PT% (last 5 games) and season-average
@@ -778,10 +779,10 @@ def compute_fg3_luck(team_id: int, game_date: str) -> float:
 
     Uses player_stats fg3_made / fg3_attempted aggregated to team level.
     """
-    from src.config import get_season
-
     try:
-        season = get_season()
+        if season is None:
+            from src.config import get_season
+            season = get_season()
 
         # Season-average 3PT% for this team (all games before game_date)
         season_row = db.fetch_one(
@@ -837,7 +838,7 @@ def compute_fg3_luck(team_id: int, game_date: str) -> float:
 
 
 def compute_schedule_spots(team_id: int, game_date: str,
-                           opponent_team_id: int) -> Dict[str, Any]:
+                           opponent_team_id: int, season: Optional[str] = None) -> Dict[str, Any]:
     """Compute schedule-spot features: lookahead, letdown, road trip game number.
 
     Returns {"lookahead": bool, "letdown": bool, "road_trip_game": int}
@@ -845,12 +846,12 @@ def compute_schedule_spots(team_id: int, game_date: str,
     - letdown: previous opponent was top-8 AND we won that game AND current opponent is NOT top-8
     - road_trip_game: count of consecutive away games up to and including current (0 if home)
     """
-    from src.config import get_season
-
     result = {"lookahead": False, "letdown": False, "road_trip_game": 0}
 
     try:
-        season = get_season()
+        if season is None:
+            from src.config import get_season
+            season = get_season()
 
         # Get top-8 teams by w_pct
         top8_rows = db.fetch_all(
