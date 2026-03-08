@@ -161,13 +161,23 @@ def backfill_odds(callback: Optional[Callable] = None, force: bool = False) -> i
             ORDER BY game_date DESC
         """)
     else:
-        # Find dates with games but no odds OR missing sharp money metrics
+        # Game-level completeness: find dates where the number of games
+        # with complete odds is fewer than the number of games played.
+        # Each game has exactly one game_id; game_odds has one row per game.
         rows = db.fetch_all("""
-            SELECT DISTINCT game_date
-            FROM player_stats
-            WHERE game_date NOT IN (
-                SELECT game_date FROM game_odds WHERE spread_home_public IS NOT NULL
+            SELECT game_date
+            FROM (
+                SELECT ps.game_date,
+                       COUNT(DISTINCT ps.game_id) as games_played,
+                       COUNT(DISTINCT go.home_team_id) as games_with_odds
+                FROM player_stats ps
+                LEFT JOIN game_odds go
+                    ON go.game_date = ps.game_date
+                    AND go.spread_home_public IS NOT NULL
+                WHERE ps.game_id IS NOT NULL
+                GROUP BY ps.game_date
             )
+            WHERE games_with_odds < games_played
             ORDER BY game_date DESC
         """)
     

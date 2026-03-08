@@ -635,7 +635,7 @@ def sync_historical_odds(callback: Optional[Callable] = None, force: bool = Fals
     if callback:
         callback("Syncing historical Vegas odds...")
         
-    count = backfill_odds(callback=callback)
+    count = backfill_odds(callback=callback, force=force)
     _set_sync_meta("odds_sync", current_gc, _get_last_game_date())
     
     if callback:
