@@ -6,3 +6,4 @@ data/backtest_cache/
 data/snapshots/
 data/*.db-wal
 data/*.db-shm
+data/nba_analytics.db
