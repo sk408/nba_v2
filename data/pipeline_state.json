@@ -2,28 +2,28 @@
   "step_backup": {
     "status": "completed",
     "elapsed_seconds": 0.0,
-    "completed_at": "2026-03-06 21:15:31"
+    "completed_at": "2026-03-07 17:05:50"
   },
   "step_sync": {
     "status": "completed",
-    "elapsed_seconds": 1.8,
-    "completed_at": "2026-03-06 21:15:33"
+    "elapsed_seconds": 2.1,
+    "completed_at": "2026-03-07 17:05:52"
   },
   "step_precompute": {
     "status": "completed",
     "elapsed_seconds": 0.8,
-    "completed_at": "2026-03-06 21:15:42"
+    "completed_at": "2026-03-07 17:06:02"
   },
   "step_optimize_fundamentals": {
     "status": "completed",
-    "elapsed_seconds": 444.1,
-    "completed_at": "2026-03-06 21:23:06"
+    "elapsed_seconds": 27.2,
+    "completed_at": "2026-03-07 17:06:29"
   },
-  "last_run": "2026-03-06 20:56:11",
-  "elapsed_seconds": 1219.7,
+  "last_run": "2026-03-07 17:07:50",
+  "elapsed_seconds": 120.7,
   "results_summary": {
     "backup": {
-      "snapshot_path": "C:\\Projects\\new_nba\\nba_v2\\src\\analytics\\..\\..\\data\\snapshots\\20260306_203551_pre_pipeline.json"
+      "snapshot_path": "C:\\Projects\\new_nba\\nba_v2\\src\\analytics\\..\\..\\data\\snapshots\\20260307_170550_pre_pipeline.json"
     },
     "seed_arenas": {
       "status": "seeded"
@@ -38,122 +38,122 @@
       "status": "computed"
     },
     "precompute": {
-      "game_count": 7870
+      "game_count": 7991
     },
     "optimize_fundamentals": {
-      "baseline_loss": -70.10800508259211,
-      "best_loss": -65.21601016518423,
-      "baseline_winner_pct": 55.4002541296061,
-      "best_winner_pct": 51.65184243964421,
-      "favorites_pct": 47.07750952986023,
+      "baseline_loss": -72.42026266416511,
+      "best_loss": -70.26266416510319,
+      "baseline_winner_pct": 68.5428392745466,
+      "best_winner_pct": 65.79111944965604,
+      "favorites_pct": 68.35522201375859,
       "improved": false,
-      "train_loss": -69.90946632782719,
-      "winner_pct": 51.65184243964421,
-      "upset_rate": 49.49174078780178,
-      "upset_accuracy": 54.81386392811296,
-      "upset_correct_count": 427,
-      "upset_count": 779,
-      "ml_roi": -29.99109350884216,
-      "ml_win_rate": 36.53846153846153,
-      "spread_mae": 124.2340949100687,
-      "compression_ratio": 10.43985266001996,
-      "loss": -65.21601016518423
+      "train_loss": -72.84887359198999,
+      "winner_pct": 65.79111944965604,
+      "upset_rate": 20.26266416510319,
+      "upset_accuracy": 44.135802469135804,
+      "upset_correct_count": 143,
+      "upset_count": 324,
+      "ml_roi": 1.168989577086514,
+      "ml_win_rate": 56.93877551020409,
+      "spread_mae": 64.13085057402415,
+      "compression_ratio": 5.39302443855015,
+      "loss": -70.26266416510319
     },
     "optimize_sharp": {
-      "baseline_loss": -70.10800508259211,
-      "best_loss": -65.3113087674714,
-      "baseline_winner_pct": 55.4002541296061,
-      "best_winner_pct": 51.77890724269377,
-      "favorites_pct": 47.07750952986023,
+      "baseline_loss": -72.38899312070043,
+      "best_loss": -65.79111944965604,
+      "baseline_winner_pct": 68.5428392745466,
+      "best_winner_pct": 60.41275797373359,
+      "favorites_pct": 68.35522201375859,
       "improved": false,
-      "train_loss": -69.86181702668361,
-      "winner_pct": 51.77890724269377,
-      "upset_rate": 49.23761118170267,
-      "upset_accuracy": 54.96774193548387,
-      "upset_correct_count": 426,
-      "upset_count": 775,
-      "ml_roi": -29.99109350884216,
-      "ml_win_rate": 36.53846153846153,
-      "spread_mae": 131.96202169935208,
-      "compression_ratio": 10.976254594686042,
-      "loss": -65.3113087674714
+      "train_loss": -72.72371714643305,
+      "winner_pct": 60.41275797373359,
+      "upset_rate": 29.018136335209505,
+      "upset_accuracy": 37.06896551724138,
+      "upset_correct_count": 172,
+      "upset_count": 464,
+      "ml_roi": -2.179227989575253,
+      "ml_win_rate": 51.12570356472796,
+      "spread_mae": 94.2198385046848,
+      "compression_ratio": 7.829618221589958,
+      "loss": -65.79111944965604
     },
     "backtest": {
       "fundamentals": {
-        "winner_pct": 58.38627700127065,
-        "favorites_pct": 53.176620076238876,
+        "winner_pct": 67.62607933925666,
+        "favorites_pct": 67.53848079088975,
         "beats_favorites": true,
-        "upset_rate": 41.829733163913595,
-        "upset_accuracy": 56.22721749696233,
-        "upset_count": 3292,
-        "upset_correct": 1851,
-        "ml_roi": -3.845928976263233,
-        "ml_win_rate": 61.94903581267218,
-        "spread_mae": 32.07230630332001,
-        "total_games": 7870
+        "upset_rate": 18.95882868226755,
+        "upset_accuracy": 50.23102310231023,
+        "upset_count": 1515,
+        "upset_correct": 761,
+        "ml_roi": 3.6801472695176725,
+        "ml_win_rate": 67.62607933925666,
+        "spread_mae": 61.437228501940545,
+        "total_games": 7991
       },
       "sharp": {
-        "winner_pct": 58.37357052096569,
-        "favorites_pct": 53.176620076238876,
+        "winner_pct": 67.57602302590414,
+        "favorites_pct": 67.53848079088975,
         "beats_favorites": true,
-        "upset_rate": 41.89326556543838,
-        "upset_accuracy": 56.2026084319078,
-        "upset_count": 3297,
-        "upset_correct": 1853,
-        "ml_roi": -3.7723450795990967,
-        "ml_win_rate": 61.91460055096418,
-        "spread_mae": 32.0295043197057,
-        "total_games": 7870
+        "upset_rate": 18.833687898886247,
+        "upset_accuracy": 50.09966777408638,
+        "upset_count": 1505,
+        "upset_correct": 754,
+        "ml_roi": 3.5185674198576535,
+        "ml_win_rate": 67.57602302590414,
+        "spread_mae": 61.36726760991728,
+        "total_games": 7991
       },
       "comparison": {
-        "sharp_flipped_picks": 15,
-        "sharp_flipped_correct": 7,
-        "sharp_flipped_accuracy": 46.666666666666664,
-        "sharp_net_value": -0.012706480304956358
+        "sharp_flipped_picks": 28,
+        "sharp_flipped_correct": 12,
+        "sharp_flipped_accuracy": 42.857142857142854,
+        "sharp_net_value": -0.05005631335252758
       }
     },
-    "elapsed_seconds": 1219.7,
+    "elapsed_seconds": 120.7,
     "step_timings": {
       "backup": 0.0,
-      "sync": 1.8,
+      "sync": 2.1,
       "seed_arenas": 0.1,
-      "bbref_sync": 7.6,
-      "referee_sync": 1.1,
-      "elo_compute": 0.0,
+      "bbref_sync": 7.7,
+      "referee_sync": 1.8,
+      "elo_compute": 0.1,
       "precompute": 0.8,
-      "optimize_fundamentals": 570.3,
-      "optimize_sharp": 637.8,
-      "backtest": 0.1
+      "optimize_fundamentals": 27.2,
+      "optimize_sharp": 80.0,
+      "backtest": 1.0
     }
   },
   "step_optimize_sharp": {
     "status": "completed",
-    "elapsed_seconds": 637.8,
-    "completed_at": "2026-03-06 20:56:11"
+    "elapsed_seconds": 80.0,
+    "completed_at": "2026-03-07 17:07:49"
   },
   "step_backtest": {
     "status": "completed",
-    "elapsed_seconds": 0.1,
-    "completed_at": "2026-03-06 20:56:11"
+    "elapsed_seconds": 1.0,
+    "completed_at": "2026-03-07 17:07:50"
   },
   "step_seed_arenas": {
     "status": "completed",
     "elapsed_seconds": 0.1,
-    "completed_at": "2026-03-06 21:15:33"
+    "completed_at": "2026-03-07 17:05:52"
   },
   "step_bbref_sync": {
     "status": "completed",
-    "elapsed_seconds": 7.6,
-    "completed_at": "2026-03-06 21:15:40"
+    "elapsed_seconds": 7.7,
+    "completed_at": "2026-03-07 17:05:59"
   },
   "step_referee_sync": {
     "status": "completed",
-    "elapsed_seconds": 1.3,
-    "completed_at": "2026-03-06 21:15:41"
+    "elapsed_seconds": 1.8,
+    "completed_at": "2026-03-07 17:06:01"
   },
   "step_elo_compute": {
     "status": "completed",
-    "elapsed_seconds": 0.0,
-    "completed_at": "2026-03-06 21:15:41"
+    "elapsed_seconds": 0.1,
+    "completed_at": "2026-03-07 17:06:01"
   }
 }

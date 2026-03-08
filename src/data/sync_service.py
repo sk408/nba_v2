@@ -371,6 +371,11 @@ def sync_team_metrics(callback: Optional[Callable] = None, force: bool = False):
         callback("Fetching hustle stats...")
     _update_hustle_stats(season, now, callback)
 
+    # 9. Process stats (Misc: paint, fast break, second chance, off turnovers)
+    if callback:
+        callback("Fetching process stats...")
+    _update_misc_stats(season, now, callback)
+
     _set_sync_meta("team_metrics", current_gc, _get_last_game_date())
     if callback:
         callback("Team metrics sync complete")
@@ -488,6 +493,27 @@ def _update_hustle_stats(season, now, callback):
             (row.get("DEFLECTIONS", 0), row.get("LOOSE_BALLS_RECOVERED", 0),
              row.get("CONTESTED_SHOTS", 0), row.get("CHARGES_DRAWN", 0),
              row.get("SCREEN_ASSISTS", 0), now, tid, season)
+        )
+
+
+def _update_misc_stats(season, now, callback):
+    """Fetch process stats (Misc measure): paint, fast break, second chance, off turnovers."""
+    data = nba_fetcher.fetch_league_dash_team_stats(measure_type="Misc", season=season)
+    for row in data:
+        tid = row.get("TEAM_ID", 0)
+        if not tid:
+            continue
+        db.execute(
+            """UPDATE team_metrics SET
+                 points_in_paint=?, fast_break_pts=?, second_chance_pts=?, pts_off_tov=?,
+                 opp_pts_paint=?, opp_pts_fb=?, opp_pts_2nd_chance=?, opp_pts_off_tov=?,
+                 last_synced_at=?
+               WHERE team_id=? AND season=?""",
+            (row.get("PTS_PAINT", 0), row.get("PTS_FB", 0),
+             row.get("PTS_2ND_CHANCE", 0), row.get("PTS_OFF_TOV", 0),
+             row.get("OPP_PTS_PAINT", 0), row.get("OPP_PTS_FB", 0),
+             row.get("OPP_PTS_2ND_CHANCE", 0), row.get("OPP_PTS_OFF_TOV", 0),
+             now, tid, season)
         )
 
 

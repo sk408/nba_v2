@@ -130,6 +130,12 @@ class GameInput:
     away_onoff_impact: float = 0.0
     # Pace differential
     pace_diff: float = 0.0
+    # 3PT luck (regression to mean)
+    home_fg3_luck: float = 0.0
+    away_fg3_luck: float = 0.0
+    # Process stats (per-game)
+    home_process: Dict[str, float] = field(default_factory=dict)
+    away_process: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -336,6 +342,24 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
     onoff_adj = (game.home_onoff_impact - game.away_onoff_impact) * w.onoff_impact_mult
     game_score += onoff_adj
     pred.adjustments["onoff_impact"] = onoff_adj
+
+    # 25. 3PT luck regression (hot team regresses down, cold team regresses up)
+    # Negative because positive luck = overperforming = expect regression down
+    fg3_luck_adj = -(game.home_fg3_luck - game.away_fg3_luck) * w.fg3_luck_mult
+    game_score += fg3_luck_adj
+    pred.adjustments["fg3_luck"] = fg3_luck_adj
+
+    # 26. Process stats matchup (paint scoring vs paint defense, etc.)
+    # Each component: (team's scoring - opponent's allowed) normalized by league avg
+    hp, ap = game.home_process, game.away_process
+    if hp and ap:
+        paint_edge = (hp.get("paint", 0) - ap.get("opp_paint", 0)) - (ap.get("paint", 0) - hp.get("opp_paint", 0))
+        fb_edge = (hp.get("fb", 0) - ap.get("opp_fb", 0)) - (ap.get("fb", 0) - hp.get("opp_fb", 0))
+        sec_edge = (hp.get("sec", 0) - ap.get("opp_sec", 0)) - (ap.get("sec", 0) - hp.get("opp_sec", 0))
+        tov_edge = (hp.get("off_tov", 0) - ap.get("opp_off_tov", 0)) - (ap.get("off_tov", 0) - hp.get("opp_off_tov", 0))
+        process_adj = (paint_edge + fb_edge + sec_edge + tov_edge) * w.process_edge_mult
+        game_score += process_adj
+        pred.adjustments["process_stats"] = process_adj
 
     # Derive projected scores (diagnostic only)
     total = home_base + away_base
@@ -562,6 +586,28 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
                 "contested": (am.get("contested_shots", 0) or 0) / a_gp,
                 "loose_balls": (am.get("loose_balls_recovered", 0) or 0) / a_gp}
 
+    # Process stats (per-game from Misc API)
+    h_process = {
+        "paint": hm.get("points_in_paint", 0) or 0,
+        "fb": hm.get("fast_break_pts", 0) or 0,
+        "sec": hm.get("second_chance_pts", 0) or 0,
+        "off_tov": hm.get("pts_off_tov", 0) or 0,
+        "opp_paint": hm.get("opp_pts_paint", 0) or 0,
+        "opp_fb": hm.get("opp_pts_fb", 0) or 0,
+        "opp_sec": hm.get("opp_pts_2nd_chance", 0) or 0,
+        "opp_off_tov": hm.get("opp_pts_off_tov", 0) or 0,
+    }
+    a_process = {
+        "paint": am.get("points_in_paint", 0) or 0,
+        "fb": am.get("fast_break_pts", 0) or 0,
+        "sec": am.get("second_chance_pts", 0) or 0,
+        "off_tov": am.get("pts_off_tov", 0) or 0,
+        "opp_paint": am.get("opp_pts_paint", 0) or 0,
+        "opp_fb": am.get("opp_pts_fb", 0) or 0,
+        "opp_sec": am.get("opp_pts_2nd_chance", 0) or 0,
+        "opp_off_tov": am.get("opp_pts_off_tov", 0) or 0,
+    }
+
     # Sharp money (ML only)
     ml_pub = 0
     ml_mon = 0
@@ -604,7 +650,7 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
 
     # ── V2.1 features ──
     from src.analytics.elo import get_team_elo
-    from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots
+    from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots, compute_fg3_luck
 
     _home_travel = compute_travel(home_team_id, game_date, away_team_id, is_home=True)
     _away_travel = compute_travel(away_team_id, game_date, home_team_id, is_home=False)
@@ -748,6 +794,12 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
         away_onoff_impact=_away_onoff,
         # Pace diff
         pace_diff=abs(home_pace - away_pace),
+        # 3PT luck
+        home_fg3_luck=compute_fg3_luck(home_team_id, game_date),
+        away_fg3_luck=compute_fg3_luck(away_team_id, game_date),
+        # Process stats
+        home_process=h_process,
+        away_process=a_process,
     )
 
     # Determine include_sharp from settings if not explicitly passed
@@ -1308,9 +1360,31 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
                         "contested": (am.get("contested_shots", 0) or 0) / a_gp,
                         "loose_balls": (am.get("loose_balls_recovered", 0) or 0) / a_gp}
 
+            # Process stats (already per-game from Misc API)
+            h_process = {
+                "paint": hm.get("points_in_paint", 0) or 0,
+                "fb": hm.get("fast_break_pts", 0) or 0,
+                "sec": hm.get("second_chance_pts", 0) or 0,
+                "off_tov": hm.get("pts_off_tov", 0) or 0,
+                "opp_paint": hm.get("opp_pts_paint", 0) or 0,
+                "opp_fb": hm.get("opp_pts_fb", 0) or 0,
+                "opp_sec": hm.get("opp_pts_2nd_chance", 0) or 0,
+                "opp_off_tov": hm.get("opp_pts_off_tov", 0) or 0,
+            }
+            a_process = {
+                "paint": am.get("points_in_paint", 0) or 0,
+                "fb": am.get("fast_break_pts", 0) or 0,
+                "sec": am.get("second_chance_pts", 0) or 0,
+                "off_tov": am.get("pts_off_tov", 0) or 0,
+                "opp_paint": am.get("opp_pts_paint", 0) or 0,
+                "opp_fb": am.get("opp_pts_fb", 0) or 0,
+                "opp_sec": am.get("opp_pts_2nd_chance", 0) or 0,
+                "opp_off_tov": am.get("opp_pts_off_tov", 0) or 0,
+            }
+
             # ── V2.1 features ──
             from src.analytics.elo import get_team_elo
-            from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots
+            from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots, compute_fg3_luck
 
             _home_travel = compute_travel(htid, gdate, atid, is_home=True)
             _away_travel = compute_travel(atid, gdate, htid, is_home=False)
@@ -1430,6 +1504,12 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
                 pace_diff=abs(home_pace - away_pace),
                 # Spread sharp edge
                 spread_sharp_edge=_spread_sharp,
+                # 3PT luck
+                home_fg3_luck=compute_fg3_luck(htid, gdate),
+                away_fg3_luck=compute_fg3_luck(atid, gdate),
+                # Process stats
+                home_process=h_process,
+                away_process=a_process,
             )
 
     # Compute new games in parallel

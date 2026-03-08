@@ -443,12 +443,21 @@ def run_overnight(
         return results
 
     pass1_elapsed = time.time() - pass1_start
-    emit(f"Pass 1 complete in {fmt_elapsed(pass1_elapsed)} | "
-         f"{fmt_elapsed(time_left())} remaining")
 
     # Track best backtest across all passes
     best_bt = results.get("backtest", {})
     pass_num = 1
+
+    # Emit Pass 1 backtest results so the TUI can display them
+    if best_bt:
+        f_met = best_bt.get("fundamentals", {})
+        emit(f"  NEW BEST! Winner={f_met.get('winner_pct', 0):.1f}%, "
+             f"Upset={f_met.get('upset_accuracy', 0):.0f}% @ "
+             f"{f_met.get('upset_rate', 0):.0f}% rate, "
+             f"ML ROI={f_met.get('ml_roi', 0):+.1f}%")
+
+    emit(f"Pass 1 complete in {fmt_elapsed(pass1_elapsed)} | "
+         f"{fmt_elapsed(time_left())} remaining")
     loop_times: List[float] = []
 
     # Pass 2+: optimization loops

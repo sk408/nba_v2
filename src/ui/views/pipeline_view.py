@@ -143,6 +143,28 @@ class _SyncWorker(QObject):
             self.error.emit(str(e))
 
 
+class _OddsSyncWorker(QObject):
+    """Background worker that runs odds sync only."""
+    finished = Signal(dict)
+    error = Signal(str)
+    progress = Signal(str)
+
+    def run(self):
+        try:
+            from src.database.db import thread_local_db
+            with thread_local_db():
+                from src.data.sync_service import sync_historical_odds
+                self.progress.emit("Force-syncing Vegas odds...")
+                sync_historical_odds(
+                    force=True,
+                    callback=lambda msg: self.progress.emit(msg),
+                )
+                self.finished.emit({"odds_sync": "complete"})
+        except Exception as e:
+            logger.error("OddsSyncWorker error: %s", e, exc_info=True)
+            self.error.emit(str(e))
+
+
 # ----------------------------------------------------------------
 # Step Indicator Widget
 # ----------------------------------------------------------------
@@ -305,6 +327,24 @@ class PipelineView(QWidget):
             f"color: {TEXT_MUTED}; font-size: 12px; spacing: 5px;"
         )
         row1.addWidget(self._force_sync_cb)
+
+        # Vertical separator
+        sep2 = QFrame()
+        sep2.setFixedWidth(1)
+        sep2.setFixedHeight(36)
+        sep2.setStyleSheet("background: rgba(255, 255, 255, 0.12);")
+        row1.addWidget(sep2)
+
+        # Sync Odds button
+        self._sync_odds_btn = QPushButton("SYNC ODDS")
+        self._sync_odds_btn.setProperty("class", "primary")
+        self._sync_odds_btn.setFixedHeight(44)
+        self._sync_odds_btn.setMinimumWidth(130)
+        self._sync_odds_btn.setToolTip(
+            "Force-sync Vegas odds from Action Network"
+        )
+        self._sync_odds_btn.clicked.connect(self._on_sync_odds)
+        row1.addWidget(self._sync_odds_btn)
 
         row1.addStretch()
 
@@ -655,6 +695,7 @@ class PipelineView(QWidget):
         self._sync_btn.setText("SYNCING...")
         self._sync_btn.setEnabled(False)
         self._run_btn.setEnabled(False)
+        self._sync_odds_btn.setEnabled(False)
         self._overnight_btn.setEnabled(False)
         self._hours_spin.setEnabled(False)
         self._log_text.clear()
@@ -743,6 +784,95 @@ class PipelineView(QWidget):
         self._sync_thread = None
         self._sync_worker = None
 
+    # ---------------------------------------------------------------
+    # Odds sync-only
+    # ---------------------------------------------------------------
+
+    def _on_sync_odds(self):
+        """Run odds sync only (force mode)."""
+        if self._running:
+            return
+
+        self._running = True
+        self._pipeline_start_time = time.time()
+
+        # UI updates
+        self._sync_odds_btn.setText("SYNCING...")
+        self._sync_odds_btn.setEnabled(False)
+        self._run_btn.setEnabled(False)
+        self._sync_btn.setEnabled(False)
+        self._overnight_btn.setEnabled(False)
+        self._hours_spin.setEnabled(False)
+        self._log_text.clear()
+
+        self._log_text.append("Starting force odds sync...")
+        self._current_step_lbl.setText("ODDS SYNC")
+
+        # Create worker
+        self._odds_worker = _OddsSyncWorker()
+        self._odds_thread = QThread()
+        self._odds_worker.moveToThread(self._odds_thread)
+        self._odds_thread.started.connect(self._odds_worker.run)
+
+        _QC = Qt.ConnectionType.QueuedConnection
+        self._odds_worker.progress.connect(self._on_progress, _QC)
+        self._odds_worker.finished.connect(self._on_odds_sync_finished, _QC)
+        self._odds_worker.error.connect(self._on_odds_sync_error, _QC)
+        self._odds_worker.finished.connect(self._odds_thread.quit)
+        self._odds_worker.error.connect(self._odds_thread.quit)
+        self._odds_thread.finished.connect(self._cleanup_odds_worker)
+
+        self._elapsed_timer.start()
+        self._odds_thread.start()
+
+        if self.main_window:
+            self.main_window.set_status("Odds sync running...")
+
+    def _on_odds_sync_finished(self, result: dict):
+        """Handle odds sync completion."""
+        self._running = False
+        self._elapsed_timer.stop()
+
+        elapsed = time.time() - self._pipeline_start_time
+        self._elapsed_lbl.setText(self._fmt_seconds(elapsed))
+
+        self._log_text.append(f"\nOdds sync complete in {self._fmt_seconds(elapsed)}")
+        self._current_step_lbl.setText("Odds Sync Complete")
+        self._current_step_lbl.setStyleSheet(
+            f"color: {GREEN}; font-size: 13px; font-weight: 700;"
+        )
+
+        self._reset_controls()
+
+        if self.main_window:
+            self.main_window.set_status(
+                f"Odds sync complete in {self._fmt_seconds(elapsed)}"
+            )
+
+    def _on_odds_sync_error(self, msg: str):
+        """Handle odds sync error."""
+        self._running = False
+        self._elapsed_timer.stop()
+
+        self._log_text.append(f"\nODDS SYNC ERROR: {msg}")
+        self._current_step_lbl.setText("Odds Sync Error")
+        self._current_step_lbl.setStyleSheet(
+            f"color: {RED}; font-size: 13px; font-weight: 700;"
+        )
+        self._reset_controls()
+
+        if self.main_window:
+            self.main_window.set_status(f"Odds sync error: {msg}")
+
+    def _cleanup_odds_worker(self):
+        """Clean up odds sync worker and thread."""
+        if hasattr(self, '_odds_thread') and self._odds_thread is not None:
+            self._odds_thread.deleteLater()
+        if hasattr(self, '_odds_worker') and self._odds_worker is not None:
+            self._odds_worker.deleteLater()
+        self._odds_thread = None
+        self._odds_worker = None
+
     def _start_pipeline(self, overnight: bool = False):
         """Start the pipeline in a background thread."""
         # Busy guard
@@ -761,6 +891,7 @@ class PipelineView(QWidget):
         self._run_btn.style().unpolish(self._run_btn)
         self._run_btn.style().polish(self._run_btn)
         self._sync_btn.setEnabled(False)
+        self._sync_odds_btn.setEnabled(False)
         self._overnight_btn.setEnabled(False)
         self._hours_spin.setEnabled(False)
         self._log_text.clear()
@@ -892,6 +1023,8 @@ class PipelineView(QWidget):
         self._run_btn.setEnabled(True)
         self._sync_btn.setText("SYNC DATA")
         self._sync_btn.setEnabled(True)
+        self._sync_odds_btn.setText("SYNC ODDS")
+        self._sync_odds_btn.setEnabled(True)
         self._overnight_btn.setEnabled(True)
         self._hours_spin.setEnabled(True)
 

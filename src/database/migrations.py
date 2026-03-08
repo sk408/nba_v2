@@ -413,6 +413,11 @@ def _run_column_migrations():
     _add_column_if_missing("team_metrics", "points_in_paint", "REAL DEFAULT 0.0")
     _add_column_if_missing("team_metrics", "fast_break_pts", "REAL DEFAULT 0.0")
     _add_column_if_missing("team_metrics", "second_chance_pts", "REAL DEFAULT 0.0")
+    _add_column_if_missing("team_metrics", "pts_off_tov", "REAL DEFAULT 0.0")
+    _add_column_if_missing("team_metrics", "opp_pts_paint", "REAL DEFAULT 0.0")
+    _add_column_if_missing("team_metrics", "opp_pts_fb", "REAL DEFAULT 0.0")
+    _add_column_if_missing("team_metrics", "opp_pts_2nd_chance", "REAL DEFAULT 0.0")
+    _add_column_if_missing("team_metrics", "opp_pts_off_tov", "REAL DEFAULT 0.0")
     # New feature columns: player advanced metrics
     _add_column_if_missing("player_impact", "vorp", "REAL DEFAULT 0.0")
     _add_column_if_missing("player_impact", "bpm", "REAL DEFAULT 0.0")
@@ -536,11 +541,14 @@ def _fix_game_date_formats():
                 )
                 _log.info("Phase 1: Migrated %d remaining text dates to YYYY-MM-DD", len(updates))
 
-        # ── Phase 2: Fix dates with wrong year (before the season) ──
+        # ── Phase 2: Fix dates with wrong year — ONLY for current season ──
+        # Only re-date rows from the current season that had truncated 2-digit years.
+        # Historical seasons (season != current) must keep their original dates.
         cutoff = f"{season_start_year - 1}-01-01"
+        current_season_str = f"{season_start_year}-{str(season_end_year)[-2:]}"
         wrong_year = fetch_all(
-            "SELECT id, game_date FROM player_stats WHERE game_date < ? LIMIT 20000",
-            (cutoff,)
+            "SELECT id, game_date FROM player_stats WHERE game_date < ? AND season = ? LIMIT 20000",
+            (cutoff, current_season_str)
         )
         if wrong_year:
             updates2 = []
@@ -560,6 +568,53 @@ def _fix_game_date_formats():
                 _log.info(
                     "Phase 2: Re-dated %d rows from wrong year to %d/%d season",
                     len(updates2), season_start_year, season_end_year)
+
+        # ── Phase 2b: Fix historical seasons with dates shifted to current season ──
+        # Undo damage from previous Phase 2 runs that remapped all old dates.
+        # For each non-current season, derive the correct year from the season string.
+        hist_seasons = fetch_all(
+            "SELECT DISTINCT season FROM player_stats WHERE season != ?",
+            (current_season_str,)
+        )
+        for hs in (hist_seasons or []):
+            s = hs["season"]  # e.g. "2019-20"
+            try:
+                hist_start = int(s.split("-")[0])
+                hist_end = hist_start + 1
+            except (ValueError, IndexError):
+                continue
+
+            # Find rows where the date year doesn't match the season
+            mismatched = fetch_all(
+                """SELECT id, game_date FROM player_stats
+                   WHERE season = ?
+                   AND game_date LIKE '____-__-__'
+                   AND CAST(SUBSTR(game_date, 1, 4) AS INTEGER) NOT BETWEEN ? AND ?
+                   LIMIT 50000""",
+                (s, hist_start, hist_end)
+            )
+            if not mismatched:
+                continue
+
+            fixes = []
+            for r in mismatched:
+                try:
+                    parsed = _dt.strptime(r["game_date"], "%Y-%m-%d")
+                    if parsed.month >= 10:  # Oct-Dec = season start year
+                        fixed = parsed.replace(year=hist_start)
+                    else:  # Jan-Sep = season end year
+                        fixed = parsed.replace(year=hist_end)
+                    fixes.append((fixed.strftime("%Y-%m-%d"), r["id"]))
+                except ValueError:
+                    continue
+
+            if fixes:
+                _exec_many(
+                    "UPDATE player_stats SET game_date = ? WHERE id = ?",
+                    fixes
+                )
+                _log.info("Phase 2b: Fixed %d dates for season %s (restored to %d/%d)",
+                          len(fixes), s, hist_start, hist_end)
 
         # ── Phase 3: Add unique index on (player_id, game_id) ──
         # This prevents future duplicates regardless of date format.

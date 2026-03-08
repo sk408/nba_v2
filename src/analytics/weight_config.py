@@ -90,6 +90,8 @@ class WeightConfig:
     srs_diff_mult: float = 0.5
     onoff_impact_mult: float = 0.5
     pace_mismatch_mult: float = 0.2
+    fg3_luck_mult: float = 15.0
+    process_edge_mult: float = 0.3
 
     # Total floor/ceiling
     total_min: float = 140.0
@@ -172,6 +174,8 @@ OPTIMIZER_RANGES = {
     "srs_diff_mult": (0.0, 3.0),
     "onoff_impact_mult": (0.0, 3.0),
     "pace_mismatch_mult": (0.0, 2.0),
+    "fg3_luck_mult": (0.0, 50.0),
+    "process_edge_mult": (0.0, 2.0),
 }
 
 # Sharp money range — separate toggle layer
@@ -226,6 +230,8 @@ CD_RANGES = {
     "srs_diff_mult": (0.0, 5.0),
     "onoff_impact_mult": (0.0, 5.0),
     "pace_mismatch_mult": (0.0, 3.0),
+    "fg3_luck_mult": (0.0, 75.0),
+    "process_edge_mult": (0.0, 3.0),
 }
 
 # CD ranges with sharp money parameter included

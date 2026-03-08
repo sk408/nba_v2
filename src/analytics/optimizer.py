@@ -28,6 +28,11 @@ from src.analytics.weight_config import (
 
 logger = logging.getLogger(__name__)
 
+# Module-level study cache: keeps in-memory studies alive across optimization
+# passes so we don't reload 18K+ trials from disk every time.
+_study_cache: Dict[str, Any] = {}        # study_name -> optuna.Study
+_save_threads: Dict[str, Any] = {}       # study_name -> threading.Thread
+
 # Walk-forward: train on first N% of games, validate on last (1-N)%.
 WALK_FORWARD_SPLIT = 0.80
 
@@ -209,6 +214,51 @@ class VectorizedGames:
         self.home_onoff = np.array([g.home_onoff_impact for g in games])
         self.away_onoff = np.array([g.away_onoff_impact for g in games])
         self.pace_diff = np.array([abs(g.home_pace - g.away_pace) for g in games])
+        self.home_fg3_luck = np.array([g.home_fg3_luck for g in games])
+        self.away_fg3_luck = np.array([g.away_fg3_luck for g in games])
+
+        # Process stats matchup edges
+        # paint_edge = (home_paint - away_opp_paint) - (away_paint - home_opp_paint)
+        self._process_paint_edge = np.array([
+            (g.home_process.get("paint", 0) - g.away_process.get("opp_paint", 0))
+            - (g.away_process.get("paint", 0) - g.home_process.get("opp_paint", 0))
+            for g in games
+        ])
+        self._process_fb_edge = np.array([
+            (g.home_process.get("fb", 0) - g.away_process.get("opp_fb", 0))
+            - (g.away_process.get("fb", 0) - g.home_process.get("opp_fb", 0))
+            for g in games
+        ])
+        self._process_sec_edge = np.array([
+            (g.home_process.get("sec", 0) - g.away_process.get("opp_sec", 0))
+            - (g.away_process.get("sec", 0) - g.home_process.get("opp_sec", 0))
+            for g in games
+        ])
+        self._process_tov_edge = np.array([
+            (g.home_process.get("off_tov", 0) - g.away_process.get("opp_off_tov", 0))
+            - (g.away_process.get("off_tov", 0) - g.home_process.get("opp_off_tov", 0))
+            for g in games
+        ])
+
+        # Pre-compute constants used every evaluate() call
+        self._actual_std = float(np.std(self.actual_spread))
+        self._ref_fouls_centered = self.ref_crew_fouls_pg - 38.0
+        self._ref_bias_centered = (self.ref_crew_home_bias - 50.0) / 50.0
+        self._spread_sharp_scaled = self.spread_sharp_edge / 100.0
+        self._elo_diff_scaled = (self.home_elo - self.away_elo) / 400.0
+        self._travel_diff_scaled = (self.away_travel_miles - self.home_travel_miles) / 1000.0
+        self._tz_diff = self.away_tz_crossings - self.home_tz_crossings
+        self._streak_diff = (self.home_streak - self.away_streak).astype(float)
+        self._mov_diff = self.home_mov_trend - self.away_mov_trend
+        self._injury_diff = self.away_injury_vorp - self.home_injury_vorp
+        self._srs_diff = self.home_srs - self.away_srs
+        self._onoff_diff = self.home_onoff - self.away_onoff
+        self._fg3_luck_diff = self.home_fg3_luck - self.away_fg3_luck
+        self._process_total_edge = (self._process_paint_edge + self._process_fb_edge
+                                    + self._process_sec_edge + self._process_tov_edge)
+
+        from src.config import get as get_setting
+        self._upset_bonus_mult = float(get_setting("upset_bonus_mult", 0.5))
 
     def evaluate(self, w: WeightConfig, include_sharp: bool = False) -> Dict[str, float]:
         """Vectorized evaluation. Returns metrics dict including loss.
@@ -284,19 +334,21 @@ class VectorizedGames:
         if include_sharp:
             game_score += self.sharp_ml_edge * w.sharp_ml_weight
 
-        # ── V2.1 vectorized adjustments ──
-        game_score += (self.home_elo - self.away_elo) / 400.0 * w.elo_diff_mult
-        game_score -= ((self.away_travel_miles / 1000.0) - (self.home_travel_miles / 1000.0)) * w.travel_dist_mult
-        game_score -= (self.away_tz_crossings - self.home_tz_crossings) * w.timezone_crossing_mult
-        game_score += (self.home_streak - self.away_streak) * w.momentum_streak_mult
-        game_score += (self.home_mov_trend - self.away_mov_trend) * w.mov_trend_mult
-        game_score += (self.away_injury_vorp - self.home_injury_vorp) * w.injury_vorp_mult
-        game_score += (self.ref_crew_home_bias - 50.0) / 50.0 * w.ref_home_bias_mult
-        game_score += self.spread_sharp_edge / 100.0 * w.sharp_spread_weight
+        # ── V2.1 vectorized adjustments (using pre-computed diffs) ──
+        game_score += self._elo_diff_scaled * w.elo_diff_mult
+        game_score -= self._travel_diff_scaled * w.travel_dist_mult
+        game_score -= self._tz_diff * w.timezone_crossing_mult
+        game_score += self._streak_diff * w.momentum_streak_mult
+        game_score += self._mov_diff * w.mov_trend_mult
+        game_score += self._injury_diff * w.injury_vorp_mult
+        game_score += self._ref_bias_centered * w.ref_home_bias_mult
+        game_score += self._spread_sharp_scaled * w.sharp_spread_weight
         game_score += (-(self.home_lookahead * w.lookahead_penalty + self.home_letdown * w.letdown_penalty)
                        + (self.away_lookahead * w.lookahead_penalty + self.away_letdown * w.letdown_penalty))
-        game_score += (self.home_srs - self.away_srs) * w.srs_diff_mult
-        game_score += (self.home_onoff - self.away_onoff) * w.onoff_impact_mult
+        game_score += self._srs_diff * w.srs_diff_mult
+        game_score += self._onoff_diff * w.onoff_impact_mult
+        game_score -= self._fg3_luck_diff * w.fg3_luck_mult  # negative: hot team regresses down
+        game_score += self._process_total_edge * w.process_edge_mult
 
         # ──────────────────────────────────────────────────────────
         # TOTAL (projected combined score — diagnostic)
@@ -312,7 +364,7 @@ class VectorizedGames:
         total -= (home_fat + away_fat) * w.fatigue_total_mult
         # V2.1 total adjustments
         total += self.pace_diff * w.pace_mismatch_mult
-        total += (self.ref_crew_fouls_pg - 38.0) * w.ref_fouls_mult
+        total += self._ref_fouls_centered * w.ref_fouls_mult
         # Clamp total
         total = np.clip(total, w.total_min, w.total_max)
 
@@ -398,17 +450,13 @@ class VectorizedGames:
 
         # Compression ratio
         pred_std = float(np.std(game_score))
-        actual_std = float(np.std(self.actual_spread))
-        compression_ratio = pred_std / max(0.01, actual_std)
+        compression_ratio = pred_std / max(0.01, self._actual_std)
 
         # ──────────────────────────────────────────────────────────
         # LOSS FUNCTION
         # ──────────────────────────────────────────────────────────
 
-        from src.config import get as get_setting
-        upset_bonus_mult = float(get_setting("upset_bonus_mult", 0.5))
-
-        loss = -(winner_pct + upset_accuracy * upset_rate / 100.0 * upset_bonus_mult)
+        loss = -(winner_pct + upset_accuracy * upset_rate / 100.0 * self._upset_bonus_mult)
 
         # Compression penalty — prevent degenerate narrow-band predictions
         if compression_ratio < COMPRESSION_RATIO_FLOOR:
@@ -499,7 +547,7 @@ def optimize_weights(
             trial.set_user_attr("result", result)
             return result["loss"]
 
-        # ── Persistent study with CMA-ES ──
+        # ── Persistent study with CMA-ES (in-memory for speed) ──
         # Version hash: changes when parameter space or training window changes.
         # A new hash creates a new study (old trials become irrelevant).
         range_keys = sorted(ranges.keys())
@@ -512,20 +560,57 @@ def optimize_weights(
             "data", "optuna_studies.db")
         storage_url = f"sqlite:///{db_path}"
 
-        sampler = optuna.samplers.CmaEsSampler()
-        study = optuna.create_study(
-            study_name=study_name,
-            storage=storage_url,
-            direction="minimize",
-            sampler=sampler,
-            load_if_exists=True,
-        )
+        # Reuse cached in-memory study across passes (avoids reloading 18K+ trials)
+        if study_name in _study_cache:
+            study = _study_cache[study_name]
+            prior_trials = len([t for t in study.trials
+                                if t.state == optuna.trial.TrialState.COMPLETE])
+            if callback:
+                callback(f"Study '{study_name}': {prior_trials} trials in memory, "
+                         f"adding {n_trials} more")
+        else:
+            # First call: load from disk, then cache in memory.
+            # IPOP restart strategy: when CMA-ES converges (step size shrinks),
+            # it restarts with doubled population size to escape local minima.
+            sampler = optuna.samplers.CmaEsSampler(restart_strategy="ipop")
 
-        prior_trials = len([t for t in study.trials
-                            if t.state == optuna.trial.TrialState.COMPLETE])
-        if callback:
-            callback(f"Study '{study_name}': {prior_trials} prior trials, "
-                     f"adding {n_trials} more")
+            # Load best N trials from disk to warm-start CMA-ES.
+            # Too many trials locks CMA-ES into a converged state;
+            # too few loses the benefit of prior exploration.
+            MAX_SEED_TRIALS = 3000
+            prior_trials = 0
+            seed_trials = []
+            try:
+                disk_study = optuna.load_study(
+                    study_name=study_name,
+                    storage=storage_url,
+                )
+                disk_completed = [t for t in disk_study.trials
+                                  if t.state == optuna.trial.TrialState.COMPLETE]
+                prior_trials = len(disk_completed)
+                if prior_trials > MAX_SEED_TRIALS:
+                    # Keep the best trials for warm-starting
+                    disk_completed.sort(key=lambda t: t.value)
+                    seed_trials = disk_completed[:MAX_SEED_TRIALS]
+                else:
+                    seed_trials = disk_completed
+            except KeyError:
+                pass
+
+            study = optuna.create_study(
+                study_name=study_name,
+                direction="minimize",
+                sampler=sampler,
+            )
+            if seed_trials:
+                study.add_trials(seed_trials)
+
+            _study_cache[study_name] = study
+            if callback:
+                loaded = len(seed_trials)
+                callback(f"Study '{study_name}': {prior_trials} prior trials on disk, "
+                         f"loaded best {loaded} to seed CMA-ES (IPOP), "
+                         f"adding {n_trials} more")
 
         # Log interval from config
         from src.config import get as get_setting
@@ -533,6 +618,9 @@ def optimize_weights(
         _best_logged_loss = best_train_loss
         _stagnation_counter = [0]
         _stagnation_threshold = int(get_setting("optuna_stagnation_threshold", 500))
+
+        # Track best weights for checkpoint saving
+        _checkpoint_best_loss = [best_train_loss]
 
         def trial_callback(study, trial):
             nonlocal _best_logged_loss
@@ -546,6 +634,25 @@ def optimize_weights(
             if is_new_best:
                 _best_logged_loss = trial.value
                 _stagnation_counter[0] = 0
+
+                # Checkpoint: save best weights immediately so they survive crashes.
+                # Only checkpoint if meaningfully better than last checkpoint.
+                if trial.value < _checkpoint_best_loss[0] - 0.01:
+                    _checkpoint_best_loss[0] = trial.value
+                    try:
+                        ckpt_w = WeightConfig.from_dict(
+                            {**baseline_w.to_dict(), **trial.params})
+                        ckpt_val = vg_val.evaluate(ckpt_w, include_sharp=include_sharp)
+                        # Only save if it beats favorites and baseline on validation
+                        if (ckpt_val["winner_pct"] > ckpt_val.get("favorites_pct", 0)
+                                and ckpt_val["winner_pct"] > baseline_val.get("winner_pct", 0)):
+                            save_weight_config(ckpt_w)
+                            invalidate_weight_cache()
+                            logger.info("Checkpoint saved: train loss=%.3f, "
+                                        "val winner=%.1f%%",
+                                        trial.value, ckpt_val["winner_pct"])
+                    except Exception:
+                        pass  # checkpoint is best-effort
             else:
                 _stagnation_counter[0] += 1
 
@@ -568,41 +675,55 @@ def optimize_weights(
 
         study.optimize(objective, n_trials=n_trials, callbacks=[trial_callback])
 
-        total_trials = len([t for t in study.trials
-                            if t.state == optuna.trial.TrialState.COMPLETE])
-        if callback:
-            callback(f"Study now has {total_trials} total trials")
+        # Cache trial list once (avoid repeated iteration over thousands of objects)
+        completed = [t for t in study.trials
+                     if t.state == optuna.trial.TrialState.COMPLETE]
+        total_trials = len(completed)
 
-        # Parameter importance (best-effort)
-        try:
-            if total_trials > 0 and callback:
-                from optuna.importance import (
-                    get_param_importances,
-                    MeanDecreaseImpurityImportanceEvaluator,
-                )
-                importances = get_param_importances(
-                    study, evaluator=MeanDecreaseImpurityImportanceEvaluator()
-                )
-                top_params = sorted(importances.items(),
-                                    key=lambda x: x[1], reverse=True)[:5]
-                param_str = ", ".join([f"{k}: {v:.2f}" for k, v in top_params])
-                callback(f"Top 5 impact parameters: {param_str}")
-        except Exception:
-            pass
+        # Persist new trials to disk in background (truly non-blocking)
+        new_trials = completed[prior_trials:]
+        if new_trials:
+            import threading
+
+            # Snapshot the trials to save (list copy so background thread is safe)
+            trials_to_save = list(new_trials)
+
+            def _save_to_disk():
+                # Wait for any previous save to finish (avoid SQLite lock contention)
+                prev = _save_threads.get(study_name)
+                if prev is not None and prev is not threading.current_thread() and prev.is_alive():
+                    prev.join()
+                try:
+                    disk_save = optuna.create_study(
+                        study_name=study_name,
+                        storage=storage_url,
+                        direction="minimize",
+                        load_if_exists=True,
+                    )
+                    disk_save.add_trials(trials_to_save)
+                    logger.info("Saved %d new trials to disk (%d total)",
+                                len(trials_to_save), total_trials)
+                except Exception as e:
+                    logger.warning("Failed to save trials to disk: %s", e)
+
+            save_thread = threading.Thread(target=_save_to_disk, daemon=True)
+            save_thread.start()
+            _save_threads[study_name] = save_thread
+
+        if callback:
+            callback(f"Study has {total_trials} total trials "
+                     f"(saving {len(new_trials)} to disk in background)")
 
         # Evaluate top-N training trials on validation to find best generalizer
         from src.config import get as _get_setting
         top_n = int(_get_setting("optuna_top_n_validation", 10))
-        completed = [t for t in study.trials
-                     if t.state == optuna.trial.TrialState.COMPLETE]
         completed.sort(key=lambda t: t.value)
         candidates = completed[:top_n]
 
         if candidates and candidates[0].value < best_train_loss:
             best_val_loss = float("inf")
             if callback:
-                callback(f"Validating top {len(candidates)} training trials "
-                         f"(from {total_trials} total)...")
+                callback(f"Validating top {len(candidates)} training trials...")
 
             for rank, trial in enumerate(candidates):
                 cand_w = WeightConfig.from_dict(
@@ -633,7 +754,7 @@ def optimize_weights(
                 if chosen_rank > 0:
                     callback(
                         f"Selected trial #{chosen_rank + 1} "
-                        f"(not #1) — better validation performance")
+                        f"(not #1) -- better validation performance")
 
     except ImportError:
         if callback:

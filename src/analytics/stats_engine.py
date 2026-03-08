@@ -737,25 +737,26 @@ def compute_momentum(team_id: int, game_date: str) -> Dict[str, Any]:
         result["streak"] = streak
 
         # mov_trend: average margin of victory from last 5 games
-        # Use game_quarter_scores if available
+        # Compute from player_stats: team points vs opponent points on each game date
         recent_dates = [r["game_date"] for r in rows[:5]]
         if recent_dates:
             total_margin = 0.0
             counted = 0
             for gd in recent_dates:
-                score_row = db.fetch_one(
-                    """SELECT home_score, away_score, home_team_id
-                       FROM game_quarter_scores
-                       WHERE game_date = ?
-                       AND (home_team_id = ? OR away_team_id = ?)
-                       LIMIT 1""",
-                    (gd, team_id, team_id)
+                scores = db.fetch_one(
+                    """SELECT
+                        (SELECT COALESCE(SUM(ps.points), 0)
+                         FROM player_stats ps
+                         JOIN players p ON ps.player_id = p.player_id
+                         WHERE p.team_id = ? AND ps.game_date = ? AND ps.season = ?) as team_pts,
+                        (SELECT COALESCE(SUM(ps.points), 0)
+                         FROM player_stats ps
+                         WHERE ps.opponent_team_id = ? AND ps.game_date = ? AND ps.season = ?) as opp_pts
+                    """,
+                    (team_id, gd, season, team_id, gd, season)
                 )
-                if score_row and score_row["home_score"] is not None:
-                    if score_row["home_team_id"] == team_id:
-                        margin = score_row["home_score"] - score_row["away_score"]
-                    else:
-                        margin = score_row["away_score"] - score_row["home_score"]
+                if scores and scores["team_pts"] > 0:
+                    margin = scores["team_pts"] - scores["opp_pts"]
                     total_margin += margin
                     counted += 1
 
@@ -766,6 +767,73 @@ def compute_momentum(team_id: int, game_date: str) -> Dict[str, Any]:
         logger.debug("compute_momentum error for team %d on %s: %s", team_id, game_date, e)
 
     return result
+
+
+def compute_fg3_luck(team_id: int, game_date: str) -> float:
+    """Compute 3-point shooting luck signal for regression-to-mean adjustment.
+
+    Returns the difference between recent 3PT% (last 5 games) and season-average
+    3PT%. Positive = team has been shooting "hot" and should regress down.
+    Negative = team has been shooting "cold" and should regress up.
+
+    Uses player_stats fg3_made / fg3_attempted aggregated to team level.
+    """
+    from src.config import get_season
+
+    try:
+        season = get_season()
+
+        # Season-average 3PT% for this team (all games before game_date)
+        season_row = db.fetch_one(
+            """SELECT COALESCE(SUM(ps.fg3_made), 0) as fg3m,
+                      COALESCE(SUM(ps.fg3_attempted), 0) as fg3a
+               FROM player_stats ps
+               JOIN players p ON ps.player_id = p.player_id
+               WHERE p.team_id = ? AND ps.game_date < ? AND ps.season = ?""",
+            (team_id, game_date, season)
+        )
+
+        if not season_row or season_row["fg3a"] < 50:  # need minimum sample
+            return 0.0
+
+        season_fg3_pct = season_row["fg3m"] / season_row["fg3a"]
+
+        # Recent 3PT% (last 5 game dates)
+        recent_dates = db.fetch_all(
+            """SELECT DISTINCT game_date FROM player_stats
+               WHERE season = ? AND game_date < ?
+               AND player_id IN (SELECT player_id FROM players WHERE team_id = ?)
+               ORDER BY game_date DESC LIMIT 5""",
+            (season, game_date, team_id)
+        )
+
+        if not recent_dates or len(recent_dates) < 3:  # need at least 3 games
+            return 0.0
+
+        dates = [r["game_date"] for r in recent_dates]
+        placeholders = ",".join("?" * len(dates))
+        recent_row = db.fetch_one(
+            f"""SELECT COALESCE(SUM(ps.fg3_made), 0) as fg3m,
+                       COALESCE(SUM(ps.fg3_attempted), 0) as fg3a
+                FROM player_stats ps
+                JOIN players p ON ps.player_id = p.player_id
+                WHERE p.team_id = ? AND ps.game_date IN ({placeholders})
+                AND ps.season = ?""",
+            (team_id, *dates, season)
+        )
+
+        if not recent_row or recent_row["fg3a"] < 20:
+            return 0.0
+
+        recent_fg3_pct = recent_row["fg3m"] / recent_row["fg3a"]
+
+        # Luck signal: positive = shooting above average (will regress down)
+        # Scale to percentage points (e.g., 0.05 = 5 percentage points above avg)
+        return recent_fg3_pct - season_fg3_pct
+
+    except Exception as e:
+        logger.debug("compute_fg3_luck error for team %d on %s: %s", team_id, game_date, e)
+        return 0.0
 
 
 def compute_schedule_spots(team_id: int, game_date: str,

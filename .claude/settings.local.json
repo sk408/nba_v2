@@ -6,7 +6,10 @@
       "WebFetch(domain:the-odds-api.com)",
       "WebFetch(domain:www.scoresandodds.com)",
       "WebFetch(domain:www.basketball-reference.com)",
-      "WebFetch(domain:www.nbastuffer.com)"
+      "WebFetch(domain:www.nbastuffer.com)",
+      "WebSearch",
+      "WebFetch(domain:dunksandthrees.com)",
+      "WebFetch(domain:www.underdogchance.com)"
     ]
   }
 }
