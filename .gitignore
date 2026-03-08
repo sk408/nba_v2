@@ -7,4 +7,5 @@ data/snapshots/
 data/*.db-wal
 data/*.db-shm
 data/nba_analytics.db
-data/optuna_studies.db.worktrees/
+data/optuna_studies.db
+.worktrees/
