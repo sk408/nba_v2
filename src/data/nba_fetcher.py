@@ -478,12 +478,22 @@ def save_game_logs(logs: List[Dict[str, Any]], season: Optional[str] = None):
         db.execute("PRAGMA foreign_keys=OFF")
         try:
             db.execute_many(
-                """INSERT OR IGNORE INTO player_stats
+                """INSERT INTO player_stats
                    (player_id, opponent_team_id, is_home, game_date, game_id, season,
                     points, rebounds, assists, minutes, steals, blocks, turnovers,
                     fg_made, fg_attempted, fg3_made, fg3_attempted, ft_made, ft_attempted,
                     oreb, dreb, plus_minus, win_loss, personal_fouls)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(player_id, game_id) DO UPDATE SET
+                    points=excluded.points, rebounds=excluded.rebounds,
+                    assists=excluded.assists, minutes=excluded.minutes,
+                    steals=excluded.steals, blocks=excluded.blocks,
+                    turnovers=excluded.turnovers, fg_made=excluded.fg_made,
+                    fg_attempted=excluded.fg_attempted, fg3_made=excluded.fg3_made,
+                    fg3_attempted=excluded.fg3_attempted, ft_made=excluded.ft_made,
+                    ft_attempted=excluded.ft_attempted, oreb=excluded.oreb,
+                    dreb=excluded.dreb, plus_minus=excluded.plus_minus,
+                    win_loss=excluded.win_loss, personal_fouls=excluded.personal_fouls""",
                 batch,
             )
         finally:
