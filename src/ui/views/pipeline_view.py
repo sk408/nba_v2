@@ -85,21 +85,19 @@ class _PipelineWorker(QObject):
 
     def run(self):
         try:
-            from src.database.db import thread_local_db
-            with thread_local_db():
-                if self._overnight:
-                    from src.analytics.pipeline import run_overnight
-                    result = run_overnight(
-                        max_hours=self._max_hours,
-                        reset_weights=self._reset_weights,
-                        callback=self._on_progress,
-                    )
-                else:
-                    from src.analytics.pipeline import run_pipeline
-                    result = run_pipeline(
-                        callback=self._on_progress,
-                        is_cancelled_fn=self._check_cancel,
-                    )
+            if self._overnight:
+                from src.analytics.pipeline import run_overnight
+                result = run_overnight(
+                    max_hours=self._max_hours,
+                    reset_weights=self._reset_weights,
+                    callback=self._on_progress,
+                )
+            else:
+                from src.analytics.pipeline import run_pipeline
+                result = run_pipeline(
+                    callback=self._on_progress,
+                    is_cancelled_fn=self._check_cancel,
+                )
             self.finished.emit(result)
         except Exception as e:
             logger.error("PipelineWorker error: %s", e, exc_info=True)
@@ -133,16 +131,14 @@ class _SyncWorker(QObject):
 
     def run(self):
         try:
-            from src.database.db import thread_local_db
-            with thread_local_db():
-                from src.data.sync_service import full_sync
-                mode = "force" if self._force else "incremental"
-                self.progress.emit(f"Starting {mode} data sync...")
-                result = full_sync(
-                    force=self._force,
-                    callback=lambda msg: self.progress.emit(msg),
-                )
-                self.finished.emit({"sync_result": result})
+            from src.data.sync_service import full_sync
+            mode = "force" if self._force else "incremental"
+            self.progress.emit(f"Starting {mode} data sync...")
+            result = full_sync(
+                force=self._force,
+                callback=lambda msg: self.progress.emit(msg),
+            )
+            self.finished.emit({"sync_result": result})
         except Exception as e:
             logger.error("SyncWorker error: %s", e, exc_info=True)
             self.error.emit(str(e))
@@ -156,15 +152,13 @@ class _OddsSyncWorker(QObject):
 
     def run(self):
         try:
-            from src.database.db import thread_local_db
-            with thread_local_db():
-                from src.data.sync_service import sync_historical_odds
-                self.progress.emit("Force-syncing Vegas odds...")
-                sync_historical_odds(
-                    force=True,
-                    callback=lambda msg: self.progress.emit(msg),
-                )
-                self.finished.emit({"odds_sync": "complete"})
+            from src.data.sync_service import sync_historical_odds
+            self.progress.emit("Force-syncing Vegas odds...")
+            sync_historical_odds(
+                force=True,
+                callback=lambda msg: self.progress.emit(msg),
+            )
+            self.finished.emit({"odds_sync": "complete"})
         except Exception as e:
             logger.error("OddsSyncWorker error: %s", e, exc_info=True)
             self.error.emit(str(e))

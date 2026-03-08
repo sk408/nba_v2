@@ -602,18 +602,15 @@ def main():
     from src.database.migrations import init_db
     init_db()
 
-    # Run overnight in a thread-local DB context
-    from src.database.db import thread_local_db
     from src.analytics.pipeline import run_overnight
 
     if args.plain:
         _install_signal_handler()
-        with thread_local_db():
-            run_overnight(
-                max_hours=args.hours,
-                reset_weights=args.reset_weights,
-                callback=lambda msg: print(msg, flush=True),
-            )
+        run_overnight(
+            max_hours=args.hours,
+            reset_weights=args.reset_weights,
+            callback=lambda msg: print(msg, flush=True),
+        )
     else:
         # Redirect logging and stdout so only the rich Live display is visible.
         # Logging goes to data/overnight.log; stdout is silenced.
@@ -641,12 +638,11 @@ def main():
         _install_signal_handler(tui)
         tui.start()
         try:
-            with thread_local_db():
-                run_overnight(
-                    max_hours=args.hours,
-                    reset_weights=args.reset_weights,
-                    callback=tui.callback,
-                )
+            run_overnight(
+                max_hours=args.hours,
+                reset_weights=args.reset_weights,
+                callback=tui.callback,
+            )
         finally:
             tui.stop()
             sys.stdout = _real_stdout
