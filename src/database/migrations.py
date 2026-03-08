@@ -2,7 +2,7 @@
 
 import logging
 
-from src.database.db import execute_script, execute, fetch_all
+from src.database.db import execute_script, execute, fetch_all, fetch_one
 
 _log = logging.getLogger(__name__)
 
@@ -394,6 +394,7 @@ def init_db():
     execute_script(INDEXES_SQL)
     _run_column_migrations()
     _migrate_player_stats_season()
+    _backfill_player_stats_team_id()
 
 
 def _run_column_migrations():
@@ -424,6 +425,11 @@ def _run_column_migrations():
     _add_column_if_missing("player_impact", "ws_per_48", "REAL DEFAULT 0.0")
     # New feature column: spread movement
     _add_column_if_missing("game_odds", "spread_movement", "REAL DEFAULT 0.0")
+    _add_column_if_missing("player_stats", "team_id", "INTEGER")
+    try:
+        execute("CREATE INDEX IF NOT EXISTS idx_player_stats_team_date ON player_stats(team_id, game_date DESC)")
+    except Exception:
+        pass
     _rename_notifications_body_to_message()
     _fix_game_date_formats()
 
@@ -643,6 +649,54 @@ def _fix_game_date_formats():
 
     except Exception as exc:
         _log.warning("_fix_game_date_formats failed: %s", exc)
+
+
+def _backfill_player_stats_team_id():
+    """Backfill team_id in player_stats from game context.
+
+    For home players (is_home=1): team_id = opponent_team_id of away players in same game.
+    For away players (is_home=0): team_id = opponent_team_id of home players in same game.
+    """
+    row = fetch_one("SELECT COUNT(*) as cnt FROM player_stats WHERE team_id IS NULL")
+    if not row or row["cnt"] == 0:
+        return
+
+    _log.info("Backfilling team_id for %d player_stats rows...", row["cnt"])
+
+    # Home players: their team = opponent of away players in same game
+    execute("""
+        UPDATE player_stats SET team_id = (
+            SELECT DISTINCT ps2.opponent_team_id
+            FROM player_stats ps2
+            WHERE ps2.game_id = player_stats.game_id
+              AND ps2.is_home = 0
+            LIMIT 1
+        )
+        WHERE is_home = 1 AND team_id IS NULL AND game_id IS NOT NULL
+    """)
+
+    # Away players: their team = opponent of home players in same game
+    execute("""
+        UPDATE player_stats SET team_id = (
+            SELECT DISTINCT ps2.opponent_team_id
+            FROM player_stats ps2
+            WHERE ps2.game_id = player_stats.game_id
+              AND ps2.is_home = 1
+            LIMIT 1
+        )
+        WHERE is_home = 0 AND team_id IS NULL AND game_id IS NOT NULL
+    """)
+
+    # Fallback for any remaining NULLs: use players.team_id
+    execute("""
+        UPDATE player_stats SET team_id = (
+            SELECT p.team_id FROM players p WHERE p.player_id = player_stats.player_id
+        )
+        WHERE team_id IS NULL
+    """)
+
+    remaining = fetch_one("SELECT COUNT(*) as cnt FROM player_stats WHERE team_id IS NULL")
+    _log.info("Backfill complete. Remaining NULLs: %d", remaining["cnt"] if remaining else 0)
 
 
 def reset_db():

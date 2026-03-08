@@ -42,8 +42,10 @@ def _row_to_game_log(row, player_id: int) -> dict:
     matchup = str(row.get("MATCHUP", ""))
     is_home = 1 if "vs." in matchup else 0
     opp_abbr = matchup.split(" ")[-1] if matchup else ""
+    player_team_abbr = matchup.split(" ")[0] if matchup else ""
     return {
         "player_id": player_id,
+        "player_team_abbr": player_team_abbr,
         "game_id": str(row.get("GAME_ID", row.get("Game_ID", ""))),
         "game_date": _normalize_game_date(row.get("GAME_DATE", "")),
         "matchup": matchup,
@@ -460,6 +462,7 @@ def save_game_logs(logs: List[Dict[str, Any]], season: Optional[str] = None):
             opp_id = resolve_opponent_team_id(log.get("opponent_abbr", ""))
         if opp_id == 0:
             continue
+        player_team_id = resolve_opponent_team_id(log.get("player_team_abbr", "")) or None
         batch.append((
             log["player_id"], opp_id, log["is_home"], log["game_date"],
             log.get("game_id", ""), season,
@@ -471,6 +474,7 @@ def save_game_logs(logs: List[Dict[str, Any]], season: Optional[str] = None):
             log.get("oreb", 0), log.get("dreb", 0),
             log.get("plus_minus", 0), log.get("win_loss", ""),
             log.get("personal_fouls", 0),
+            player_team_id,
         ))
     if batch:
         # Disable FK checks — game logs reference players who may not be in
@@ -482,8 +486,8 @@ def save_game_logs(logs: List[Dict[str, Any]], season: Optional[str] = None):
                    (player_id, opponent_team_id, is_home, game_date, game_id, season,
                     points, rebounds, assists, minutes, steals, blocks, turnovers,
                     fg_made, fg_attempted, fg3_made, fg3_attempted, ft_made, ft_attempted,
-                    oreb, dreb, plus_minus, win_loss, personal_fouls)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    oreb, dreb, plus_minus, win_loss, personal_fouls, team_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(player_id, game_id) DO UPDATE SET
                     points=excluded.points, rebounds=excluded.rebounds,
                     assists=excluded.assists, minutes=excluded.minutes,
@@ -493,7 +497,8 @@ def save_game_logs(logs: List[Dict[str, Any]], season: Optional[str] = None):
                     fg3_attempted=excluded.fg3_attempted, ft_made=excluded.ft_made,
                     ft_attempted=excluded.ft_attempted, oreb=excluded.oreb,
                     dreb=excluded.dreb, plus_minus=excluded.plus_minus,
-                    win_loss=excluded.win_loss, personal_fouls=excluded.personal_fouls""",
+                    win_loss=excluded.win_loss, personal_fouls=excluded.personal_fouls,
+                    team_id=COALESCE(excluded.team_id, player_stats.team_id)""",
                 batch,
             )
         finally:

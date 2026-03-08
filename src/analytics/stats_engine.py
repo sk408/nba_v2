@@ -456,8 +456,7 @@ def compute_fatigue(team_id: int, game_date: str, w=None) -> Dict[str, Any]:
         # Find team's recent games
         rows = db.fetch_all(
             """SELECT DISTINCT game_date FROM player_stats ps
-               JOIN players p ON ps.player_id = p.player_id
-               WHERE p.team_id = ? AND ps.game_date < ?
+               WHERE ps.team_id = ? AND ps.game_date < ?
                ORDER BY ps.game_date DESC LIMIT 10""",
             (team_id, game_date)
         )
@@ -551,13 +550,11 @@ def detect_roster_change(team_id: int) -> Dict[str, Any]:
     recent = set()
     game_rows = db.fetch_all(
         """SELECT DISTINCT ps.player_id FROM player_stats ps
-           JOIN players p ON ps.player_id = p.player_id
-           WHERE p.team_id = ?
+           WHERE ps.team_id = ?
            AND ps.game_date IN (
              SELECT game_date FROM (
                SELECT DISTINCT game_date FROM player_stats ps2
-               JOIN players p2 ON ps2.player_id = p2.player_id
-               WHERE p2.team_id = ?
+               WHERE ps2.team_id = ?
                ORDER BY game_date DESC LIMIT 5
              )
            )""",
@@ -662,8 +659,7 @@ def compute_travel(team_id: int, game_date: str, opponent_team_id: int,
             rows = db.fetch_all(
                 """SELECT DISTINCT ps.game_date, ps.is_home, ps.opponent_team_id
                    FROM player_stats ps
-                   JOIN players p ON ps.player_id = p.player_id
-                   WHERE p.team_id = ? AND ps.game_date < ?
+                   WHERE ps.team_id = ? AND ps.game_date < ?
                    ORDER BY ps.game_date DESC LIMIT 1""",
                 (team_id, game_date)
             )
@@ -711,10 +707,9 @@ def compute_momentum(team_id: int, game_date: str, season: Optional[str] = None)
 
         # Get recent game results for this team
         rows = db.fetch_all(
-            """SELECT DISTINCT game_date, win_loss FROM player_stats
-               WHERE season = ? AND game_date < ?
-               AND player_id IN (SELECT player_id FROM players WHERE team_id = ?)
-               ORDER BY game_date DESC LIMIT 10""",
+            """SELECT DISTINCT game_date, win_loss FROM player_stats ps
+               WHERE ps.season = ? AND ps.game_date < ? AND ps.team_id = ?
+               ORDER BY ps.game_date DESC LIMIT 10""",
             (season, game_date, team_id)
         )
 
@@ -748,8 +743,7 @@ def compute_momentum(team_id: int, game_date: str, season: Optional[str] = None)
                     """SELECT
                         (SELECT COALESCE(SUM(ps.points), 0)
                          FROM player_stats ps
-                         JOIN players p ON ps.player_id = p.player_id
-                         WHERE p.team_id = ? AND ps.game_date = ? AND ps.season = ?) as team_pts,
+                         WHERE ps.team_id = ? AND ps.game_date = ? AND ps.season = ?) as team_pts,
                         (SELECT COALESCE(SUM(ps.points), 0)
                          FROM player_stats ps
                          WHERE ps.opponent_team_id = ? AND ps.game_date = ? AND ps.season = ?) as opp_pts
@@ -789,8 +783,7 @@ def compute_fg3_luck(team_id: int, game_date: str, season: Optional[str] = None)
             """SELECT COALESCE(SUM(ps.fg3_made), 0) as fg3m,
                       COALESCE(SUM(ps.fg3_attempted), 0) as fg3a
                FROM player_stats ps
-               JOIN players p ON ps.player_id = p.player_id
-               WHERE p.team_id = ? AND ps.game_date < ? AND ps.season = ?""",
+               WHERE ps.team_id = ? AND ps.game_date < ? AND ps.season = ?""",
             (team_id, game_date, season)
         )
 
@@ -801,10 +794,9 @@ def compute_fg3_luck(team_id: int, game_date: str, season: Optional[str] = None)
 
         # Recent 3PT% (last 5 game dates)
         recent_dates = db.fetch_all(
-            """SELECT DISTINCT game_date FROM player_stats
-               WHERE season = ? AND game_date < ?
-               AND player_id IN (SELECT player_id FROM players WHERE team_id = ?)
-               ORDER BY game_date DESC LIMIT 5""",
+            """SELECT DISTINCT game_date FROM player_stats ps
+               WHERE ps.season = ? AND ps.game_date < ? AND ps.team_id = ?
+               ORDER BY ps.game_date DESC LIMIT 5""",
             (season, game_date, team_id)
         )
 
@@ -817,8 +809,7 @@ def compute_fg3_luck(team_id: int, game_date: str, season: Optional[str] = None)
             f"""SELECT COALESCE(SUM(ps.fg3_made), 0) as fg3m,
                        COALESCE(SUM(ps.fg3_attempted), 0) as fg3a
                 FROM player_stats ps
-                JOIN players p ON ps.player_id = p.player_id
-                WHERE p.team_id = ? AND ps.game_date IN ({placeholders})
+                WHERE ps.team_id = ? AND ps.game_date IN ({placeholders})
                 AND ps.season = ?""",
             (team_id, *dates, season)
         )
@@ -865,8 +856,7 @@ def compute_schedule_spots(team_id: int, game_date: str,
         # Lookahead: check next game's opponent
         next_rows = db.fetch_all(
             """SELECT DISTINCT ps.opponent_team_id FROM player_stats ps
-               WHERE ps.game_date > ?
-               AND ps.player_id IN (SELECT player_id FROM players WHERE team_id = ?)
+               WHERE ps.game_date > ? AND ps.team_id = ?
                ORDER BY ps.game_date ASC LIMIT 1""",
             (game_date, team_id)
         )
@@ -879,8 +869,7 @@ def compute_schedule_spots(team_id: int, game_date: str,
         prev_rows = db.fetch_all(
             """SELECT DISTINCT ps.game_date, ps.opponent_team_id, ps.win_loss
                FROM player_stats ps
-               WHERE ps.game_date < ? AND ps.season = ?
-               AND ps.player_id IN (SELECT player_id FROM players WHERE team_id = ?)
+               WHERE ps.game_date < ? AND ps.season = ? AND ps.team_id = ?
                ORDER BY ps.game_date DESC LIMIT 1""",
             (game_date, season, team_id)
         )
@@ -893,8 +882,7 @@ def compute_schedule_spots(team_id: int, game_date: str,
         # Road trip game: count consecutive away games including current
         recent_rows = db.fetch_all(
             """SELECT DISTINCT ps.game_date, ps.is_home FROM player_stats ps
-               WHERE ps.game_date <= ? AND ps.season = ?
-               AND ps.player_id IN (SELECT player_id FROM players WHERE team_id = ?)
+               WHERE ps.game_date <= ? AND ps.season = ? AND ps.team_id = ?
                ORDER BY ps.game_date DESC LIMIT 15""",
             (game_date, season, team_id)
         )

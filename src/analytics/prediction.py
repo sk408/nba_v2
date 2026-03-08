@@ -668,8 +668,7 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
         _impact_rows = db.fetch_all(
             "SELECT pi.net_rating_diff, pi.on_court_minutes "
             "FROM player_impact pi "
-            "JOIN players p ON pi.player_id = p.player_id "
-            "WHERE pi.season = ? AND p.team_id = ? AND pi.on_court_minutes > 0",
+            "WHERE pi.season = ? AND pi.team_id = ? AND pi.on_court_minutes > 0",
             (game_season, _tid),
         )
         _total_impact = sum(
@@ -688,8 +687,7 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
     if injured_players:
         for _pid, _play_prob in injured_players.items():
             _vorp_row = db.fetch_one(
-                "SELECT pi.vorp, p.team_id FROM player_impact pi "
-                "JOIN players p ON pi.player_id = p.player_id "
+                "SELECT pi.vorp, pi.team_id FROM player_impact pi "
                 "WHERE pi.player_id = ? AND pi.season = ?",
                 (_pid, game_season),
             )
@@ -1405,8 +1403,7 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
                 _impact_rows = _db.fetch_all(
                     "SELECT pi.net_rating_diff, pi.on_court_minutes "
                     "FROM player_impact pi "
-                    "JOIN players p ON pi.player_id = p.player_id "
-                    "WHERE pi.season = ? AND p.team_id = ? AND pi.on_court_minutes > 0",
+                    "WHERE pi.season = ? AND pi.team_id = ? AND pi.on_court_minutes > 0",
                     (game_season, _tid),
                 )
                 _total_impact = sum(

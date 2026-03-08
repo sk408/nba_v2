@@ -34,13 +34,12 @@ def compute_all_elo(season: str = "2025-26") -> None:
     games = db.fetch_all(
         """
         SELECT ps.game_date,
-               p.team_id   AS home_team_id,
+               ps.team_id   AS home_team_id,
                ps.opponent_team_id AS away_team_id,
                ps.win_loss
         FROM player_stats ps
-        JOIN players p ON ps.player_id = p.player_id
-        WHERE ps.season = ? AND ps.is_home = 1
-        GROUP BY ps.game_date, p.team_id, ps.opponent_team_id
+        WHERE ps.season = ? AND ps.is_home = 1 AND ps.team_id IS NOT NULL
+        GROUP BY ps.game_date, ps.team_id, ps.opponent_team_id
         ORDER BY ps.game_date
         """,
         (season,),

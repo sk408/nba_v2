@@ -21,11 +21,10 @@ def infer_injuries_from_logs(callback: Optional[Callable] = None) -> dict:
     """
     # 1. Build team schedules: team_id -> set of game_dates
     rows = db.fetch_all(
-        """SELECT p.team_id, ps.game_date
+        """SELECT ps.team_id, ps.game_date
            FROM player_stats ps
-           JOIN players p ON p.player_id = ps.player_id
-           WHERE p.team_id IS NOT NULL
-           GROUP BY p.team_id, ps.game_date"""
+           WHERE ps.team_id IS NOT NULL
+           GROUP BY ps.team_id, ps.game_date"""
     )
     team_dates: dict[int, set[str]] = {}
     for r in rows:
