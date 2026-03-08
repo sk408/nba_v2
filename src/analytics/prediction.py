@@ -2,7 +2,10 @@
 
 One predict() function used by live predictions, backtesting, and optimization.
 No three-path sync problem. No Elo, no ESPN blend, no ML ensemble, no opening
-spread, no residual calibration, no autotune, no per-team weights.
+spread, no autotune, no per-team weights.
+
+Optional score realism calibration is post-prediction only and does not change
+game_score/pick (winner logic remains raw model output).
 
 game_score (not "spread") -- the model predicts a strength edge, not a point spread.
 Sign = pick (positive = home), magnitude = confidence.
@@ -163,6 +166,13 @@ class Prediction:
     is_dog_pick: bool = False
     is_value_zone: bool = False
     dog_payout: float = 0.0
+    # Post-prediction score calibration (display-only by default)
+    calibrated_spread: Optional[float] = None
+    calibrated_total: Optional[float] = None
+    calibrated_home_pts: Optional[float] = None
+    calibrated_away_pts: Optional[float] = None
+    score_calibrated: bool = False
+    score_calibration_mode: str = ""
 
 
 # ──────────────────────────────────────────────────────────────
@@ -410,6 +420,21 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
         sharp_favors_home = game.ml_home_money > game.ml_home_public
         model_favors_home = game_score > 0
         pred.sharp_agrees = sharp_favors_home == model_favors_home
+
+    # Optional post-prediction score calibration.
+    # This does not alter game_score/pick winner logic.
+    try:
+        from src.analytics.score_calibration import apply_score_calibration
+
+        apply_score_calibration(pred, game, include_sharp=include_sharp)
+    except Exception as e:
+        logger.debug("Score calibration unavailable: %s", e)
+        if pred.calibrated_spread is None:
+            pred.calibrated_spread = pred.game_score
+            pred.calibrated_total = pred.projected_home_pts + pred.projected_away_pts
+            pred.calibrated_home_pts = pred.projected_home_pts
+            pred.calibrated_away_pts = pred.projected_away_pts
+            pred.score_calibrated = False
 
     return pred
 

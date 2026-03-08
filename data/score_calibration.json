@@ -1,0 +1,674 @@
+{
+  "version": 2,
+  "created_at": "2026-03-08T00:42:02",
+  "settings": {
+    "enabled": true,
+    "apply_to_display": true,
+    "train_window_games": 2500,
+    "min_games": 500,
+    "bins": 15,
+    "strict_sign_lock": true,
+    "sign_epsilon": 0.05,
+    "min_abs_spread": 0.1,
+    "near_spread_identity_band": 1.5,
+    "near_spread_deadband": 4.0,
+    "near_spread_raw_weight": 0.85,
+    "spread_cap": 34.0,
+    "total_min": 160.0,
+    "total_max": 275.0,
+    "point_floor": 65.0,
+    "point_ceiling": 175.0,
+    "tail_margin_threshold": 20.0,
+    "team_residual_enabled": false,
+    "team_min_games": 30,
+    "team_shrinkage": 50.0,
+    "team_max_abs_correction": 5.0,
+    "team_range_enabled": true,
+    "team_range_min_games": 35,
+    "team_range_quantile_low": 0.03,
+    "team_range_quantile_high": 0.97,
+    "team_range_padding": 6.0
+  },
+  "sample_size": 7997,
+  "modes": {
+    "fundamentals": {
+      "mode": "fundamentals",
+      "include_sharp": false,
+      "spread_map": {
+        "x": [
+          -231.5379305938583,
+          -145.27974729073878,
+          -109.02776274243173,
+          -82.31846742030912,
+          -56.314316764914395,
+          -33.83886892245692,
+          -13.587421521947089,
+          7.7301549578406785,
+          28.9898763724565,
+          52.95749145143385,
+          77.73267056446245,
+          104.96398225898459,
+          140.50602392663586,
+          226.4341129494626
+        ],
+        "y": [
+          -6.720670391061453,
+          -6.720670391061453,
+          -5.318435754189944,
+          -2.4831460674157304,
+          -0.4692737430167598,
+          -0.4692737430167598,
+          0.8268156424581006,
+          3.3202247191011236,
+          3.3202247191011236,
+          5.455056179775281,
+          7.134078212290503,
+          7.735955056179775,
+          9.53072625698324,
+          9.53072625698324
+        ]
+      },
+      "total_map": {
+        "x": [
+          163.32435710686687,
+          193.96267750183839,
+          212.79568219296493,
+          226.78716136335711,
+          238.54531316338202,
+          249.10938029397659,
+          259.43027800935033,
+          269.513243489472,
+          279.75009517904294
+        ],
+        "y": [
+          213.39106145251398,
+          219.81460674157304,
+          221.60893854748602,
+          221.73033707865167,
+          224.15083798882682,
+          225.42134831460675,
+          228.35195530726256,
+          228.35195530726256,
+          235.0382462686567
+        ]
+      },
+      "team_offsets": {},
+      "team_point_ranges": {
+        "1610612737": {
+          "home_low": 87.4,
+          "home_high": 148.2,
+          "away_low": 91.58,
+          "away_high": 144.52,
+          "home_games": 81,
+          "away_games": 87
+        },
+        "1610612738": {
+          "home_low": 87.86,
+          "home_high": 145.14,
+          "away_low": 85.55,
+          "away_high": 145.45,
+          "home_games": 82,
+          "away_games": 86
+        },
+        "1610612739": {
+          "home_low": 93.47,
+          "home_high": 149.01999999999998,
+          "away_low": 89.47,
+          "away_high": 144.51,
+          "home_games": 84,
+          "away_games": 84
+        },
+        "1610612740": {
+          "home_low": 86.46,
+          "home_high": 147.07999999999998,
+          "away_low": 82.0,
+          "away_high": 139.96,
+          "home_games": 83,
+          "away_games": 85
+        },
+        "1610612741": {
+          "home_low": 86.0,
+          "home_high": 143.48000000000002,
+          "away_low": 92.43,
+          "away_high": 150.27999999999997,
+          "home_games": 85,
+          "away_games": 82
+        },
+        "1610612742": {
+          "home_low": 86.92,
+          "home_high": 144.54,
+          "away_low": 87.3,
+          "away_high": 143.0,
+          "home_games": 83,
+          "away_games": 83
+        },
+        "1610612743": {
+          "home_low": 84.68,
+          "home_high": 150.0,
+          "away_low": 94.0,
+          "away_high": 146.51,
+          "home_games": 83,
+          "away_games": 84
+        },
+        "1610612744": {
+          "home_low": 88.0,
+          "home_high": 143.0,
+          "away_low": 83.04,
+          "away_high": 142.88000000000002,
+          "home_games": 83,
+          "away_games": 85
+        },
+        "1610612745": {
+          "home_low": 85.8,
+          "home_high": 149.6,
+          "away_low": 92.0,
+          "away_high": 144.01999999999998,
+          "home_games": 81,
+          "away_games": 84
+        },
+        "1610612746": {
+          "home_low": 85.43,
+          "home_high": 140.57,
+          "away_low": 84.74,
+          "away_high": 136.42000000000002,
+          "home_games": 82,
+          "away_games": 87
+        },
+        "1610612747": {
+          "home_low": 88.38,
+          "home_high": 146.0,
+          "away_low": 81.43,
+          "away_high": 141.14,
+          "home_games": 83,
+          "away_games": 82
+        },
+        "1610612748": {
+          "home_low": 83.47,
+          "home_high": 148.0,
+          "away_low": 83.0,
+          "away_high": 150.61999999999998,
+          "home_games": 84,
+          "away_games": 83
+        },
+        "1610612749": {
+          "home_low": 90.38,
+          "home_high": 146.0,
+          "away_low": 82.8,
+          "away_high": 134.0,
+          "home_games": 83,
+          "away_games": 81
+        },
+        "1610612750": {
+          "home_low": 86.58,
+          "home_high": 141.26,
+          "away_low": 93.6,
+          "away_high": 147.0,
+          "home_games": 87,
+          "away_games": 81
+        },
+        "1610612751": {
+          "home_low": 80.4,
+          "home_high": 133.0,
+          "away_low": 75.06,
+          "away_high": 133.42000000000002,
+          "home_games": 81,
+          "away_games": 87
+        },
+        "1610612752": {
+          "home_low": 91.46,
+          "home_high": 149.0,
+          "away_low": 88.0,
+          "away_high": 146.03999999999996,
+          "home_games": 83,
+          "away_games": 84
+        },
+        "1610612753": {
+          "home_low": 79.98,
+          "home_high": 137.52999999999997,
+          "away_low": 79.34,
+          "away_high": 136.66,
+          "home_games": 84,
+          "away_games": 79
+        },
+        "1610612754": {
+          "home_low": 93.2,
+          "home_high": 141.0,
+          "away_low": 79.76,
+          "away_high": 144.61999999999998,
+          "home_games": 81,
+          "away_games": 83
+        },
+        "1610612755": {
+          "home_low": 89.0,
+          "home_high": 140.0,
+          "away_low": 81.56,
+          "away_high": 141.96,
+          "home_games": 83,
+          "away_games": 85
+        },
+        "1610612756": {
+          "home_low": 84.47,
+          "home_high": 137.01999999999998,
+          "away_low": 84.92,
+          "away_high": 140.0,
+          "home_games": 84,
+          "away_games": 83
+        },
+        "1610612757": {
+          "home_low": 84.47,
+          "home_high": 142.51,
+          "away_low": 82.52,
+          "away_high": 137.96,
+          "home_games": 84,
+          "away_games": 85
+        },
+        "1610612758": {
+          "home_low": 88.58,
+          "home_high": 138.0,
+          "away_low": 84.43,
+          "away_high": 139.0,
+          "home_games": 87,
+          "away_games": 82
+        },
+        "1610612759": {
+          "home_low": 92.84,
+          "home_high": 144.54,
+          "away_low": 87.0,
+          "away_high": 141.0,
+          "home_games": 83,
+          "away_games": 81
+        },
+        "1610612760": {
+          "home_low": 93.0,
+          "home_high": 146.51,
+          "away_low": 94.0,
+          "away_high": 148.52999999999997,
+          "home_games": 84,
+          "away_games": 84
+        },
+        "1610612761": {
+          "home_low": 83.0,
+          "home_high": 138.52999999999997,
+          "away_low": 79.0,
+          "away_high": 139.57,
+          "home_games": 84,
+          "away_games": 82
+        },
+        "1610612762": {
+          "home_low": 85.52,
+          "home_high": 144.96,
+          "away_low": 91.0,
+          "away_high": 140.57,
+          "home_games": 85,
+          "away_games": 82
+        },
+        "1610612763": {
+          "home_low": 90.4,
+          "home_high": 147.99999999999997,
+          "away_low": 90.28999999999999,
+          "away_high": 146.0,
+          "home_games": 81,
+          "away_games": 82
+        },
+        "1610612764": {
+          "home_low": 88.0,
+          "home_high": 138.45,
+          "away_low": 82.34,
+          "away_high": 135.66,
+          "home_games": 86,
+          "away_games": 79
+        },
+        "1610612765": {
+          "home_low": 89.46,
+          "home_high": 142.54,
+          "away_low": 85.0,
+          "away_high": 141.07999999999998,
+          "home_games": 83,
+          "away_games": 83
+        },
+        "1610612766": {
+          "home_low": 80.46,
+          "home_high": 137.61999999999998,
+          "away_low": 81.04,
+          "away_high": 142.92000000000002,
+          "home_games": 83,
+          "away_games": 85
+        }
+      },
+      "metrics": {
+        "status": "ok",
+        "sample_size": 2500,
+        "raw_spread_mae": 89.81387541967705,
+        "cal_spread_mae": 11.679228932777274,
+        "raw_total_mae": 35.371436051042096,
+        "cal_total_mae": 14.829509687137627,
+        "raw_tail_margin_rate": 86.56,
+        "cal_tail_margin_rate": 0.0,
+        "winner_flip_count": 0,
+        "winner_invariance_pct": 100.0,
+        "team_offsets_count": 0,
+        "team_point_ranges_count": 30
+      }
+    },
+    "sharp": {
+      "mode": "sharp",
+      "include_sharp": true,
+      "spread_map": {
+        "x": [
+          -230.9634315111566,
+          -144.63585362696026,
+          -108.84385527988786,
+          -82.29332975322937,
+          -56.49115725058052,
+          -34.021536296209334,
+          -14.318936300134556,
+          6.8665660604134855,
+          28.22438602533136,
+          52.15291518761517,
+          76.52401579395466,
+          103.5309983665292,
+          139.1652927478809,
+          225.20284489308725
+        ],
+        "y": [
+          -6.620111731843576,
+          -6.620111731843576,
+          -5.625698324022347,
+          -2.247191011235955,
+          -0.4972067039106145,
+          -0.4972067039106145,
+          0.441340782122905,
+          2.949438202247191,
+          2.949438202247191,
+          4.792134831460674,
+          6.70391061452514,
+          8.92134831460674,
+          8.92134831460674,
+          8.92134831460674
+        ]
+      },
+      "total_map": {
+        "x": [
+          163.32435710686687,
+          193.96267750183839,
+          212.79568219296493,
+          226.78716136335711,
+          238.54531316338202,
+          249.10938029397659,
+          259.43027800935033,
+          269.513243489472,
+          279.75009517904294
+        ],
+        "y": [
+          213.39106145251398,
+          219.81460674157304,
+          221.60893854748602,
+          221.73033707865167,
+          224.15083798882682,
+          225.42134831460675,
+          228.35195530726256,
+          228.35195530726256,
+          235.0382462686567
+        ]
+      },
+      "team_offsets": {},
+      "team_point_ranges": {
+        "1610612737": {
+          "home_low": 87.4,
+          "home_high": 148.2,
+          "away_low": 91.58,
+          "away_high": 144.52,
+          "home_games": 81,
+          "away_games": 87
+        },
+        "1610612738": {
+          "home_low": 87.86,
+          "home_high": 145.14,
+          "away_low": 85.55,
+          "away_high": 145.45,
+          "home_games": 82,
+          "away_games": 86
+        },
+        "1610612739": {
+          "home_low": 93.47,
+          "home_high": 149.01999999999998,
+          "away_low": 89.47,
+          "away_high": 144.51,
+          "home_games": 84,
+          "away_games": 84
+        },
+        "1610612740": {
+          "home_low": 86.46,
+          "home_high": 147.07999999999998,
+          "away_low": 82.0,
+          "away_high": 139.96,
+          "home_games": 83,
+          "away_games": 85
+        },
+        "1610612741": {
+          "home_low": 86.0,
+          "home_high": 143.48000000000002,
+          "away_low": 92.43,
+          "away_high": 150.27999999999997,
+          "home_games": 85,
+          "away_games": 82
+        },
+        "1610612742": {
+          "home_low": 86.92,
+          "home_high": 144.54,
+          "away_low": 87.3,
+          "away_high": 143.0,
+          "home_games": 83,
+          "away_games": 83
+        },
+        "1610612743": {
+          "home_low": 84.68,
+          "home_high": 150.0,
+          "away_low": 94.0,
+          "away_high": 146.51,
+          "home_games": 83,
+          "away_games": 84
+        },
+        "1610612744": {
+          "home_low": 88.0,
+          "home_high": 143.0,
+          "away_low": 83.04,
+          "away_high": 142.88000000000002,
+          "home_games": 83,
+          "away_games": 85
+        },
+        "1610612745": {
+          "home_low": 85.8,
+          "home_high": 149.6,
+          "away_low": 92.0,
+          "away_high": 144.01999999999998,
+          "home_games": 81,
+          "away_games": 84
+        },
+        "1610612746": {
+          "home_low": 85.43,
+          "home_high": 140.57,
+          "away_low": 84.74,
+          "away_high": 136.42000000000002,
+          "home_games": 82,
+          "away_games": 87
+        },
+        "1610612747": {
+          "home_low": 88.38,
+          "home_high": 146.0,
+          "away_low": 81.43,
+          "away_high": 141.14,
+          "home_games": 83,
+          "away_games": 82
+        },
+        "1610612748": {
+          "home_low": 83.47,
+          "home_high": 148.0,
+          "away_low": 83.0,
+          "away_high": 150.61999999999998,
+          "home_games": 84,
+          "away_games": 83
+        },
+        "1610612749": {
+          "home_low": 90.38,
+          "home_high": 146.0,
+          "away_low": 82.8,
+          "away_high": 134.0,
+          "home_games": 83,
+          "away_games": 81
+        },
+        "1610612750": {
+          "home_low": 86.58,
+          "home_high": 141.26,
+          "away_low": 93.6,
+          "away_high": 147.0,
+          "home_games": 87,
+          "away_games": 81
+        },
+        "1610612751": {
+          "home_low": 80.4,
+          "home_high": 133.0,
+          "away_low": 75.06,
+          "away_high": 133.42000000000002,
+          "home_games": 81,
+          "away_games": 87
+        },
+        "1610612752": {
+          "home_low": 91.46,
+          "home_high": 149.0,
+          "away_low": 88.0,
+          "away_high": 146.03999999999996,
+          "home_games": 83,
+          "away_games": 84
+        },
+        "1610612753": {
+          "home_low": 79.98,
+          "home_high": 137.52999999999997,
+          "away_low": 79.34,
+          "away_high": 136.66,
+          "home_games": 84,
+          "away_games": 79
+        },
+        "1610612754": {
+          "home_low": 93.2,
+          "home_high": 141.0,
+          "away_low": 79.76,
+          "away_high": 144.61999999999998,
+          "home_games": 81,
+          "away_games": 83
+        },
+        "1610612755": {
+          "home_low": 89.0,
+          "home_high": 140.0,
+          "away_low": 81.56,
+          "away_high": 141.96,
+          "home_games": 83,
+          "away_games": 85
+        },
+        "1610612756": {
+          "home_low": 84.47,
+          "home_high": 137.01999999999998,
+          "away_low": 84.92,
+          "away_high": 140.0,
+          "home_games": 84,
+          "away_games": 83
+        },
+        "1610612757": {
+          "home_low": 84.47,
+          "home_high": 142.51,
+          "away_low": 82.52,
+          "away_high": 137.96,
+          "home_games": 84,
+          "away_games": 85
+        },
+        "1610612758": {
+          "home_low": 88.58,
+          "home_high": 138.0,
+          "away_low": 84.43,
+          "away_high": 139.0,
+          "home_games": 87,
+          "away_games": 82
+        },
+        "1610612759": {
+          "home_low": 92.84,
+          "home_high": 144.54,
+          "away_low": 87.0,
+          "away_high": 141.0,
+          "home_games": 83,
+          "away_games": 81
+        },
+        "1610612760": {
+          "home_low": 93.0,
+          "home_high": 146.51,
+          "away_low": 94.0,
+          "away_high": 148.52999999999997,
+          "home_games": 84,
+          "away_games": 84
+        },
+        "1610612761": {
+          "home_low": 83.0,
+          "home_high": 138.52999999999997,
+          "away_low": 79.0,
+          "away_high": 139.57,
+          "home_games": 84,
+          "away_games": 82
+        },
+        "1610612762": {
+          "home_low": 85.52,
+          "home_high": 144.96,
+          "away_low": 91.0,
+          "away_high": 140.57,
+          "home_games": 85,
+          "away_games": 82
+        },
+        "1610612763": {
+          "home_low": 90.4,
+          "home_high": 147.99999999999997,
+          "away_low": 90.28999999999999,
+          "away_high": 146.0,
+          "home_games": 81,
+          "away_games": 82
+        },
+        "1610612764": {
+          "home_low": 88.0,
+          "home_high": 138.45,
+          "away_low": 82.34,
+          "away_high": 135.66,
+          "home_games": 86,
+          "away_games": 79
+        },
+        "1610612765": {
+          "home_low": 89.46,
+          "home_high": 142.54,
+          "away_low": 85.0,
+          "away_high": 141.07999999999998,
+          "home_games": 83,
+          "away_games": 83
+        },
+        "1610612766": {
+          "home_low": 80.46,
+          "home_high": 137.61999999999998,
+          "away_low": 81.04,
+          "away_high": 142.92000000000002,
+          "home_games": 83,
+          "away_games": 85
+        }
+      },
+      "metrics": {
+        "status": "ok",
+        "sample_size": 2500,
+        "raw_spread_mae": 89.2845614015913,
+        "cal_spread_mae": 11.687897886589695,
+        "raw_total_mae": 35.371436051042096,
+        "cal_total_mae": 14.829509687137627,
+        "raw_tail_margin_rate": 86.64,
+        "cal_tail_margin_rate": 0.0,
+        "winner_flip_count": 0,
+        "winner_invariance_pct": 100.0,
+        "team_offsets_count": 0,
+        "team_point_ranges_count": 30
+      }
+    }
+  },
+  "artifact_signature": "f076b5435da85a1363f7df1eca32f681"
+}

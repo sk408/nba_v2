@@ -1359,9 +1359,13 @@ a:hover {
 
 /* ── Game Selector Ticker ── */
 
+.gc-selector-wrap {
+    margin-bottom: 14px;
+}
+
 .gc-ticker {
-    display: none;
-    margin-bottom: 20px;
+    display: block;
+    margin-bottom: 10px;
     overflow-x: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
@@ -1376,6 +1380,30 @@ a:hover {
     gap: 8px;
     padding: 2px 0;
     min-width: min-content;
+}
+
+.gc-mobile-select {
+    display: none;
+    align-items: center;
+    gap: 8px;
+}
+
+.gc-mobile-select label {
+    font-size: 0.72rem;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+}
+
+.gc-mobile-select select {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    padding: 8px 10px;
 }
 
 .gc-ti {
@@ -1481,8 +1509,16 @@ a:hover {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
+    gap: 3px;
     position: relative;
+}
+
+.gc-sb-logo {
+    width: 52px;
+    height: 52px;
+    object-fit: contain;
+    margin-bottom: 2px;
+    filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.25));
 }
 
 .gc-sb-label {
@@ -1609,6 +1645,37 @@ a:hover {
     border-left: 1px solid var(--border);
 }
 
+.gc-sb-extra-row {
+    grid-column: 1 / -1;
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-light);
+}
+
+.gc-sb-extra {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    letter-spacing: 0.2px;
+}
+
+.gc-sb-extra-away {
+    text-align: left;
+}
+
+.gc-sb-extra-home {
+    text-align: right;
+}
+
+.gc-sb-extra-center {
+    text-align: center;
+    color: var(--accent-cyan);
+    font-weight: 600;
+}
+
 
 /* ── Two-column Layout ── */
 
@@ -1649,6 +1716,17 @@ a:hover {
     letter-spacing: 0.8px;
     color: var(--text-muted);
     margin-bottom: 12px;
+}
+
+.gc-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.gc-card-head .gc-card-title {
+    margin-bottom: 0;
 }
 
 .gc-no-data {
@@ -1758,6 +1836,51 @@ a:hover {
     border-radius: var(--radius-sm);
 }
 
+/* ── Sharp money / flow cards ── */
+
+.gc-sharp-row,
+.gc-flow-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-light);
+}
+
+.gc-sharp-row:last-of-type,
+.gc-flow-row:last-of-type {
+    border-bottom: none;
+}
+
+.gc-sharp-row span:last-child,
+.gc-flow-row span:last-child {
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--text-primary);
+}
+
+.gc-sharp-signal {
+    margin-top: 8px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.gc-sharp-signal.medium {
+    color: #eab308;
+}
+
+.gc-sharp-signal.strong {
+    color: #22c55e;
+}
+
+.gc-flow-run {
+    margin-top: 8px;
+    font-size: 0.8rem;
+    color: #eab308;
+    font-weight: 600;
+}
+
 
 /* ── Box Score ── */
 
@@ -1832,7 +1955,7 @@ a:hover {
     font-family: var(--font-body);
     color: var(--text-primary);
     font-weight: 500;
-    max-width: 140px;
+    max-width: 210px;
     overflow: hidden;
     text-overflow: ellipsis;
 }
@@ -1845,6 +1968,50 @@ a:hover {
 .gc-box-tbl tr:nth-child(even) { background: rgba(255, 255, 255, 0.012); }
 .gc-box-tbl tr:hover { background: rgba(255, 255, 255, 0.03); }
 .gc-box-tbl tr.gc-box-active td.gc-box-name { color: var(--accent-green); }
+
+.gc-box-player {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.gc-box-active-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: transparent;
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.gc-box-active-dot.on {
+    background: var(--accent-green);
+    border-color: var(--accent-green);
+    box-shadow: 0 0 8px rgba(34, 197, 94, 0.45);
+}
+
+.gc-box-photo {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    object-fit: cover;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.gc-box-photo-empty {
+    display: inline-block;
+    opacity: 0.35;
+}
+
+.gc-box-name-txt {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 .gc-box-div td {
     font-family: var(--font-heading) !important;
@@ -1914,6 +2081,26 @@ a:hover {
 .gc-play-team.home { color: #80d8ff; }
 .gc-play-team.away { color: #ff8a80; }
 
+.gc-play-team-logo-wrap {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+.gc-play-logo {
+    width: 20px;
+    height: 20px;
+    object-fit: contain;
+}
+
+.gc-play-logo-empty {
+    display: block;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 1px solid var(--border-light);
+}
+
 .gc-play-text {
     color: var(--text-secondary);
     flex: 1;
@@ -1926,6 +2113,109 @@ a:hover {
     color: var(--text-muted);
     flex-shrink: 0;
     padding-top: 1px;
+}
+
+/* ── Shot chart controls ── */
+
+.gc-shot-filters {
+    display: flex;
+    gap: 6px;
+}
+
+.gc-shot-filter {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    border-radius: 999px;
+    font-size: 0.68rem;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding: 4px 9px;
+    cursor: pointer;
+}
+
+.gc-shot-filter.active {
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+    background: rgba(0, 229, 255, 0.08);
+}
+
+.gc-shot-summary {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.gc-shot-pill {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.7rem;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+
+.gc-shot-pill.away {
+    border-color: rgba(255, 138, 128, 0.45);
+    color: #ffb4ad;
+}
+
+.gc-shot-pill.home {
+    border-color: rgba(128, 216, 255, 0.45);
+    color: #9de4ff;
+}
+
+/* ── Live event overlays ── */
+
+.gc-overlay-wrap {
+    position: sticky;
+    top: 70px;
+    z-index: 12;
+    pointer-events: none;
+    margin: -8px 0 12px;
+}
+
+.gc-overlay {
+    max-width: 460px;
+    margin: 0 auto;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    text-align: center;
+    padding: 10px 14px;
+}
+
+.gc-overlay-timeout {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: rgba(248, 113, 113, 0.55);
+}
+
+.gc-overlay-sub {
+    background: rgba(14, 165, 233, 0.18);
+    border-color: rgba(56, 189, 248, 0.5);
+}
+
+.gc-overlay-title {
+    font-size: 0.68rem;
+    letter-spacing: 1px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.gc-overlay-body {
+    margin-top: 2px;
+    font-size: 0.84rem;
+    color: #e5e7eb;
+}
+
+.gc-overlay-clock {
+    margin-top: 4px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: #fff;
 }
 
 
@@ -1946,9 +2236,15 @@ a:hover {
     }
     .gc-sb-abbr { font-size: 1.8rem; }
     .gc-sb-score { font-size: 2.2rem; min-height: 2.2rem; }
+    .gc-sb-logo { width: 42px; height: 42px; }
 }
 
 @media (max-width: 600px) {
+    .gc-mobile-select {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+    }
     .gc-sidebar {
         grid-template-columns: 1fr;
     }
@@ -1956,7 +2252,27 @@ a:hover {
     .gc-sb-abbr { font-size: 1.4rem; }
     .gc-sb-score { font-size: 1.8rem; min-height: 1.8rem; }
     .gc-sb-name { display: none; }
+    .gc-sb-logo { width: 34px; height: 34px; }
+    .gc-sb-extra-row {
+        grid-template-columns: 1fr;
+        gap: 5px;
+    }
+    .gc-sb-extra-away,
+    .gc-sb-extra-home,
+    .gc-sb-extra-center {
+        text-align: center;
+    }
+    .gc-card-head {
+        flex-direction: column;
+        align-items: flex-start;
+    }
     .gc-ls th, .gc-ls td { padding: 3px 6px; }
+    .gc-plays {
+        max-height: 50vh;
+    }
+    .gc-overlay-wrap {
+        top: 58px;
+    }
 }
 
 
@@ -2040,7 +2356,8 @@ a:hover {
    ══════════════════════════════════════════════════ */
 
 .gc-court-section {
-    margin-bottom: 20px;
+    margin-top: 4px;
+    margin-bottom: 0;
 }
 
 #gc-court {

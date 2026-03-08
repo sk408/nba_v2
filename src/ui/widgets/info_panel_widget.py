@@ -325,10 +325,32 @@ class InfoPanelWidget(QWidget):
             self._pred_winner.setText("\u2014")
             return
 
-        spread = pred.get("spread", 0)
-        total = pred.get("total", 0)
-        home_proj = pred.get("home_projected", 0)
-        away_proj = pred.get("away_projected", 0)
+        spread = pred.get(
+            "calibrated_spread",
+            pred.get("game_score", pred.get("spread", 0.0)),
+        )
+        if spread is None:
+            spread = pred.get("game_score", pred.get("spread", 0.0))
+        total = pred.get(
+            "calibrated_total",
+            pred.get(
+                "total",
+                float(pred.get("projected_home_pts", 0.0))
+                + float(pred.get("projected_away_pts", 0.0)),
+            ),
+        )
+        if total is None:
+            total = float(pred.get("projected_home_pts", 0.0)) + float(
+                pred.get("projected_away_pts", 0.0)
+            )
+        home_proj = pred.get(
+            "calibrated_home_pts",
+            pred.get("projected_home_pts", pred.get("home_projected", 0.0)),
+        )
+        away_proj = pred.get(
+            "calibrated_away_pts",
+            pred.get("projected_away_pts", pred.get("away_projected", 0.0)),
+        )
 
         spread_text = f"{home_abbr} {spread:+.1f}" if spread != 0 else "PICK"
         self._pred_spread.setText(spread_text)
@@ -336,7 +358,13 @@ class InfoPanelWidget(QWidget):
         self._pred_home.setText(f"{home_abbr} {home_proj:.1f}")
         self._pred_away.setText(f"{away_abbr} {away_proj:.1f}")
 
-        winner = home_abbr if spread > 0 else away_abbr
+        pick = pred.get("pick")
+        if pick == "HOME":
+            winner = home_abbr
+        elif pick == "AWAY":
+            winner = away_abbr
+        else:
+            winner = home_abbr if spread > 0 else away_abbr
         self._pred_winner.setText(winner)
         self._pred_winner.setStyleSheet(
             f"color: #22c55e; font-size: 13px; font-weight: 700;"

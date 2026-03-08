@@ -81,7 +81,7 @@
 {% elif espn_games %}
 <div class="game-grid">
     {% for g in espn_games %}
-    <a href="/gamecast" class="game-card">
+    <a href="{{ '/gamecast/' ~ g.espn_id if g.espn_id else '/gamecast' }}" class="game-card">
         {% if g.date %}
         <div class="card-top-row">
             <span class="card-time" data-utc="{{ g.date }}"></span>

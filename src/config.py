@@ -58,6 +58,33 @@ _DEFAULTS: Dict[str, Any] = {
     "optimizer_save_long_dog_prior_weight": 25.0,
     "optimizer_save_min_long_dog_onepos_lift": 0.75,
     "optimizer_save_long_dog_tiebreak_loss_window": 0.010,
+    # Score realism calibrator (post-prediction only; does not change winner picks)
+    "score_calibration_enabled": True,
+    "score_calibration_apply_to_display": True,
+    "score_calibration_train_window_games": 2500,  # 0 = all games
+    "score_calibration_min_games": 500,
+    "score_calibration_bins": 15,
+    "score_calibration_strict_sign_lock": True,
+    "score_calibration_sign_epsilon": 0.05,
+    "score_calibration_min_abs_spread": 0.10,
+    "score_calibration_near_spread_identity_band": 1.5,
+    "score_calibration_near_spread_deadband": 4.0,
+    "score_calibration_near_spread_raw_weight": 0.85,
+    "score_calibration_spread_cap": 34.0,
+    "score_calibration_total_min": 160.0,
+    "score_calibration_total_max": 275.0,
+    "score_calibration_point_floor": 65.0,
+    "score_calibration_point_ceiling": 175.0,
+    "score_calibration_tail_margin_threshold": 20.0,
+    "score_calibration_team_residual_enabled": False,
+    "score_calibration_team_min_games": 30,
+    "score_calibration_team_shrinkage": 50.0,
+    "score_calibration_team_max_abs_correction": 5.0,
+    "score_calibration_team_range_enabled": True,
+    "score_calibration_team_range_min_games": 35,
+    "score_calibration_team_range_quantile_low": 0.03,
+    "score_calibration_team_range_quantile_high": 0.97,
+    "score_calibration_team_range_padding": 6.0,
     # Optuna controls
     "optuna_top_n_validation": 10,
     "optuna_stagnation_threshold": 500,
@@ -127,6 +154,70 @@ def set_value(key: str, value: Any):
             upset_bonus_max = float(_DEFAULTS["upset_bonus_mult_max"])
         upset_bonus_max = max(0.0, upset_bonus_max)
         value = min(max(0.0, upset_bonus), upset_bonus_max)
+    elif key == "score_calibration_bins":
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = int(_DEFAULTS["score_calibration_bins"])
+        value = max(5, min(61, value))
+    elif key in (
+        "score_calibration_train_window_games",
+        "score_calibration_min_games",
+        "score_calibration_team_min_games",
+        "score_calibration_team_range_min_games",
+    ):
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = int(_DEFAULTS.get(key, 0))
+        value = max(0, value)
+    elif key == "score_calibration_near_spread_raw_weight":
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = float(_DEFAULTS["score_calibration_near_spread_raw_weight"])
+        value = min(max(0.0, value), 1.0)
+    elif key == "score_calibration_team_range_quantile_low":
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = float(_DEFAULTS["score_calibration_team_range_quantile_low"])
+        value = min(max(0.0, value), 0.49)
+    elif key == "score_calibration_team_range_quantile_high":
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = float(_DEFAULTS["score_calibration_team_range_quantile_high"])
+        value = min(max(0.51, value), 1.0)
+    elif key in (
+        "score_calibration_sign_epsilon",
+        "score_calibration_min_abs_spread",
+        "score_calibration_near_spread_identity_band",
+        "score_calibration_near_spread_deadband",
+        "score_calibration_spread_cap",
+        "score_calibration_total_min",
+        "score_calibration_total_max",
+        "score_calibration_point_floor",
+        "score_calibration_point_ceiling",
+        "score_calibration_tail_margin_threshold",
+        "score_calibration_team_shrinkage",
+        "score_calibration_team_max_abs_correction",
+        "score_calibration_team_range_padding",
+    ):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = float(_DEFAULTS.get(key, 0.0))
+        if key in ("score_calibration_sign_epsilon", "score_calibration_min_abs_spread"):
+            value = max(0.0, value)
+        elif key in ("score_calibration_spread_cap", "score_calibration_tail_margin_threshold"):
+            value = max(1.0, value)
+        elif key in ("score_calibration_total_min", "score_calibration_total_max"):
+            value = max(100.0, value)
+        elif key in ("score_calibration_point_floor", "score_calibration_point_ceiling"):
+            value = max(40.0, value)
+        else:
+            value = max(0.0, value)
     s[key] = value
     save_settings(s)
 

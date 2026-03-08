@@ -196,7 +196,11 @@ class RichOvernightConsole:
                 label = self.STEP_LABELS.get(step_name, step_name)
                 self.current_activity = label
                 # Switch from pipeline steps view to results view once optimization starts
-                if step_name in ("optimize_fundamentals", "optimize_sharp", "backtest"):
+                if step_name in (
+                    "optimize_fundamentals",
+                    "optimize_sharp",
+                    "backtest",
+                ):
                     self.in_pipeline = False
                 else:
                     self.in_pipeline = True
@@ -309,7 +313,8 @@ class RichOvernightConsole:
         # Step labels in loop passes: [backup], [sync], etc.
         m = re.search(r"\[(backup|sync|seed_arenas|bbref_sync|referee_sync|"
                        r"elo_compute|precompute|optimize_fundamentals|"
-                       r"optimize_sharp|backtest)\]", stripped, re.IGNORECASE)
+                       r"optimize_sharp|backtest)\]",
+                      stripped, re.IGNORECASE)
         if m:
             step_name = m.group(1).replace("_", " ").title()
             self.current_activity = step_name

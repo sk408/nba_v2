@@ -596,20 +596,20 @@ class PipelineView(QWidget):
         if elapsed:
             self._state_duration.setText(self._fmt_seconds(elapsed))
 
-        # Count steps
-        step_count = sum(
-            1 for k in state
-            if k.startswith("step_") and isinstance(state[k], dict)
-        )
+        # Count only known pipeline steps so removed/stale steps do not skew summary.
+        known_step_keys = [f"step_{step_name}" for step_name, _ in STEP_LABELS]
+        step_count = len(known_step_keys)
         completed = sum(
-            1 for k in state
-            if k.startswith("step_") and isinstance(state[k], dict)
-            and state[k].get("status") == "completed"
+            1
+            for key in known_step_keys
+            if isinstance(state.get(key), dict)
+            and state[key].get("status") == "completed"
         )
         errors = sum(
-            1 for k in state
-            if k.startswith("step_") and isinstance(state[k], dict)
-            and state[k].get("status") == "error"
+            1
+            for key in known_step_keys
+            if isinstance(state.get(key), dict)
+            and state[key].get("status") == "error"
         )
         self._state_steps.setText(f"{completed}/{step_count} completed")
 

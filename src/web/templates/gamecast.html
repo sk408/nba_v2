@@ -8,9 +8,15 @@
 
 {% block content %}
 
-<!-- ─── Game Selector Ticker ─── -->
-<div class="gc-ticker" id="gc-ticker-wrap">
-    <div class="gc-ticker-track" id="gc-ticker"></div>
+<!-- ─── Game selector ─── -->
+<div class="gc-selector-wrap" id="gc-selector-wrap" style="display:none">
+    <div class="gc-ticker" id="gc-ticker-wrap">
+        <div class="gc-ticker-track" id="gc-ticker"></div>
+    </div>
+    <div class="gc-mobile-select">
+        <label for="gc-select">Select game</label>
+        <select id="gc-select"></select>
+    </div>
 </div>
 
 <!-- ─── Loading State ─── -->
@@ -33,6 +39,7 @@
     <section class="gc-scoreboard">
         <div class="gc-sb-away gc-sb-side">
             <span class="gc-sb-label">AWAY</span>
+            <img class="gc-sb-logo" id="gc-away-logo" alt="Away team logo" style="display:none">
             <span class="gc-sb-abbr" id="gc-away-abbr"></span>
             <span class="gc-sb-name" id="gc-away-name"></span>
             <span class="gc-sb-score" id="gc-away-score"></span>
@@ -45,18 +52,20 @@
         </div>
         <div class="gc-sb-home gc-sb-side">
             <span class="gc-sb-label">HOME</span>
+            <img class="gc-sb-logo" id="gc-home-logo" alt="Home team logo" style="display:none">
             <span class="gc-sb-abbr" id="gc-home-abbr"></span>
             <span class="gc-sb-name" id="gc-home-name"></span>
             <span class="gc-sb-score" id="gc-home-score"></span>
         </div>
         <div class="gc-ls-wrap" id="gc-linescores"></div>
+        <div class="gc-sb-extra-row">
+            <div class="gc-sb-extra gc-sb-extra-away" id="gc-away-extra"></div>
+            <div class="gc-sb-extra gc-sb-extra-center" id="gc-event-inline"></div>
+            <div class="gc-sb-extra gc-sb-extra-home" id="gc-home-extra"></div>
+        </div>
     </section>
 
-    <!-- Court / Shot Chart -->
-    <section class="gc-court-section gc-card" id="gc-court-section" style="display:none">
-        <div class="gc-card-title">Shot Chart</div>
-        <canvas id="gc-court"></canvas>
-    </section>
+    <div class="gc-overlay-wrap" id="gc-overlay-wrap" style="display:none"></div>
 
     <!-- Content flow wrapper for mobile reorder -->
     <div class="gc-content-flow">
@@ -103,6 +112,18 @@
                     <div class="gc-card-title">Model Prediction</div>
                     <div id="gc-pred"></div>
                 </div>
+
+                <!-- Sharp Money -->
+                <div class="gc-card" id="gc-sharp-card">
+                    <div class="gc-card-title">Sharp Money</div>
+                    <div id="gc-sharp" class="gc-sharp"></div>
+                </div>
+
+                <!-- Game Flow Stats -->
+                <div class="gc-card" id="gc-flow-card">
+                    <div class="gc-card-title">Game Flow Stats</div>
+                    <div id="gc-flow" class="gc-flow"></div>
+                </div>
             </aside>
 
             <!-- Right: Box Score -->
@@ -120,23 +141,47 @@
 
     </div>
 
+    <!-- Court / Shot Chart -->
+    <section class="gc-court-section gc-card" id="gc-court-section" style="display:none">
+        <div class="gc-card-head">
+            <div class="gc-card-title">Shot Chart</div>
+            <div class="gc-shot-filters" id="gc-shot-filters">
+                <button class="gc-shot-filter" data-filter="away">Away</button>
+                <button class="gc-shot-filter active" data-filter="both">Both</button>
+                <button class="gc-shot-filter" data-filter="home">Home</button>
+            </div>
+        </div>
+        <canvas id="gc-court"></canvas>
+        <div class="gc-shot-summary" id="gc-shot-summary"></div>
+    </section>
+
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+const GC_INITIAL_GAME_ID = {{ initial_game_id|tojson }};
+
 const GC = {
     gameId: null,
     timer: null,
     data: null,
     boxSide: 'away',
     games: [],
+    courtFilter: 'both',
+    timeoutTicker: null,
+    timeoutKey: '',
+    timeoutRemaining: 0,
+    subHideTimer: null,
+    lastOverlayKey: '',
 
     async init() {
         try {
             const resp = await fetch('/api/gamecast/games');
             const json = await resp.json();
-            this.games = json.games || [];
+            this.games = (json.games || [])
+                .filter(g => g && String(g.espn_id || '').trim())
+                .map(g => ({ ...g, espn_id: String(g.espn_id) }));
         } catch (e) {
             console.error('Failed to load games:', e);
             this.games = [];
@@ -149,10 +194,14 @@ const GC = {
             return;
         }
 
+        document.getElementById('gc-selector-wrap').style.display = 'block';
         this.renderTicker();
-        // Auto-select first live game, or first game
-        const live = this.games.find(g => g.state === 'in');
-        this.select(live ? live.espn_id : this.games[0].espn_id);
+        this.renderMobileSelect();
+
+        const firstLive = this.games.find(g => g.state === 'in');
+        const requested = this.resolveInitialGameId();
+        const initial = requested || (firstLive ? firstLive.espn_id : this.games[0].espn_id);
+        await this.select(initial, { replaceHistory: true, syncUrl: true });
     },
 
     renderTicker() {
@@ -162,29 +211,90 @@ const GC = {
             return `
             <button class="gc-ti" data-id="${g.espn_id}" onclick="GC.select('${g.espn_id}')">
                 <div class="gc-ti-matchup">
-                    <span class="gc-ti-team">${g.away_team}</span>
+                    <span class="gc-ti-team">${this.escapeHtml(g.away_team || '')}</span>
                     <span class="gc-ti-score">${showScore ? g.away_score : ''}</span>
                 </div>
                 <span class="gc-ti-at">@</span>
                 <div class="gc-ti-matchup">
-                    <span class="gc-ti-team">${g.home_team}</span>
+                    <span class="gc-ti-team">${this.escapeHtml(g.home_team || '')}</span>
                     <span class="gc-ti-score">${showScore ? g.home_score : ''}</span>
                 </div>
                 ${g.state === 'in' ? '<span class="gc-ti-live"></span>' : ''}
-                <span class="gc-ti-status">${g.short_detail || g.status || ''}</span>
+                <span class="gc-ti-status">${this.escapeHtml(g.short_detail || g.status || '')}</span>
             </button>`;
         }).join('');
-        document.getElementById('gc-ticker-wrap').style.display = '';
+        document.getElementById('gc-ticker-wrap').style.display = 'block';
     },
 
-    async select(gameId) {
+    renderMobileSelect() {
+        const sel = document.getElementById('gc-select');
+        sel.innerHTML = this.games.map(g => {
+            const status = g.short_detail || g.status || '';
+            return `<option value="${g.espn_id}">${this.escapeHtml(g.away_team || '')} @ ${this.escapeHtml(g.home_team || '')} · ${this.escapeHtml(status)}</option>`;
+        }).join('');
+    },
+
+    resolveInitialGameId() {
+        const valid = new Set(this.games.map(g => String(g.espn_id)));
+        const routeId = GC_INITIAL_GAME_ID ? String(GC_INITIAL_GAME_ID) : '';
+        if (routeId && valid.has(routeId)) return routeId;
+
+        const urlId = this.extractGameIdFromUrl();
+        if (urlId && valid.has(urlId)) return urlId;
+        return null;
+    },
+
+    extractGameIdFromUrl() {
+        const parts = window.location.pathname.split('/').filter(Boolean);
+        if (parts.length >= 2 && parts[0] === 'gamecast') {
+            return decodeURIComponent(parts[1]);
+        }
+        const q = new URLSearchParams(window.location.search).get('game');
+        return q ? String(q) : '';
+    },
+
+    syncUrl(gameId, replaceHistory = true) {
+        if (!gameId) return;
+        const url = new URL(window.location.href);
+        url.pathname = `/gamecast/${encodeURIComponent(gameId)}`;
+        url.searchParams.delete('game');
+        if (replaceHistory) {
+            history.replaceState({ gameId }, '', url);
+        } else {
+            history.pushState({ gameId }, '', url);
+        }
+    },
+
+    async onPopState() {
+        if (!this.games.length) return;
+        const valid = new Set(this.games.map(g => String(g.espn_id)));
+        const urlId = this.extractGameIdFromUrl();
+        if (urlId && valid.has(urlId) && urlId !== this.gameId) {
+            await this.select(urlId, { syncUrl: false, replaceHistory: true });
+            return;
+        }
+        if (!urlId && this.gameId) {
+            await this.select(this.gameId, { syncUrl: false, replaceHistory: true });
+        }
+    },
+
+    async select(gameId, options = {}) {
+        const syncUrl = options.syncUrl !== false;
+        const replaceHistory = options.replaceHistory === true;
+        const targetId = String(gameId || '');
+        if (!targetId) return;
         if (this.timer) { clearInterval(this.timer); this.timer = null; }
-        this.gameId = gameId;
+        this.gameId = targetId;
+        if (syncUrl) {
+            this.syncUrl(targetId, replaceHistory);
+        }
 
         // Highlight active ticker item
         document.querySelectorAll('.gc-ti').forEach(el => {
-            el.classList.toggle('active', el.dataset.id === gameId);
+            el.classList.toggle('active', el.dataset.id === targetId);
         });
+        const sel = document.getElementById('gc-select');
+        if (sel) sel.value = targetId;
 
         // Show loading
         document.getElementById('gc-main').style.display = 'none';
@@ -193,7 +303,9 @@ const GC = {
         await this.fetchData();
 
         document.getElementById('gc-loading').style.display = 'none';
+        if (!this.data) return;
         document.getElementById('gc-main').style.display = '';
+        this.render();
 
         // Start smart polling
         const state = this.data?.header?.status?.state;
@@ -206,42 +318,71 @@ const GC = {
 
     async fetchData() {
         try {
-            const resp = await fetch('/api/gamecast/' + this.gameId);
+            const resp = await fetch('/api/gamecast/' + encodeURIComponent(this.gameId));
             const data = await resp.json();
             if (data.error) throw new Error(data.error);
             this.data = data;
             this.render();
         } catch (e) {
             console.error('Fetch error:', e);
+            this.data = null;
+            document.getElementById('gc-loading').style.display = 'none';
+            document.getElementById('gc-main').style.display = '';
+            document.getElementById('gc-box-body').innerHTML =
+                '<div class="gc-no-data">Unable to load game data</div>';
         }
     },
 
     render() {
         const d = this.data;
-        this.renderScoreboard(d);
-        this.renderCourt(d);
-        this.renderWinProb(d);
-        this.renderOdds(d);
-        this.renderPrediction(d);
-        this.renderBoxscore(d);
-        this.renderPlays(d);
-        this.updateTicker(d);
+        const safe = (fn) => {
+            try {
+                fn();
+            } catch (err) {
+                console.error('Gamecast render error:', err);
+            }
+        };
+        safe(() => this.renderScoreboard(d));
+        safe(() => this.renderCourt(d));
+        safe(() => this.renderWinProb(d));
+        safe(() => this.renderOdds(d));
+        safe(() => this.renderPrediction(d));
+        safe(() => this.renderSharpMoney(d));
+        safe(() => this.renderFlowStats(d));
+        safe(() => this.renderBoxscore(d));
+        safe(() => this.renderPlays(d));
+        safe(() => this.renderLiveEvent(d));
+        safe(() => this.updateTicker(d));
     },
 
     renderCourt(d) {
         const plays = d.plays || [];
-        const shots = plays.filter(p => p.shootingPlay && p.coordinate &&
+        const homeId = String(d.header?.home?.id || '');
+        const awayId = String(d.header?.away?.id || '');
+        const allShots = plays.filter(p => p.shootingPlay && p.coordinate &&
             (p.coordinate.x != null || p.coordinate.y != null));
+        const shots = allShots.filter(p => {
+            const tid = String(p.team_id || '');
+            if (this.courtFilter === 'home') return tid === homeId;
+            if (this.courtFilter === 'away') return tid === awayId;
+            return true;
+        });
 
         const section = document.getElementById('gc-court-section');
-        if (!shots.length) { section.style.display = 'none'; return; }
+        if (!allShots.length) {
+            section.style.display = 'none';
+            document.getElementById('gc-shot-summary').textContent = '';
+            return;
+        }
         section.style.display = '';
 
         const canvas = document.getElementById('gc-court');
         const rect = canvas.parentElement.getBoundingClientRect();
         const W = 94, H = 50, M = 2;
+        const HOOP_OFFSET = 1.25; // shift hoop slightly closer to baseline for cleaner ESPN shot alignment
+        const MIN_DEPTH = HOOP_OFFSET - 0.5;
         const dpr = window.devicePixelRatio || 1;
-        const cw = rect.width - 36; // account for card padding
+        const cw = Math.max((rect.width || 0) - 36, 220); // account for card padding
         const ch = cw * (H / W);
         canvas.width = cw * dpr;
         canvas.height = ch * dpr;
@@ -305,8 +446,8 @@ const GC = {
                 left ? Math.PI * 3/2 : Math.PI/2);
             ctx.setLineDash([]);
 
-            // Restricted area arc (4 ft radius from hoop at ~5.25 ft from baseline)
-            const hoopX = bx + dir * 5.25;
+            // Restricted area arc (hoop near baseline)
+            const hoopX = bx + dir * HOOP_OFFSET;
             arcPath(hoopX, 25, 4,
                 left ? -Math.PI/2 : Math.PI/2,
                 left ? Math.PI/2 : Math.PI * 3/2);
@@ -326,8 +467,8 @@ const GC = {
                 arcPath(hoopX, 25, tpR, Math.PI - Math.asin(22/tpR), Math.PI + Math.asin(22/tpR));
             }
 
-            // Backboard (4 ft wide at 4 ft from baseline)
-            const bbX = bx + dir * 4;
+            // Backboard
+            const bbX = bx + dir * (HOOP_OFFSET - 1.0);
             line(bbX, 22, bbX, 28);
 
             // Hoop
@@ -352,17 +493,17 @@ const GC = {
         // ESPN coords are half-court: x=0..50 (sideline), y=0..47 (baseline to half)
         // Map to full court: court_x = raw_y (depth), court_y = raw_x (sideline)
         // Home team shoots right, away shoots left
-        const homeId = d.header?.home?.id;
         shots.forEach(p => {
             const rawX = p.coordinate.x;
             const rawY = p.coordinate.y;
             if (rawX == null && rawY == null) return;
             const rx = rawX ?? 25, ry = rawY ?? 20;
             if (rx < -100 || rx > 200 || ry < -100 || ry > 200) return;
-            let courtX = Math.max(0, Math.min(ry, 47)); // distance from baseline
+            const depth = Math.max(MIN_DEPTH, Math.min(ry, 47)); // keep makes from plotting behind rim
+            let courtX = depth; // distance from baseline
             const courtY = Math.max(0, Math.min(rx, 50)); // sideline position
-            const isHome = p.team_id === homeId;
-            if (isHome) courtX = W - courtX; // flip to right side
+            const isHome = String(p.team_id || '') === homeId;
+            if (isHome) courtX = W - depth; // flip to right side
             const made = p.scoring;
             const px = tx(Math.max(0, Math.min(courtX, W)));
             const py = ty(Math.max(0, Math.min(courtY, H)));
@@ -385,6 +526,28 @@ const GC = {
                 ctx.beginPath(); ctx.moveTo(px+r, py-r); ctx.lineTo(px-r, py+r); ctx.stroke();
             }
         });
+
+        const awayShots = shots.filter(p => String(p.team_id || '') === awayId);
+        const homeShots = shots.filter(p => String(p.team_id || '') === homeId);
+        const makeSummary = (arr) => {
+            const made = arr.filter(s => s.scoring).length;
+            const total = arr.length;
+            const pct = total ? Math.round((made / total) * 100) : 0;
+            return `${made}/${total} (${pct}%)`;
+        };
+        const summary = document.getElementById('gc-shot-summary');
+        if (this.courtFilter === 'both') {
+            summary.innerHTML = `
+                <span class="gc-shot-pill away">${this.escapeHtml(d.header?.away?.abbr || 'AWAY')}: ${makeSummary(awayShots)}</span>
+                <span class="gc-shot-pill home">${this.escapeHtml(d.header?.home?.abbr || 'HOME')}: ${makeSummary(homeShots)}</span>
+            `;
+        } else {
+            summary.innerHTML = `
+                <span class="gc-shot-pill ${this.courtFilter}">
+                    FG: ${makeSummary(shots)}
+                </span>
+            `;
+        }
     },
 
     renderScoreboard(d) {
@@ -400,9 +563,17 @@ const GC = {
         document.getElementById('gc-home-abbr').textContent = home.abbr || '';
         document.getElementById('gc-home-name').textContent = home.name || '';
         document.getElementById('gc-home-score').textContent = isPre ? '' : (home.score ?? 0);
+        this.renderLogo('gc-away-logo', away.logo, away.abbr || 'Away');
+        this.renderLogo('gc-home-logo', home.logo, home.abbr || 'Home');
 
         document.getElementById('gc-detail').textContent = st.detail || st.description || '';
         document.getElementById('gc-live').style.display = st.state === 'in' ? '' : 'none';
+        const awayTo = away.timeouts_remaining ?? -1;
+        const homeTo = home.timeouts_remaining ?? -1;
+        document.getElementById('gc-away-extra').textContent =
+            `TO: ${awayTo >= 0 ? awayTo : '-'} · ${away.bonus ? 'BONUS' : 'NO BONUS'} · FOULS: ${away.fouls ?? 0}`;
+        document.getElementById('gc-home-extra').textContent =
+            `FOULS: ${home.fouls ?? 0} · ${home.bonus ? 'BONUS' : 'NO BONUS'} · TO: ${homeTo >= 0 ? homeTo : '-'}`;
 
         // Line scores
         const awayQ = away.linescores || [];
@@ -419,6 +590,19 @@ const GC = {
         ls += `<td class="gc-ls-total">${isPre ? '-' : (home.score??0)}</td></tr>`;
         ls += '</tbody></table>';
         document.getElementById('gc-linescores').innerHTML = ls;
+    },
+
+    renderLogo(id, src, teamLabel) {
+        const img = document.getElementById(id);
+        if (!img) return;
+        if (src) {
+            img.src = src;
+            img.alt = `${teamLabel} logo`;
+            img.style.display = 'block';
+        } else {
+            img.removeAttribute('src');
+            img.style.display = 'none';
+        }
     },
 
     renderWinProb(d) {
@@ -474,6 +658,55 @@ const GC = {
         `;
     },
 
+    renderSharpMoney(d) {
+        const el = document.getElementById('gc-sharp');
+        const o = d.odds || {};
+        const spPub = o.spread_home_public;
+        const spMon = o.spread_home_money;
+        const mlPub = o.ml_home_public;
+        const mlMon = o.ml_home_money;
+
+        if (spPub == null && spMon == null && mlPub == null && mlMon == null) {
+            el.innerHTML = '<span class="gc-no-data">No sharp-money splits available</span>';
+            return;
+        }
+
+        let signalText = 'No strong signal';
+        let signalClass = '';
+        if (spPub != null && spMon != null) {
+            const edge = Number(spMon) - Number(spPub);
+            if (Math.abs(edge) >= 5) {
+                const side = edge > 0 ? (d.header?.home?.abbr || 'HOME') : (d.header?.away?.abbr || 'AWAY');
+                signalText = `Sharps on ${side} (${Math.abs(edge).toFixed(0)}pp)`;
+                signalClass = Math.abs(edge) >= 10 ? 'strong' : 'medium';
+            }
+        }
+
+        const inv = (val) => (val == null ? '---' : `${(100 - Number(val)).toFixed(0)}%`);
+        const val = (v) => (v == null ? '---' : `${Number(v).toFixed(0)}%`);
+        el.innerHTML = `
+            <div class="gc-sharp-row"><span>Spread Public</span><span>H ${val(spPub)} / A ${inv(spPub)}</span></div>
+            <div class="gc-sharp-row"><span>Spread Money</span><span>H ${val(spMon)} / A ${inv(spMon)}</span></div>
+            <div class="gc-sharp-row"><span>ML Public</span><span>H ${val(mlPub)} / A ${inv(mlPub)}</span></div>
+            <div class="gc-sharp-row"><span>ML Money</span><span>H ${val(mlMon)} / A ${inv(mlMon)}</span></div>
+            <div class="gc-sharp-signal ${signalClass}">${this.escapeHtml(signalText)}</div>
+        `;
+    },
+
+    renderFlowStats(d) {
+        const f = d.flow_stats || {};
+        const homeDrives = f.home_drives?.display || '0/0';
+        const awayDrives = f.away_drives?.display || '0/0';
+        const homePoss = f.home_possessions?.display || '0/0';
+        const awayPoss = f.away_possessions?.display || '0/0';
+        const run = f.current_run || 'None';
+        document.getElementById('gc-flow').innerHTML = `
+            <div class="gc-flow-row"><span>Drives Scored</span><span>${this.escapeHtml(awayDrives)} - ${this.escapeHtml(homeDrives)}</span></div>
+            <div class="gc-flow-row"><span>Poss Scored</span><span>${this.escapeHtml(awayPoss)} - ${this.escapeHtml(homePoss)}</span></div>
+            <div class="gc-flow-run">${this.escapeHtml(run)}</div>
+        `;
+    },
+
     renderBoxscore(d) {
         const box = d.boxscore || {};
         const side = this.boxSide;
@@ -490,7 +723,7 @@ const GC = {
         }
 
         const labels = team.labels || [];
-        const show = ['MIN','PTS','REB','AST','STL','BLK','FG','3PT','TO','+/-'];
+        const show = ['MIN','PTS','REB','AST','STL','BLK','FG','3PT','PF','TO','+/-'];
         const cols = show.filter(l => labels.includes(l));
 
         let html = '<div class="gc-box-scroll"><table class="gc-box-tbl"><thead><tr>';
@@ -508,7 +741,17 @@ const GC = {
             players.forEach(p => {
                 const s = p.stats || {};
                 const active = p.active ? ' gc-box-active' : '';
-                html += `<tr class="${active}"><td class="gc-box-name">${p.name}</td>`;
+                const photo = p.headshot
+                    ? `<img class="gc-box-photo" loading="lazy" src="${this.escapeAttr(p.headshot)}" alt="${this.escapeAttr(p.name || 'Player')}">`
+                    : '<span class="gc-box-photo gc-box-photo-empty"></span>';
+                html += `<tr class="${active}">
+                    <td class="gc-box-name">
+                        <div class="gc-box-player">
+                            <span class="gc-box-active-dot ${p.active ? 'on' : ''}"></span>
+                            ${photo}
+                            <span class="gc-box-name-txt">${this.escapeHtml(p.name || '')}</span>
+                        </div>
+                    </td>`;
                 cols.forEach(c => {
                     const cls = c === 'PTS' ? ' class="gc-box-pts"' : '';
                     html += `<td${cls}>${s[c] ?? '-'}</td>`;
@@ -550,19 +793,118 @@ const GC = {
 
         const reversed = [...plays].reverse();
         el.innerHTML = reversed.slice(0, 60).map(p => {
-            const isHome = p.team_id === homeId;
-            const isAway = p.team_id === awayId;
-            const teamAbbr = isHome ? hAbbr : (isAway ? aAbbr : '');
+            const isHome = String(p.team_id || '') === String(homeId || '');
+            const isAway = String(p.team_id || '') === String(awayId || '');
+            const teamAbbr = p.team_abbr || (isHome ? hAbbr : (isAway ? aAbbr : ''));
             const sideCls = isHome ? 'home' : (isAway ? 'away' : '');
             const scoreCls = p.scoring ? ' gc-play-score' : '';
+            const periodLabel = (p.period || 0) > 4 ? `OT${(p.period || 0) - 4}` : `Q${p.period || 0}`;
+            const teamLogo = p.team_logo
+                ? `<img class="gc-play-logo" src="${this.escapeAttr(p.team_logo)}" alt="${this.escapeAttr(teamAbbr || 'Team')}">`
+                : '<span class="gc-play-logo gc-play-logo-empty"></span>';
+            const hasScore = p.scoring && p.away_score != null && p.home_score != null;
             return `
             <div class="gc-play ${sideCls}${scoreCls}">
-                <span class="gc-play-time">Q${p.period} ${p.clock}</span>
-                ${teamAbbr ? `<span class="gc-play-team ${sideCls}">${teamAbbr}</span>` : '<span class="gc-play-team"></span>'}
-                <span class="gc-play-text">${p.text}</span>
-                ${p.scoring ? `<span class="gc-play-pts">${p.away_score}-${p.home_score}</span>` : ''}
+                <span class="gc-play-time">${periodLabel} ${this.escapeHtml(p.clock || '')}</span>
+                <span class="gc-play-team-logo-wrap">${teamLogo}</span>
+                ${teamAbbr ? `<span class="gc-play-team ${sideCls}">${this.escapeHtml(teamAbbr)}</span>` : '<span class="gc-play-team"></span>'}
+                <span class="gc-play-text">${this.escapeHtml(p.text || '')}</span>
+                ${hasScore ? `<span class="gc-play-pts">${p.away_score}-${p.home_score}</span>` : ''}
             </div>`;
         }).join('');
+    },
+
+    renderLiveEvent(d) {
+        const event = d.live_event || {};
+        const type = event.type || '';
+        const key = event.event_key || '';
+        document.getElementById('gc-event-inline').textContent = '';
+        if (!type) {
+            this.clearOverlay();
+            return;
+        }
+
+        if (type === 'timeout') {
+            document.getElementById('gc-event-inline').textContent = 'Timeout in progress';
+            this.showTimeoutOverlay(event.timeout_seconds || 75, key, event.text || 'Timeout');
+            return;
+        }
+
+        if (type === 'substitution') {
+            const sub = event.substitution || {};
+            const subText = sub.in && sub.out
+                ? `${sub.in} IN · ${sub.out} OUT`
+                : (event.text || 'Substitution');
+            document.getElementById('gc-event-inline').textContent = 'Substitution';
+            this.showSubOverlay(subText, key);
+            return;
+        }
+
+        this.clearOverlay();
+    },
+
+    showTimeoutOverlay(seconds, eventKey, text) {
+        const wrap = document.getElementById('gc-overlay-wrap');
+        if (this.timeoutTicker && this.timeoutKey === eventKey) {
+            return;
+        }
+        this.clearTimeoutOverlay();
+        this.timeoutKey = eventKey;
+        this.timeoutRemaining = Number(seconds) || 75;
+        wrap.style.display = 'block';
+        wrap.innerHTML = `
+            <div class="gc-overlay gc-overlay-timeout">
+                <div class="gc-overlay-title">TIMEOUT</div>
+                <div class="gc-overlay-body">${this.escapeHtml(text || 'Timeout')}</div>
+                <div class="gc-overlay-clock" id="gc-timeout-count">${this.timeoutRemaining}s</div>
+            </div>
+        `;
+        this.timeoutTicker = setInterval(() => {
+            this.timeoutRemaining -= 1;
+            const clock = document.getElementById('gc-timeout-count');
+            if (clock) clock.textContent = `${Math.max(this.timeoutRemaining, 0)}s`;
+            if (this.timeoutRemaining <= 0) {
+                this.clearTimeoutOverlay();
+            }
+        }, 1000);
+    },
+
+    showSubOverlay(text, eventKey) {
+        if (this.lastOverlayKey === eventKey) return;
+        this.lastOverlayKey = eventKey;
+        this.clearTimeoutOverlay();
+        if (this.subHideTimer) {
+            clearTimeout(this.subHideTimer);
+            this.subHideTimer = null;
+        }
+        const wrap = document.getElementById('gc-overlay-wrap');
+        wrap.style.display = 'block';
+        wrap.innerHTML = `
+            <div class="gc-overlay gc-overlay-sub">
+                <div class="gc-overlay-title">SUBSTITUTION</div>
+                <div class="gc-overlay-body">${this.escapeHtml(text)}</div>
+            </div>
+        `;
+        this.subHideTimer = setTimeout(() => this.clearOverlay(), 5500);
+    },
+
+    clearTimeoutOverlay() {
+        if (this.timeoutTicker) {
+            clearInterval(this.timeoutTicker);
+            this.timeoutTicker = null;
+        }
+        this.timeoutKey = '';
+    },
+
+    clearOverlay() {
+        this.clearTimeoutOverlay();
+        if (this.subHideTimer) {
+            clearTimeout(this.subHideTimer);
+            this.subHideTimer = null;
+        }
+        const wrap = document.getElementById('gc-overlay-wrap');
+        wrap.style.display = 'none';
+        wrap.innerHTML = '';
     },
 
     updateTicker(d) {
@@ -574,12 +916,45 @@ const GC = {
         const scores = btn.querySelectorAll('.gc-ti-score');
         if (scores[0]) scores[0].textContent = d.header.away?.score ?? '';
         if (scores[1]) scores[1].textContent = d.header.home?.score ?? '';
+        const status = btn.querySelector('.gc-ti-status');
+        if (status) status.textContent = st.detail || st.description || '';
+    },
+
+    setCourtFilter(filter) {
+        if (!['away', 'both', 'home'].includes(filter)) return;
+        this.courtFilter = filter;
+        document.querySelectorAll('.gc-shot-filter').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.filter === filter);
+        });
+        if (this.data) this.renderCourt(this.data);
+    },
+
+    escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    },
+
+    escapeAttr(value) {
+        return this.escapeHtml(value);
     },
 };
 
 document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.gc-box-tab').forEach(tab =>
         tab.addEventListener('click', () => GC.switchTab(tab.dataset.side)));
+    document.getElementById('gc-select').addEventListener('change', (e) => {
+        GC.select(e.target.value, { replaceHistory: false, syncUrl: true });
+    });
+    document.querySelectorAll('.gc-shot-filter').forEach(btn =>
+        btn.addEventListener('click', () => GC.setCourtFilter(btn.dataset.filter)));
+    window.addEventListener('popstate', () => GC.onPopState());
+    window.addEventListener('resize', () => {
+        if (GC.data) GC.renderCourt(GC.data);
+    });
     GC.init();
 });
 </script>

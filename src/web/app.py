@@ -362,9 +362,10 @@ def _update_sync_status(msg: str):
 
 
 @app.route("/gamecast")
-def gamecast():
+@app.route("/gamecast/<game_id>")
+def gamecast(game_id=None):
     """Live gamecast view with ESPN integration."""
-    return render_template("gamecast.html")
+    return render_template("gamecast.html", initial_game_id=game_id or "")
 
 
 @app.route("/api/gamecast/games")
@@ -398,6 +399,23 @@ def api_gamecast_data(game_id):
 
 def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
     """Parse ESPN game summary into clean JSON for gamecast."""
+
+    def _as_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _extract_logo(team_obj):
+        logos = team_obj.get("logos", [])
+        if isinstance(logos, list) and logos:
+            first = logos[0]
+            if isinstance(first, dict):
+                href = first.get("href", "")
+                if href:
+                    return href
+        return team_obj.get("logo", "") or ""
+
     result = {
         "game_id": game_id,
         "header": {"home": {}, "away": {}, "status": {}},
@@ -406,6 +424,20 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
         "odds": {},
         "predictor": {"home_pct": 50.0, "away_pct": 50.0},
         "model_prediction": None,
+        "flow_stats": {
+            "home_drives": {"scored": 0, "total": 0, "display": "0/0"},
+            "away_drives": {"scored": 0, "total": 0, "display": "0/0"},
+            "home_possessions": {"scored": 0, "total": 0, "display": "0/0"},
+            "away_possessions": {"scored": 0, "total": 0, "display": "0/0"},
+            "current_run": "",
+        },
+        "live_event": {
+            "type": "",
+            "event_key": "",
+            "text": "",
+            "timeout_seconds": 0,
+            "substitution": {"in": "", "out": ""},
+        },
     }
 
     # ── Header ──
@@ -416,7 +448,7 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
         status = comp.get("status", {})
         result["header"]["status"] = {
             "state": status.get("type", {}).get("state", ""),
-            "period": status.get("period", 0),
+            "period": _as_int(status.get("period", 0), 0),
             "clock": status.get("displayClock", "0:00"),
             "detail": status.get("type", {}).get("shortDetail", ""),
             "description": status.get("type", {}).get("description", ""),
@@ -426,42 +458,64 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
             if side not in ("home", "away"):
                 continue
             team = c.get("team", {})
+            linescores = c.get("linescores", [])
+            bonus = bool(linescores[-1].get("isBonus", False)) if linescores else False
             result["header"][side] = {
                 "abbr": normalize_abbr(team.get("abbreviation", "")),
                 "name": team.get("displayName", ""),
-                "id": team.get("id", ""),
-                "score": int(c.get("score", 0) or 0),
-                "linescores": [int(q.get("displayValue", 0) or 0)
-                               for q in c.get("linescores", [])],
+                "id": str(team.get("id", "") or ""),
+                "logo": _extract_logo(team),
+                "score": _as_int(c.get("score", 0), 0),
+                "timeouts_remaining": _as_int(c.get("timeoutsRemaining", -1), -1),
+                "bonus": bonus,
+                "fouls": 0,
+                "linescores": [_as_int(q.get("displayValue", 0), 0)
+                               for q in linescores],
             }
 
     # ── Boxscore ──
     for team_block in summary.get("boxscore", {}).get("players", []):
         team = team_block.get("team", {})
-        team_id = team.get("id", "")
+        team_id = str(team.get("id", "") or "")
         side = None
-        if result["header"]["home"].get("id") == team_id:
+        if str(result["header"]["home"].get("id", "")) == team_id:
             side = "home"
-        elif result["header"]["away"].get("id") == team_id:
+        elif str(result["header"]["away"].get("id", "")) == team_id:
             side = "away"
         else:
             continue
+
         stats_block = (team_block.get("statistics") or [{}])[0]
         labels = stats_block.get("labels", [])
+        pf_index = labels.index("PF") if "PF" in labels else -1
+        team_fouls = 0
         players = []
+
         for ath in stats_block.get("athletes", []):
             info = ath.get("athlete", {})
             raw_stats = ath.get("stats", [])
             stat_dict = {}
             for i, label in enumerate(labels):
                 stat_dict[label] = raw_stats[i] if i < len(raw_stats) else ""
+
+            if pf_index >= 0 and pf_index < len(raw_stats):
+                team_fouls += _as_int(raw_stats[pf_index], 0)
+
+            headshot = info.get("headshot", {})
+            headshot_url = ""
+            if isinstance(headshot, dict):
+                headshot_url = headshot.get("href", "")
+
             players.append({
                 "name": info.get("displayName", ""),
                 "id": info.get("id", ""),
-                "active": ath.get("active", False),
-                "starter": ath.get("starter", False),
+                "active": bool(ath.get("active", False)),
+                "starter": bool(ath.get("starter", False)),
+                "headshot": headshot_url,
                 "stats": stat_dict,
             })
+
+        result["header"][side]["fouls"] = team_fouls
         result["boxscore"][side] = {
             "team": normalize_abbr(team.get("abbreviation", "")),
             "labels": labels,
@@ -469,37 +523,70 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
         }
 
     # ── Plays ──
+    home_id = str(result["header"]["home"].get("id", ""))
+    away_id = str(result["header"]["away"].get("id", ""))
+    team_meta = {
+        home_id: {
+            "abbr": result["header"]["home"].get("abbr", ""),
+            "logo": result["header"]["home"].get("logo", ""),
+            "side": "home",
+        },
+        away_id: {
+            "abbr": result["header"]["away"].get("abbr", ""),
+            "logo": result["header"]["away"].get("logo", ""),
+            "side": "away",
+        },
+    }
+
     for entry in summary.get("plays", []):
         if not isinstance(entry, dict):
             continue
-        # Plays may be nested in "items" or be standalone
         items = entry.get("items")
-        if isinstance(items, list):
-            play_list = items
-        else:
-            play_list = [entry]
+        play_list = items if isinstance(items, list) else [entry]
         for item in play_list:
             text = item.get("text", "")
             if not text:
                 continue
+
             team = item.get("team", {})
-            clock = item.get("clock", {})
-            period = item.get("period", {})
+            team_id = str(team.get("id", "") if isinstance(team, dict) else "")
+            clock_raw = item.get("clock", {})
+            period_raw = item.get("period", {})
+            clock_val = (
+                clock_raw.get("displayValue", "")
+                if isinstance(clock_raw, dict)
+                else str(clock_raw or "")
+            )
+            period_val = (
+                _as_int(period_raw.get("number", 0), 0)
+                if isinstance(period_raw, dict)
+                else _as_int(period_raw, 0)
+            )
+            meta = team_meta.get(team_id, {})
+            away_score = item.get("awayScore")
+            home_score = item.get("homeScore")
             result["plays"].append({
                 "text": text,
-                "team_id": (team.get("id", "") if isinstance(team, dict)
-                            else ""),
-                "clock": (clock.get("displayValue", "")
-                          if isinstance(clock, dict) else str(clock)),
-                "period": (period.get("number", 0)
-                           if isinstance(period, dict)
-                           else int(period) if period else 0),
+                "team_id": team_id,
+                "team_abbr": meta.get("abbr", ""),
+                "team_logo": meta.get("logo", ""),
+                "team_side": meta.get("side", ""),
+                "clock": clock_val,
+                "period": period_val,
                 "scoring": bool(item.get("scoringPlay", False)),
-                "away_score": item.get("awayScore", 0),
-                "home_score": item.get("homeScore", 0),
+                "away_score": (
+                    _as_int(away_score, 0)
+                    if away_score not in (None, "")
+                    else None
+                ),
+                "home_score": (
+                    _as_int(home_score, 0)
+                    if home_score not in (None, "")
+                    else None
+                ),
                 "coordinate": item.get("coordinate", {}),
                 "shootingPlay": bool(item.get("shootingPlay", False)),
-                "scoreValue": int(item.get("scoreValue", 0) or 0),
+                "scoreValue": _as_int(item.get("scoreValue", 0), 0),
             })
 
     # ── Odds (try Action Network, fallback to ESPN pickcenter) ──
@@ -533,6 +620,154 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
             "away_pct": float(
                 predictor.get("awayTeam", {}).get("gameProjection", 50.0)),
         }
+
+    # ── Flow stats (desktop parity subset) ──
+    home_drives = away_drives = 0
+    home_drives_scored = away_drives_scored = 0
+    current_run_team = None
+    current_run_pts = 0
+
+    for play in result["plays"]:
+        text = str(play.get("text", "")).lower()
+        team_id = str(play.get("team_id", ""))
+        scoring = bool(play.get("scoring", False))
+
+        if "driving" in text:
+            if team_id == home_id:
+                home_drives += 1
+                if scoring:
+                    home_drives_scored += 1
+            elif team_id == away_id:
+                away_drives += 1
+                if scoring:
+                    away_drives_scored += 1
+
+        if not scoring:
+            continue
+
+        pts = _as_int(play.get("scoreValue", 0), 0)
+        if pts <= 0:
+            if "free throw" in text:
+                pts = 1
+            elif "3-pt" in text or "three point" in text:
+                pts = 3
+            else:
+                pts = 2
+
+        if team_id == current_run_team:
+            current_run_pts += pts
+        else:
+            current_run_team = team_id
+            current_run_pts = pts
+
+    run_text = ""
+    if current_run_pts >= 5 and current_run_team:
+        if current_run_team == home_id:
+            run_text = f"{home_abbr} on a {current_run_pts}-0 run"
+        elif current_run_team == away_id:
+            run_text = f"{away_abbr} on a {current_run_pts}-0 run"
+
+    home_poss = away_poss = 0
+    home_poss_scored = away_poss_scored = 0
+    for team_block in summary.get("boxscore", {}).get("teams", []):
+        block_team_id = str(team_block.get("team", {}).get("id", ""))
+        if block_team_id == home_id:
+            side = "home"
+        elif block_team_id == away_id:
+            side = "away"
+        else:
+            continue
+        stats_blocks = team_block.get("statistics", [])
+        if not stats_blocks:
+            continue
+
+        stats_dict = {}
+        for stat in stats_blocks:
+            if "abbreviation" in stat:
+                stats_dict[stat["abbreviation"]] = stat.get("displayValue")
+            elif "label" in stat:
+                stats_dict[stat["label"]] = stat.get("displayValue")
+
+        try:
+            fg_parts = str(stats_dict.get("FG", "0-0")).split("-")
+            fgm = _as_int(fg_parts[0] if fg_parts else 0, 0)
+            fga = _as_int(fg_parts[1] if len(fg_parts) > 1 else 0, 0)
+            ft_parts = str(stats_dict.get("FT", "0-0")).split("-")
+            ftm = _as_int(ft_parts[0] if ft_parts else 0, 0)
+            fta = _as_int(ft_parts[1] if len(ft_parts) > 1 else 0, 0)
+            orb = _as_int(
+                stats_dict.get("OR", stats_dict.get("Offensive Rebounds", 0)),
+                0,
+            )
+            tov = _as_int(
+                stats_dict.get("TO", stats_dict.get("Turnovers", 0)),
+                0,
+            )
+            possessions = round(fga + 0.44 * fta - orb + tov)
+            scored_possessions = round(fgm + (ftm / 2))
+            if side == "home":
+                home_poss = possessions
+                home_poss_scored = scored_possessions
+            else:
+                away_poss = possessions
+                away_poss_scored = scored_possessions
+        except Exception:
+            continue
+
+    result["flow_stats"] = {
+        "home_drives": {
+            "scored": home_drives_scored,
+            "total": home_drives,
+            "display": f"{home_drives_scored}/{home_drives}",
+        },
+        "away_drives": {
+            "scored": away_drives_scored,
+            "total": away_drives,
+            "display": f"{away_drives_scored}/{away_drives}",
+        },
+        "home_possessions": {
+            "scored": home_poss_scored,
+            "total": home_poss,
+            "display": f"{home_poss_scored}/{home_poss}",
+        },
+        "away_possessions": {
+            "scored": away_poss_scored,
+            "total": away_poss,
+            "display": f"{away_poss_scored}/{away_poss}",
+        },
+        "current_run": run_text,
+    }
+
+    # ── Live event hints for web overlays ──
+    status_state = result["header"]["status"].get("state", "")
+    if result["plays"]:
+        latest = result["plays"][-1]
+        latest_text = str(latest.get("text", ""))
+        lower_text = latest_text.lower()
+        event_key = f"{latest.get('period', 0)}:{latest.get('clock', '')}:{latest_text}"
+        if status_state == "in" and "timeout" in lower_text:
+            result["live_event"] = {
+                "type": "timeout",
+                "event_key": event_key,
+                "text": latest_text,
+                "timeout_seconds": 75,
+                "substitution": {"in": "", "out": ""},
+            }
+        elif "enters the game for" in lower_text:
+            token = " enters the game for "
+            token_idx = lower_text.find(token)
+            in_name = ""
+            out_name = ""
+            if token_idx >= 0:
+                in_name = latest_text[:token_idx].strip(" .")
+                out_name = latest_text[token_idx + len(token):].strip(" .")
+            result["live_event"] = {
+                "type": "substitution",
+                "event_key": event_key,
+                "text": latest_text,
+                "timeout_seconds": 0,
+                "substitution": {"in": in_name, "out": out_name},
+            }
 
     # ── Model prediction (best-effort) ──
     try:

@@ -244,7 +244,7 @@ def run_optimize_sharp(callback=None, is_cancelled=None) -> Dict:
 
 
 def run_backtest_and_compare(callback=None, is_cancelled=None) -> Dict:
-    """Step 6: Run A/B backtest (fundamentals vs sharp) with fresh data."""
+    """Step 7: Run A/B backtest (fundamentals vs sharp) with fresh data."""
     from src.analytics.backtester import run_backtest, invalidate_backtest_cache
 
     invalidate_backtest_cache()  # force recompute after optimization
@@ -283,7 +283,7 @@ def run_pipeline(
     callback: Optional[Callable] = None,
     is_cancelled_fn: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
-    """Run the full pipeline: backup -> sync -> precompute -> optimize x2 -> backtest.
+    """Run full pipeline: backup -> sync -> precompute -> optimize x2 -> backtest.
 
     Args:
         callback: Optional function receiving progress messages (str).
@@ -307,6 +307,10 @@ def run_pipeline(
         logger.info(msg)
 
     total_steps = len(PIPELINE_STEPS)
+    valid_step_keys = {f"step_{name}" for name, _ in PIPELINE_STEPS}
+    for key in list(state.keys()):
+        if key.startswith("step_") and key not in valid_step_keys:
+            state.pop(key, None)
 
     try:
         for idx, (step_name, step_func) in enumerate(PIPELINE_STEPS, 1):
@@ -407,7 +411,7 @@ def run_overnight(
 ) -> Dict[str, Any]:
     """Run full pipeline once, then loop optimization steps until time runs out.
 
-    Pass 1: full 6-step pipeline (backup, sync, precompute, optimize x2, backtest)
+    Pass 1: full pipeline (backup, sync, precompute, optimize x2, backtest)
     Pass 2+: optimize_fundamentals -> optimize_sharp -> backtest
     Each pass uses fresh random seeds. Precomputed games are reused across passes.
     """
