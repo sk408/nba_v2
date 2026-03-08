@@ -427,7 +427,13 @@ def run_overnight(
         h, m = int(secs // 3600), int((secs % 3600) // 60)
         return f"{h}h {m}m" if h else f"{m}m {int(secs % 60)}s"
 
+    from src.config import get as get_setting
+    max_no_save_passes = max(0, int(get_setting("overnight_max_no_save_passes", 0)))
+    consecutive_no_save_passes = 0
+
     emit(f"=== Overnight Optimization: {max_hours}h budget ===")
+    if max_no_save_passes > 0:
+        emit(f"No-save auto-stop enabled: {max_no_save_passes} consecutive passes.")
 
     if reset_weights:
         from src.analytics.weight_config import clear_all_weights
@@ -478,6 +484,8 @@ def run_overnight(
              f"({fmt_elapsed(time_left())} remaining) ---")
 
         try:
+            pass_saved_any = False
+
             # Optimize fundamentals
             emit(f"[Loop {pass_num}] Optimizing fundamentals (3000 trials)...")
             fund_result = run_optimize_fundamentals(
@@ -486,7 +494,9 @@ def run_overnight(
             )
             if is_cancelled():
                 break
-            improved = "IMPROVED" if fund_result.get("improved") else "no change"
+            fund_saved = bool(fund_result.get("improved"))
+            pass_saved_any = pass_saved_any or fund_saved
+            improved = "IMPROVED" if fund_saved else "no change"
             emit(f"  Fundamentals: {improved}")
 
             # Optimize sharp
@@ -497,7 +507,9 @@ def run_overnight(
             )
             if is_cancelled():
                 break
-            improved = "IMPROVED" if sharp_result.get("improved") else "no change"
+            sharp_saved = bool(sharp_result.get("improved"))
+            pass_saved_any = pass_saved_any or sharp_saved
+            improved = "IMPROVED" if sharp_saved else "no change"
             emit(f"  Sharp: {improved}")
 
             # Backtest
@@ -525,6 +537,20 @@ def run_overnight(
 
             emit(f"  Pass {pass_num} took {fmt_elapsed(loop_elapsed)} | "
                  f"avg {fmt_elapsed(sum(loop_times) / len(loop_times))}/pass")
+
+            if pass_saved_any:
+                consecutive_no_save_passes = 0
+            else:
+                consecutive_no_save_passes += 1
+                if max_no_save_passes > 0:
+                    emit("  Save gate: no weights saved this pass "
+                         f"({consecutive_no_save_passes}/{max_no_save_passes})")
+                    if consecutive_no_save_passes >= max_no_save_passes:
+                        emit("Stopping overnight early: reached "
+                             f"{consecutive_no_save_passes} consecutive no-save passes.")
+                        break
+                else:
+                    emit("  Save gate: no weights saved this pass")
 
         except Exception as e:
             logger.exception("Overnight loop %d error: %s", pass_num, e)

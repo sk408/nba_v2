@@ -76,11 +76,13 @@ class RichOvernightConsole:
         self.start_time = time.time()
         self.current_activity = "Initializing..."
         self.pass_results: list[dict] = []
+        self.pass_gate: dict[int, dict[str, dict]] = {}
         self.best_result: dict | None = None
         self.trial_current = 0
         self.trial_total = 0
         self.current_pass = 0
         self.pass_start_time = time.time()
+        self._active_opt_target: str | None = None  # "fundamentals" | "sharp"
         # Trial rate tracking for ETA estimates
         self.opt_start_time: float = 0.0   # when current opt step began
         self.opt_start_trial: int = 0      # first trial number we saw
@@ -101,6 +103,36 @@ class RichOvernightConsole:
         self.sync_current_label: str = ""
         self.in_pipeline = False  # True during Pass 1 full pipeline
         self.stopping = False  # True after Ctrl+C / deadline cancel
+
+    def _set_gate_status(self, mode: str, saved: bool, reason: str = ""):
+        """Record save-gate outcome for the current pass and mode."""
+        if mode not in ("fundamentals", "sharp"):
+            return
+        if self.current_pass <= 0:
+            # Fallback to Pass 1 if message arrives before explicit pass header.
+            self.current_pass = 1
+        if self.current_pass not in self.pass_gate:
+            self.pass_gate[self.current_pass] = {}
+        self.pass_gate[self.current_pass][mode] = {
+            "saved": bool(saved),
+            "reason": reason.strip(),
+        }
+        verdict = "SAVED" if saved else "REJECTED"
+        label = "Fundamentals" if mode == "fundamentals" else "Sharp"
+        self.current_activity = f"{label} Save Gate: {verdict}"
+        extra = f" -- {reason.strip()}" if (reason and not saved) else ""
+        self._log_lines.append(f"[save-gate] Pass {self.current_pass} {label}: {verdict}{extra}")
+        if len(self._log_lines) > self._log_max:
+            self._log_lines = self._log_lines[-self._log_max:]
+
+    def _gate_text(self, pass_num: int, mode: str) -> Text:
+        """Render compact save-gate status for the results table."""
+        gate = self.pass_gate.get(pass_num, {}).get(mode)
+        if not gate:
+            return Text("-", style="dim")
+        if gate.get("saved"):
+            return Text("SAVED", style="bold green")
+        return Text("REJECTED", style="bold red")
 
     def start(self):
         self._live = Live(
@@ -177,6 +209,12 @@ class RichOvernightConsole:
                     self.trial_total = 0
                     self.opt_start_time = time.time()
                     self.opt_start_trial = 0
+                if step_name == "optimize_fundamentals":
+                    self._active_opt_target = "fundamentals"
+                elif step_name == "optimize_sharp":
+                    self._active_opt_target = "sharp"
+                elif step_name == "backtest":
+                    self._active_opt_target = None
             return
 
         # Step completed: "  backup completed in 0.3s"
@@ -252,6 +290,7 @@ class RichOvernightConsole:
             self.pass_start_time = time.time()
             self.trial_current = 0
             self.trial_total = 0
+            self._active_opt_target = None
             if self.current_pass > 1:
                 self.in_pipeline = False
 
@@ -282,15 +321,18 @@ class RichOvernightConsole:
             self.trial_current = 0
             self.opt_start_time = time.time()
             self.opt_start_trial = 0
+            self._active_opt_target = "fundamentals"
         elif "Optimizing sharp" in stripped:
             self.current_activity = "Optimizing Sharp"
             self.trial_current = 0
             self.opt_start_time = time.time()
             self.opt_start_trial = 0
+            self._active_opt_target = "sharp"
         elif "Backtest" in stripped and "Loop" in stripped:
             self.current_activity = "Backtesting"
             self.trial_current = 0
             self.trial_total = 0
+            self._active_opt_target = None
 
         # Post-optimization phases (clear progress bar, update activity)
         if "Validating top" in stripped:
@@ -308,6 +350,21 @@ class RichOvernightConsole:
         elif "Study now has" in stripped:
             self.trial_current = 0
             self.trial_total = 0
+
+        # Save-gate outcome from optimizer callbacks
+        if "Saved optimized weights" in stripped:
+            mode = self._active_opt_target or "fundamentals"
+            self._set_gate_status(mode=mode, saved=True)
+            return
+
+        m = re.search(r"Validation save gate rejected:\s*(.+)", stripped)
+        if m:
+            mode = self._active_opt_target or "fundamentals"
+            reason = m.group(1).strip()
+            # Keep the core reason concise in table/log context
+            reason = reason.replace("- keeping current weights", "").strip()
+            self._set_gate_status(mode=mode, saved=False, reason=reason)
+            return
 
         # Precompute progress: "Precomputed 25/150 games"
         m = re.search(r"Precomputed?\s+(\d+)/(\d+)\s+games", stripped)
@@ -513,7 +570,9 @@ class RichOvernightConsole:
             table.add_column("Upset%", justify="center", width=10)
             table.add_column("Upset Rate", justify="center", width=10)
             table.add_column("ML ROI", justify="center", width=10)
-            table.add_column("Status", justify="center", width=12)
+            table.add_column("Fund Gate", justify="center", width=12)
+            table.add_column("Sharp Gate", justify="center", width=12)
+            table.add_column("Status", justify="center", width=10)
 
             for r in self.pass_results:
                 style = "bold green" if r["is_best"] else ""
@@ -525,12 +584,14 @@ class RichOvernightConsole:
                     f"{r['upset_pct']:.0f}%" if r["upset_pct"] else "-",
                     f"{r['upset_rate']:.0f}%" if r["upset_rate"] else "-",
                     f"{r['ml_roi']:+.1f}%" if r["ml_roi"] else "-",
+                    self._gate_text(r["pass"], "fundamentals"),
+                    self._gate_text(r["pass"], "sharp"),
                     status,
                     style=style,
                 )
 
             if not self.pass_results:
-                table.add_row("-", "-", "-", "-", "-", "-", "awaiting first pass")
+                table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "awaiting")
 
             # Best result highlight
             results_layout = Layout()

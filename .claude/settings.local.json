@@ -9,7 +9,9 @@
       "WebFetch(domain:www.nbastuffer.com)",
       "WebSearch",
       "WebFetch(domain:dunksandthrees.com)",
-      "WebFetch(domain:www.underdogchance.com)"
+      "WebFetch(domain:www.underdogchance.com)",
+      "Bash(git:*)",
+      "Bash(python:*)"
     ]
   }
 }

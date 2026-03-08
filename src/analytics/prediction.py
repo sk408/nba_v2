@@ -299,33 +299,38 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
     game_score += tz_adj
     pred.adjustments["timezone"] = tz_adj
 
-    # 17. Momentum (win/loss streak)
+    # 17. Cumulative 7-day travel load
+    cum_travel_adj = ((game.away_cum_travel_7d - game.home_cum_travel_7d) / 1000.0) * w.cum_travel_7d_mult
+    game_score += cum_travel_adj
+    pred.adjustments["cum_travel_7d"] = cum_travel_adj
+
+    # 18. Momentum (win/loss streak)
     momentum_adj = (game.home_streak - game.away_streak) * w.momentum_streak_mult
     game_score += momentum_adj
     pred.adjustments["momentum"] = momentum_adj
 
-    # 18. Margin-of-victory trend
+    # 19. Margin-of-victory trend
     mov_adj = (game.home_mov_trend - game.away_mov_trend) * w.mov_trend_mult
     game_score += mov_adj
     pred.adjustments["mov_trend"] = mov_adj
 
-    # 19. Injury VORP impact (more VORP lost = weaker team)
+    # 20. Injury VORP impact (more VORP lost = weaker team)
     injury_adj = (game.away_injury_vorp_lost - game.home_injury_vorp_lost) * w.injury_vorp_mult
     game_score += injury_adj
     pred.adjustments["injury_vorp"] = injury_adj
 
-    # 20. Referee home bias (50% = neutral, >50% = favors home)
+    # 21. Referee home bias (50% = neutral, >50% = favors home)
     ref_bias_adj = (game.ref_crew_home_bias - 50.0) / 50.0 * w.ref_home_bias_mult
     game_score += ref_bias_adj
     pred.adjustments["ref_home_bias"] = ref_bias_adj
 
-    # 21. Spread sharp money
+    # 22. Spread sharp money
     if game.spread_sharp_edge:
         spread_sharp_adj = game.spread_sharp_edge / 100.0 * w.sharp_spread_weight
         game_score += spread_sharp_adj
         pred.adjustments["sharp_spread"] = spread_sharp_adj
 
-    # 22. Schedule spots
+    # 23. Schedule spots
     sched_adj = (-(game.home_lookahead * w.lookahead_penalty +
                    game.home_letdown * w.letdown_penalty)
                  + (game.away_lookahead * w.lookahead_penalty +
@@ -333,23 +338,33 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
     game_score += sched_adj
     pred.adjustments["schedule_spots"] = sched_adj
 
-    # 23. SRS differential
+    # 24. Road-trip depth (away longer trip should favor home)
+    road_trip_adj = (game.away_road_trip_game - game.home_road_trip_game) * w.road_trip_game_mult
+    game_score += road_trip_adj
+    pred.adjustments["road_trip_game"] = road_trip_adj
+
+    # 25. SRS differential
     srs_adj = (game.home_srs - game.away_srs) * w.srs_diff_mult
     game_score += srs_adj
     pred.adjustments["srs"] = srs_adj
 
-    # 24. Player On/Off impact
+    # 26. Pythagorean differential
+    pythag_adj = (game.home_pythag_wpct - game.away_pythag_wpct) * w.pythag_diff_mult
+    game_score += pythag_adj
+    pred.adjustments["pythag"] = pythag_adj
+
+    # 27. Player On/Off impact
     onoff_adj = (game.home_onoff_impact - game.away_onoff_impact) * w.onoff_impact_mult
     game_score += onoff_adj
     pred.adjustments["onoff_impact"] = onoff_adj
 
-    # 25. 3PT luck regression (hot team regresses down, cold team regresses up)
+    # 28. 3PT luck regression (hot team regresses down, cold team regresses up)
     # Negative because positive luck = overperforming = expect regression down
     fg3_luck_adj = -(game.home_fg3_luck - game.away_fg3_luck) * w.fg3_luck_mult
     game_score += fg3_luck_adj
     pred.adjustments["fg3_luck"] = fg3_luck_adj
 
-    # 26. Process stats matchup (paint scoring vs paint defense, etc.)
+    # 29. Process stats matchup (paint scoring vs paint defense, etc.)
     # Each component: (team's scoring - opponent's allowed) normalized by league avg
     hp, ap = game.home_process, game.away_process
     if hp and ap:
@@ -473,6 +488,30 @@ def _get_team_metrics(team_id: int, season: Optional[str] = None) -> Dict[str, f
     result = dict(row) if row else {}
     team_cache.set(team_id, cache_key, result)
     return result
+
+
+def _derive_pythag_wpct(metrics: Dict[str, float]) -> float:
+    """Return Pythagorean win% from team metrics with safe fallbacks."""
+    gp = metrics.get("gp", 0) or 0
+    pythag_wins = metrics.get("pythag_wins")
+
+    try:
+        gp_f = float(gp)
+    except (TypeError, ValueError):
+        gp_f = 0.0
+
+    if gp_f > 0 and pythag_wins is not None:
+        try:
+            wpct = float(pythag_wins) / gp_f
+            return max(0.0, min(1.0, wpct))
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+
+    try:
+        wpct = float(metrics.get("w_pct", 0.5) or 0.5)
+        return max(0.0, min(1.0, wpct))
+    except (TypeError, ValueError):
+        return 0.5
 
 
 # ──────────────────────────────────────────────────────────────
@@ -789,6 +828,9 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
         # SRS
         home_srs=hm.get("srs", 0.0) or 0.0,
         away_srs=am.get("srs", 0.0) or 0.0,
+        # Pythagorean
+        home_pythag_wpct=_derive_pythag_wpct(hm),
+        away_pythag_wpct=_derive_pythag_wpct(am),
         # On/Off
         home_onoff_impact=_home_onoff,
         away_onoff_impact=_away_onoff,
@@ -1526,6 +1568,9 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
             # SRS
             home_srs=hm.get("srs", 0.0) or 0.0,
             away_srs=am.get("srs", 0.0) or 0.0,
+            # Pythagorean
+            home_pythag_wpct=_derive_pythag_wpct(hm),
+            away_pythag_wpct=_derive_pythag_wpct(am),
             # On/Off
             home_onoff_impact=_home_onoff,
             away_onoff_impact=_away_onoff,

@@ -1,14 +1,15 @@
 """Settings tab -- application configuration and weight management.
 
-Prediction mode, upset bonus, sync freshness, worker threads, theme,
-and weight reset with confirmation dialog.
+Prediction mode, optimizer save gate, upset bonus, sync freshness,
+worker threads, theme, and weight reset with confirmation dialog.
 """
 
 import logging
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFrame, QGridLayout, QScrollArea, QSlider, QSpinBox,
+    QFrame, QGridLayout, QScrollArea, QSlider, QSpinBox, QDoubleSpinBox,
+    QCheckBox,
     QRadioButton, QButtonGroup, QGroupBox, QSizePolicy,
     QMessageBox, QTextEdit, QTableWidget, QTableWidgetItem,
     QHeaderView,
@@ -115,16 +116,19 @@ class SettingsView(QWidget):
         # ---- Section 2: Upset Bonus Multiplier ----
         self._build_upset_bonus(layout)
 
-        # ---- Section 3: Sync & Performance ----
+        # ---- Section 3: Optimizer Save Gate ----
+        self._build_optimizer_save_gate(layout)
+
+        # ---- Section 4: Sync & Performance ----
         self._build_sync_performance(layout)
 
-        # ---- Section 4: Theme ----
+        # ---- Section 5: Theme ----
         self._build_theme_section(layout)
 
-        # ---- Section 5: Coordinate Descent ----
+        # ---- Section 6: Coordinate Descent ----
         self._build_cd_section(layout)
 
-        # ---- Section 6: Weight Management ----
+        # ---- Section 7: Weight Management ----
         self._build_weight_management(layout)
 
         layout.addStretch()
@@ -219,6 +223,191 @@ class SettingsView(QWidget):
         max_lbl.setProperty("class", "muted")
         range_row.addWidget(max_lbl)
         gl.addLayout(range_row)
+
+        apply_card_shadow(group)
+        parent_layout.addWidget(group)
+
+    def _build_optimizer_save_gate(self, parent_layout: QVBoxLayout):
+        """Build anti-gaming optimizer save gate controls."""
+        group = QGroupBox("Optimizer Save Gate (Anti-Gaming)")
+        gl = QGridLayout(group)
+        gl.setSpacing(10)
+        gl.setContentsMargins(16, 20, 16, 16)
+
+        desc = QLabel(
+            "Controls when optimized weights are allowed to save. "
+            "The gate uses validation loss plus upset-lift quality. "
+            "ROI can be optionally enabled as an additional hard gate."
+        )
+        desc.setProperty("class", "text-secondary")
+        desc.setWordWrap(True)
+        gl.addWidget(desc, 0, 0, 1, 4)
+
+        self._sg_use_roi_gate_chk = QCheckBox("Use ROI as hard save gate")
+        self._sg_use_roi_gate_chk.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 600;"
+        )
+        self._sg_use_roi_gate_chk.setToolTip(
+            "When disabled, ROI is diagnostic-only and does not block saves."
+        )
+        self._sg_use_roi_gate_chk.toggled.connect(self._on_roi_gate_toggled)
+        gl.addWidget(self._sg_use_roi_gate_chk, 1, 0, 1, 4)
+
+        auto_note = QLabel("Count fields: set to 0 for auto thresholds by validation sample size.")
+        auto_note.setProperty("class", "muted")
+        auto_note.setWordWrap(True)
+        gl.addWidget(auto_note, 2, 0, 1, 4)
+
+        label_style = f"color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 600;"
+
+        def _double_spin(
+            min_v: float,
+            max_v: float,
+            step: float,
+            decimals: int,
+            key: str,
+            suffix: str = "",
+            tooltip: str = "",
+        ) -> QDoubleSpinBox:
+            box = QDoubleSpinBox()
+            box.setRange(min_v, max_v)
+            box.setDecimals(decimals)
+            box.setSingleStep(step)
+            box.setKeyboardTracking(False)
+            box.setFixedWidth(120)
+            if suffix:
+                box.setSuffix(suffix)
+            if tooltip:
+                box.setToolTip(tooltip)
+            box.valueChanged.connect(
+                lambda value, setting_key=key: self._on_gate_float_changed(setting_key, value)
+            )
+            return box
+
+        def _int_spin(
+            min_v: int,
+            max_v: int,
+            key: str,
+            tooltip: str = "",
+            special_zero_text: str = "",
+        ) -> QSpinBox:
+            box = QSpinBox()
+            box.setRange(min_v, max_v)
+            box.setKeyboardTracking(False)
+            box.setFixedWidth(120)
+            if special_zero_text:
+                box.setSpecialValueText(special_zero_text)
+            if tooltip:
+                box.setToolTip(tooltip)
+            box.valueChanged.connect(
+                lambda value, setting_key=key: self._on_gate_int_changed(setting_key, value)
+            )
+            return box
+
+        self._sg_loss_margin_spin = _double_spin(
+            0.0, 1.0, 0.0001, 4, "optimizer_save_loss_margin",
+            tooltip="Required loss improvement before new weights can save.",
+        )
+        self._sg_min_weight_delta_spin = _double_spin(
+            0.0, 0.01, 0.0001, 4, "optimizer_save_min_weight_delta",
+            tooltip="Minimum max per-parameter weight delta required to save.",
+        )
+        self._sg_compression_floor_spin = _double_spin(
+            0.1, 2.0, 0.01, 2, "optimizer_save_compression_floor",
+            tooltip="Rejects compressed prediction bands below this floor.",
+        )
+        self._sg_max_winner_drop_spin = _double_spin(
+            0.0, 10.0, 0.05, 2, "optimizer_save_max_winner_drop", " pp",
+            "Maximum allowed winner%% drop versus baseline (percentage points).",
+        )
+        self._sg_favorites_slack_spin = _double_spin(
+            0.0, 10.0, 0.05, 2, "optimizer_save_favorites_slack", " pp",
+            "How far winner%% may sit below favorites baseline.",
+        )
+        self._sg_min_ml_payout_spin = _double_spin(
+            1.01, 5.00, 0.05, 2, "optimizer_min_ml_payout", "x",
+            "Minimum total return multiplier for ML bets used in ROI/gate checks. "
+            "1.50x means risk 100 to return 150 total.",
+        )
+        self._sg_min_upset_count_spin = _int_spin(
+            0, 5000, "optimizer_save_min_upset_count",
+            "Minimum upset sample size. 0 = auto by validation sample.",
+            "Auto",
+        )
+        self._sg_min_ml_bets_spin = _int_spin(
+            0, 5000, "optimizer_save_min_ml_bets",
+            "Minimum ML bets for ROI checks. 0 = auto by validation sample.",
+            "Auto",
+        )
+        self._sg_min_upset_rate_spin = _double_spin(
+            0.0, 100.0, 0.5, 1, "optimizer_save_min_upset_rate", "%",
+            "Lower bound for upset pick-rate sanity check.",
+        )
+        self._sg_max_upset_rate_spin = _double_spin(
+            0.0, 100.0, 0.5, 1, "optimizer_save_max_upset_rate", "%",
+            "Upper bound for upset pick-rate sanity check.",
+        )
+        self._sg_upset_prior_weight_spin = _double_spin(
+            0.0, 500.0, 1.0, 1, "optimizer_save_upset_prior_weight",
+            tooltip="Shrinkage strength toward underdog baseline upset accuracy.",
+        )
+        self._sg_min_shrunk_upset_lift_spin = _double_spin(
+            0.0, 20.0, 0.05, 2, "optimizer_save_min_shrunk_upset_lift", " pp",
+            "Required minimum shrunk upset-lift over underdog baseline.",
+        )
+        self._sg_min_roi_lift_spin = _double_spin(
+            0.0, 20.0, 0.05, 2, "optimizer_save_min_roi_lift", " pp",
+            "Required minimum ROI lift over baseline.",
+        )
+        self._sg_roi_lb95_slack_spin = _double_spin(
+            0.0, 20.0, 0.05, 2, "optimizer_save_roi_lb95_slack", " pp",
+            "How far the ROI lower bound may trail baseline.",
+        )
+
+        pairs = [
+            ("Loss Margin", self._sg_loss_margin_spin, "Compression Floor", self._sg_compression_floor_spin),
+            ("Max Winner Drop", self._sg_max_winner_drop_spin, "Favorites Slack", self._sg_favorites_slack_spin),
+            ("Min ML Payout", self._sg_min_ml_payout_spin, "Min ML Bets", self._sg_min_ml_bets_spin),
+            ("Min Upset Count", self._sg_min_upset_count_spin, "Min Upset Rate", self._sg_min_upset_rate_spin),
+            ("Max Upset Rate", self._sg_max_upset_rate_spin, "Upset Prior Weight", self._sg_upset_prior_weight_spin),
+            ("Min Shrunk Upset Lift", self._sg_min_shrunk_upset_lift_spin, "Min ROI Lift", self._sg_min_roi_lift_spin),
+        ]
+
+        row_idx = 3
+        for left_name, left_widget, right_name, right_widget in pairs:
+            left_lbl = QLabel(left_name)
+            left_lbl.setStyleSheet(label_style)
+            right_lbl = QLabel(right_name)
+            right_lbl.setStyleSheet(label_style)
+            gl.addWidget(left_lbl, row_idx, 0)
+            gl.addWidget(left_widget, row_idx, 1, alignment=Qt.AlignmentFlag.AlignLeft)
+            gl.addWidget(right_lbl, row_idx, 2)
+            gl.addWidget(right_widget, row_idx, 3, alignment=Qt.AlignmentFlag.AlignLeft)
+            row_idx += 1
+
+        roi_slack_lbl = QLabel("ROI LB95 Slack")
+        roi_slack_lbl.setStyleSheet(label_style)
+        gl.addWidget(roi_slack_lbl, row_idx, 0)
+        gl.addWidget(
+            self._sg_roi_lb95_slack_spin,
+            row_idx,
+            1,
+            alignment=Qt.AlignmentFlag.AlignLeft,
+        )
+        min_weight_delta_lbl = QLabel("Min Weight Delta")
+        min_weight_delta_lbl.setStyleSheet(label_style)
+        gl.addWidget(min_weight_delta_lbl, row_idx, 2)
+        gl.addWidget(
+            self._sg_min_weight_delta_spin,
+            row_idx,
+            3,
+            alignment=Qt.AlignmentFlag.AlignLeft,
+        )
+
+        gl.setColumnStretch(0, 1)
+        gl.setColumnStretch(1, 0)
+        gl.setColumnStretch(2, 1)
+        gl.setColumnStretch(3, 0)
 
         apply_card_shadow(group)
         parent_layout.addWidget(group)
@@ -430,6 +619,7 @@ class SettingsView(QWidget):
         self._cd_results_lbl.setStyleSheet(
             f"color: {CYAN}; font-size: 13px; font-weight: 600;"
         )
+        self._cd_results_lbl.setWordWrap(True)
         gl.addWidget(self._cd_results_lbl)
 
         # Changes table (hidden until CD completes)
@@ -511,6 +701,32 @@ class SettingsView(QWidget):
     # Load current settings
     # ---------------------------------------------------------------
 
+    @staticmethod
+    def _to_bool(value, default: bool = False) -> bool:
+        """Parse bool-ish config values safely."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ("1", "true", "yes", "on", "y"):
+                return True
+            if v in ("0", "false", "no", "off", "n"):
+                return False
+        return bool(default)
+
+    def _set_roi_controls_enabled(self, enabled: bool):
+        """Enable/disable ROI-only gate controls."""
+        roi_widgets = (
+            self._sg_min_ml_payout_spin,
+            self._sg_min_ml_bets_spin,
+            self._sg_min_roi_lift_spin,
+            self._sg_roi_lb95_slack_spin,
+        )
+        for widget in roi_widgets:
+            widget.setEnabled(bool(enabled))
+
     def _load_current_settings(self):
         """Read config values and populate all controls."""
         try:
@@ -532,6 +748,49 @@ class SettingsView(QWidget):
         self._upset_slider.setValue(int(upset_val * 100))
         self._upset_slider.blockSignals(False)
         self._upset_value_lbl.setText(f"{upset_val:.2f}")
+
+        # Optimizer save gate
+        gate_float_bindings = [
+            (self._sg_loss_margin_spin, "optimizer_save_loss_margin", 0.01),
+            (self._sg_min_weight_delta_spin, "optimizer_save_min_weight_delta", 0.0001),
+            (self._sg_max_winner_drop_spin, "optimizer_save_max_winner_drop", 0.35),
+            (self._sg_favorites_slack_spin, "optimizer_save_favorites_slack", 0.25),
+            (self._sg_min_ml_payout_spin, "optimizer_min_ml_payout", 1.50),
+            (self._sg_compression_floor_spin, "optimizer_save_compression_floor", 0.55),
+            (self._sg_min_upset_rate_spin, "optimizer_save_min_upset_rate", 8.0),
+            (self._sg_max_upset_rate_spin, "optimizer_save_max_upset_rate", 55.0),
+            (self._sg_upset_prior_weight_spin, "optimizer_save_upset_prior_weight", 25.0),
+            (self._sg_min_shrunk_upset_lift_spin, "optimizer_save_min_shrunk_upset_lift", 0.40),
+            (self._sg_min_roi_lift_spin, "optimizer_save_min_roi_lift", 0.15),
+            (self._sg_roi_lb95_slack_spin, "optimizer_save_roi_lb95_slack", 0.35),
+        ]
+        for widget, key, fallback in gate_float_bindings:
+            try:
+                value = float(get(key, fallback))
+            except (TypeError, ValueError):
+                value = float(fallback)
+            widget.blockSignals(True)
+            widget.setValue(value)
+            widget.blockSignals(False)
+
+        gate_int_bindings = [
+            (self._sg_min_upset_count_spin, "optimizer_save_min_upset_count", 0),
+            (self._sg_min_ml_bets_spin, "optimizer_save_min_ml_bets", 0),
+        ]
+        for widget, key, fallback in gate_int_bindings:
+            try:
+                value = int(get(key, fallback))
+            except (TypeError, ValueError):
+                value = int(fallback)
+            widget.blockSignals(True)
+            widget.setValue(max(0, value))
+            widget.blockSignals(False)
+
+        roi_gate_enabled = self._to_bool(get("optimizer_save_use_roi_gate", False), False)
+        self._sg_use_roi_gate_chk.blockSignals(True)
+        self._sg_use_roi_gate_chk.setChecked(roi_gate_enabled)
+        self._sg_use_roi_gate_chk.blockSignals(False)
+        self._set_roi_controls_enabled(roi_gate_enabled)
 
         # Sync freshness
         freshness = get("sync_freshness_hours", 4)
@@ -606,6 +865,26 @@ class SettingsView(QWidget):
         float_val = value / 100.0
         self._upset_value_lbl.setText(f"{float_val:.2f}")
         set_value("upset_bonus_mult", float_val)
+
+    def _on_gate_float_changed(self, key: str, value: float):
+        """Persist float-based optimizer save gate settings."""
+        from src.config import set_value
+        set_value(key, float(value))
+
+    def _on_roi_gate_toggled(self, checked: bool):
+        """Toggle ROI hard-gate mode and ROI control availability."""
+        self._on_gate_bool_changed("optimizer_save_use_roi_gate", checked)
+        self._set_roi_controls_enabled(checked)
+
+    def _on_gate_bool_changed(self, key: str, checked: bool):
+        """Persist bool-based optimizer save gate settings."""
+        from src.config import set_value
+        set_value(key, bool(checked))
+
+    def _on_gate_int_changed(self, key: str, value: int):
+        """Persist int-based optimizer save gate settings."""
+        from src.config import set_value
+        set_value(key, max(0, int(value)))
 
     def _on_freshness_changed(self, value: int):
         """Handle sync freshness change."""
@@ -730,13 +1009,14 @@ class SettingsView(QWidget):
                 f"color: {GREEN}; font-size: 13px; font-weight: 600;"
             )
         else:
+            gate_reason = result.get("save_gate_reason", "validation save gate not met")
             self._cd_results_lbl.setText(
-                f"CD did not improve validation winner% "
-                f"({rounds} rounds, {len(changes)} params tested)"
+                f"CD did not save ({rounds} rounds, {len(changes)} params tested)"
             )
             self._cd_results_lbl.setStyleSheet(
                 f"color: {AMBER}; font-size: 13px; font-weight: 600;"
             )
+            self._cd_log.append(f"Save gate reason: {gate_reason}")
 
         # Populate changes table
         if changes:

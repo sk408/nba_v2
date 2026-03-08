@@ -88,7 +88,10 @@ class WeightConfig:
     lookahead_penalty: float = 0.5
     letdown_penalty: float = 0.5
     srs_diff_mult: float = 0.5
+    pythag_diff_mult: float = 2.0
     onoff_impact_mult: float = 0.5
+    road_trip_game_mult: float = 0.25
+    cum_travel_7d_mult: float = 0.75
     pace_mismatch_mult: float = 0.2
     fg3_luck_mult: float = 15.0
     process_edge_mult: float = 0.3
@@ -172,7 +175,10 @@ OPTIMIZER_RANGES = {
     "lookahead_penalty": (0.0, 3.0),
     "letdown_penalty": (0.0, 3.0),
     "srs_diff_mult": (0.0, 3.0),
+    "pythag_diff_mult": (0.0, 8.0),
     "onoff_impact_mult": (0.0, 3.0),
+    "road_trip_game_mult": (0.0, 2.0),
+    "cum_travel_7d_mult": (0.0, 5.0),
     "pace_mismatch_mult": (0.0, 2.0),
     "fg3_luck_mult": (0.0, 50.0),
     "process_edge_mult": (0.0, 2.0),
@@ -228,7 +234,10 @@ CD_RANGES = {
     "lookahead_penalty": (0.0, 5.0),
     "letdown_penalty": (0.0, 5.0),
     "srs_diff_mult": (0.0, 5.0),
+    "pythag_diff_mult": (0.0, 10.0),
     "onoff_impact_mult": (0.0, 5.0),
+    "road_trip_game_mult": (0.0, 3.0),
+    "cum_travel_7d_mult": (0.0, 7.0),
     "pace_mismatch_mult": (0.0, 3.0),
     "fg3_luck_mult": (0.0, 75.0),
     "process_edge_mult": (0.0, 3.0),

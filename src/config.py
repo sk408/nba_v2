@@ -26,6 +26,34 @@ _DEFAULTS: Dict[str, Any] = {
     "optimizer_log_interval": 300,
     "prediction_mode": "fundamentals",  # "fundamentals" or "fundamentals_sharp"
     "upset_bonus_mult": 0.5,  # optimizer upset reward multiplier
+    # Moneyline filter for optimizer ROI diagnostics (1.50 == risk 100 to return 150 total)
+    "optimizer_min_ml_payout": 1.50,
+    # Optimizer anti-gaming save gate settings
+    "optimizer_save_loss_margin": 0.01,
+    "optimizer_save_min_weight_delta": 0.0001,
+    "optimizer_save_max_winner_drop": 0.35,
+    "optimizer_save_favorites_slack": 0.25,
+    "optimizer_save_compression_floor": 0.55,
+    "optimizer_save_min_upset_count": 0,  # 0 = auto from validation sample size
+    "optimizer_save_min_upset_rate": 8.0,
+    "optimizer_save_max_upset_rate": 55.0,
+    "optimizer_save_upset_prior_weight": 25.0,
+    "optimizer_save_min_shrunk_upset_lift": 0.40,
+    "optimizer_save_min_ml_bets": 0,  # 0 = auto from validation sample size
+    "optimizer_save_min_roi_lift": 0.15,
+    "optimizer_save_roi_lb95_slack": 0.35,
+    "optimizer_save_use_roi_gate": False,  # False = ROI diagnostics only (not a hard save gate)
+    "optimizer_save_use_hybrid_loss_gate": True,
+    "optimizer_save_hybrid_val_weight": 0.70,
+    "optimizer_save_hybrid_margin": 0.003,
+    "optimizer_save_max_val_loss_regress": 0.020,
+    # Optuna controls
+    "optuna_top_n_validation": 10,
+    "optuna_stagnation_threshold": 500,
+    "optuna_early_stop_trials": 2000,
+    "optuna_min_trials_before_stop": 500,
+    # Overnight loop controls
+    "overnight_max_no_save_passes": 0,  # 0 = disabled
 }
 
 _cache: Dict[str, Any] | None = None

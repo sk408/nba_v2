@@ -15,7 +15,7 @@ import hashlib
 import logging
 import os
 import random
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 
 import numpy as np
 
@@ -40,8 +40,323 @@ WALK_FORWARD_SPLIT = 0.80
 COMPRESSION_RATIO_FLOOR = 0.55
 COMPRESSION_PENALTY_MULT = 80.0
 
-# Minimum payout multiplier for ML ROI calculations (diagnostic only).
-MIN_ML_PAYOUT = 1.35
+# Default minimum payout multiplier for ML ROI calculations.
+# Can be overridden by config key: optimizer_min_ml_payout.
+MIN_ML_PAYOUT = 1.50
+
+
+def _safe_float_setting(key: str, default: float) -> float:
+    """Read a float setting with defensive fallback."""
+    from src.config import get as get_setting
+    try:
+        return float(get_setting(key, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _safe_int_setting(key: str, default: int) -> int:
+    """Read an int setting with defensive fallback."""
+    from src.config import get as get_setting
+    try:
+        return max(0, int(get_setting(key, default)))
+    except (TypeError, ValueError):
+        return max(0, int(default))
+
+
+def _safe_bool_setting(key: str, default: bool) -> bool:
+    """Read a bool setting with tolerant parsing."""
+    from src.config import get as get_setting
+    raw = get_setting(key, default)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        v = raw.strip().lower()
+        if v in ("1", "true", "yes", "on", "y"):
+            return True
+        if v in ("0", "false", "no", "off", "n"):
+            return False
+    return bool(default)
+
+
+def _max_weight_delta(a: WeightConfig, b: WeightConfig) -> float:
+    """Return max absolute per-parameter delta between two weight configs."""
+    da = a.to_dict()
+    db = b.to_dict()
+    keys = set(da.keys()) & set(db.keys())
+    if not keys:
+        return float("inf")
+    return max(abs(float(da[k]) - float(db[k])) for k in keys)
+
+
+def _shrunk_rate_pct(
+    successes: int,
+    attempts: int,
+    prior_pct: float,
+    prior_weight: float,
+) -> float:
+    """Return empirical rate shrunk toward prior_pct by prior_weight."""
+    if attempts <= 0:
+        return float(np.clip(prior_pct, 0.0, 100.0))
+    prior_prob = float(np.clip(prior_pct, 0.0, 100.0)) / 100.0
+    weight = max(0.0, float(prior_weight))
+    shrunk = (float(successes) + prior_prob * weight) / (float(attempts) + weight)
+    return float(np.clip(shrunk * 100.0, 0.0, 100.0))
+
+
+def _passes_robust_save_gate(
+    baseline: Dict[str, float],
+    candidate: Dict[str, float],
+    n_validation_games: int,
+    baseline_all: Optional[Dict[str, float]] = None,
+    candidate_all: Optional[Dict[str, float]] = None,
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """Gate saves using robust loss + upset quality (+ optional ROI)."""
+    loss_margin = _safe_float_setting("optimizer_save_loss_margin", 0.01)
+    winner_drop_tol = _safe_float_setting("optimizer_save_max_winner_drop", 0.35)
+    favorites_slack = _safe_float_setting("optimizer_save_favorites_slack", 0.25)
+    compression_floor = _safe_float_setting(
+        "optimizer_save_compression_floor",
+        COMPRESSION_RATIO_FLOOR,
+    )
+
+    min_upset_count_default = max(20, int(n_validation_games * 0.06))
+    min_upset_count_cfg = _safe_int_setting(
+        "optimizer_save_min_upset_count",
+        min_upset_count_default,
+    )
+    min_upset_count = (
+        min_upset_count_default if min_upset_count_cfg <= 0 else min_upset_count_cfg
+    )
+    min_upset_rate = _safe_float_setting("optimizer_save_min_upset_rate", 8.0)
+    max_upset_rate = _safe_float_setting("optimizer_save_max_upset_rate", 55.0)
+    upset_prior_weight = _safe_float_setting("optimizer_save_upset_prior_weight", 25.0)
+    min_shrunk_upset_lift = _safe_float_setting(
+        "optimizer_save_min_shrunk_upset_lift",
+        0.40,
+    )
+
+    min_ml_bets_default = max(40, int(n_validation_games * 0.12))
+    min_ml_bets_cfg = _safe_int_setting(
+        "optimizer_save_min_ml_bets",
+        min_ml_bets_default,
+    )
+    min_ml_bets = min_ml_bets_default if min_ml_bets_cfg <= 0 else min_ml_bets_cfg
+    min_roi_lift = _safe_float_setting("optimizer_save_min_roi_lift", 0.15)
+    roi_lb95_slack = _safe_float_setting("optimizer_save_roi_lb95_slack", 0.35)
+    use_roi_gate = _safe_bool_setting("optimizer_save_use_roi_gate", False)
+    use_hybrid_loss_gate = _safe_bool_setting("optimizer_save_use_hybrid_loss_gate", True)
+    hybrid_val_weight = float(
+        np.clip(_safe_float_setting("optimizer_save_hybrid_val_weight", 0.70), 0.0, 1.0)
+    )
+    hybrid_margin = _safe_float_setting("optimizer_save_hybrid_margin", loss_margin)
+    max_val_loss_regress = _safe_float_setting("optimizer_save_max_val_loss_regress", 0.02)
+
+    baseline_loss = float(baseline.get("loss", float("inf")))
+    candidate_loss = float(candidate.get("loss", float("inf")))
+    val_loss_improved = candidate_loss <= (baseline_loss - loss_margin)
+    val_not_much_worse = candidate_loss <= (baseline_loss + max_val_loss_regress)
+
+    has_all_loss = (
+        baseline_all is not None
+        and candidate_all is not None
+        and "loss" in baseline_all
+        and "loss" in candidate_all
+    )
+    baseline_all_loss = float(baseline_all.get("loss")) if has_all_loss else baseline_loss
+    candidate_all_loss = float(candidate_all.get("loss")) if has_all_loss else candidate_loss
+    baseline_hybrid_loss = (
+        hybrid_val_weight * baseline_loss + (1.0 - hybrid_val_weight) * baseline_all_loss
+    )
+    candidate_hybrid_loss = (
+        hybrid_val_weight * candidate_loss + (1.0 - hybrid_val_weight) * candidate_all_loss
+    )
+    hybrid_loss_improved = candidate_hybrid_loss <= (baseline_hybrid_loss - hybrid_margin)
+
+    if use_hybrid_loss_gate and has_all_loss:
+        loss_improved = (val_loss_improved or hybrid_loss_improved) and val_not_much_worse
+    else:
+        loss_improved = val_loss_improved
+
+    baseline_winner_pct = float(baseline.get("winner_pct", 0.0))
+    candidate_winner_pct = float(candidate.get("winner_pct", 0.0))
+    favorites_pct = float(candidate.get("favorites_pct", 0.0))
+
+    compression_ratio = float(candidate.get("compression_ratio", 0.0))
+    compression_ok = compression_ratio >= compression_floor
+
+    upset_count = int(candidate.get("upset_count", 0))
+    upset_rate = float(candidate.get("upset_rate", 0.0))
+    upset_correct_count = int(candidate.get("upset_correct_count", 0))
+    underdog_base_pct = float(np.clip(100.0 - favorites_pct, 0.0, 100.0))
+    shrunk_upset_accuracy = _shrunk_rate_pct(
+        upset_correct_count,
+        upset_count,
+        underdog_base_pct,
+        upset_prior_weight,
+    )
+    shrunk_upset_lift = shrunk_upset_accuracy - underdog_base_pct
+    upset_sample_ok = upset_count >= min_upset_count
+    upset_rate_ok = min_upset_rate <= upset_rate <= max_upset_rate
+    # When upset signal is stable, allow more room below baseline/favorites.
+    # This supports underdog-oriented strategies that trade raw hit-rate
+    # for higher-value upset selection.
+    if upset_sample_ok and upset_rate_ok:
+        relax_lift = max(0.0, shrunk_upset_lift - min_shrunk_upset_lift)
+    else:
+        relax_lift = 0.0
+    adaptive_winner_drop_tol = min(
+        winner_drop_tol + relax_lift * 0.35,
+        max(4.0, winner_drop_tol),
+    )
+    adaptive_favorites_slack = min(
+        favorites_slack + relax_lift * 1.25,
+        max(12.0, favorites_slack),
+    )
+    winner_guard = candidate_winner_pct >= (baseline_winner_pct - adaptive_winner_drop_tol)
+    favorites_guard = candidate_winner_pct >= (favorites_pct - adaptive_favorites_slack)
+    upset_edge_ok = upset_sample_ok and upset_rate_ok and (
+        shrunk_upset_lift >= min_shrunk_upset_lift
+    )
+
+    ml_bet_count = int(candidate.get("ml_bet_count", 0))
+    baseline_ml_roi = float(baseline.get("ml_roi", 0.0))
+    candidate_ml_roi = float(candidate.get("ml_roi", 0.0))
+    candidate_ml_roi_lb95 = float(candidate.get("ml_roi_lb95", candidate_ml_roi))
+    roi_sample_ok = ml_bet_count >= min_ml_bets
+    roi_lift = candidate_ml_roi - baseline_ml_roi
+    roi_edge_ok = roi_sample_ok and roi_lift >= min_roi_lift and (
+        candidate_ml_roi_lb95 >= (baseline_ml_roi - roi_lb95_slack)
+    )
+
+    # Upset is the primary signal. ROI can be optionally enabled as a hard gate.
+    # When ROI gate is off, keep ROI diagnostics but do not block saves on ROI.
+    if use_roi_gate and roi_sample_ok and upset_sample_ok:
+        edge_ok = roi_edge_ok and upset_edge_ok
+    elif use_roi_gate:
+        edge_ok = roi_edge_ok or upset_edge_ok
+    elif upset_sample_ok:
+        edge_ok = upset_edge_ok
+    else:
+        # If upset sample is still too small, don't block solely on edge gate.
+        edge_ok = True
+
+    save_ok = loss_improved and winner_guard and favorites_guard and compression_ok and edge_ok
+
+    reasons: List[str] = []
+    if not loss_improved:
+        if use_hybrid_loss_gate and has_all_loss:
+            reasons.append(
+                f"loss gate failed (val {candidate_loss:.3f} vs {baseline_loss:.3f}; "
+                f"hybrid {candidate_hybrid_loss:.3f} vs {baseline_hybrid_loss:.3f})"
+            )
+            if not (val_loss_improved or hybrid_loss_improved):
+                reasons.append(
+                    f"needs val improve >= {loss_margin:.4f} "
+                    f"or hybrid improve >= {hybrid_margin:.4f}"
+                )
+            if not val_not_much_worse:
+                reasons.append(
+                    f"validation loss regression too large "
+                    f"({candidate_loss - baseline_loss:+.3f} > +{max_val_loss_regress:.4f})"
+                )
+        else:
+            reasons.append(
+                f"loss {candidate_loss:.3f} must improve baseline {baseline_loss:.3f} "
+                f"by >= {loss_margin:.4f}"
+            )
+    if not winner_guard:
+        reasons.append(
+            f"winner% dropped too far ({candidate_winner_pct:.1f}% vs "
+            f"baseline {baseline_winner_pct:.1f}%, tol {adaptive_winner_drop_tol:.2f})"
+        )
+    if not favorites_guard:
+        reasons.append(
+            f"winner% below favorites guard ({candidate_winner_pct:.1f}% < "
+            f"{favorites_pct - adaptive_favorites_slack:.1f}%)"
+        )
+    if not compression_ok:
+        reasons.append(
+            f"compression {compression_ratio:.3f} < floor {compression_floor:.3f}"
+        )
+    if not edge_ok:
+        if use_roi_gate:
+            reasons.append(
+                "edge gate failed "
+                f"(ROI lift {roi_lift:+.2f}pp, ROI lb95 {candidate_ml_roi_lb95:+.2f}%, "
+                f"shrunk upset lift {shrunk_upset_lift:+.2f}pp)"
+            )
+            if not roi_sample_ok:
+                reasons.append(f"ML sample too small ({ml_bet_count} < {min_ml_bets})")
+            if not upset_sample_ok:
+                reasons.append(f"upset sample too small ({upset_count} < {min_upset_count})")
+            elif not upset_rate_ok:
+                reasons.append(
+                    f"upset rate {upset_rate:.1f}% outside "
+                    f"[{min_upset_rate:.1f}, {max_upset_rate:.1f}]"
+                )
+        else:
+            reasons.append(
+                "upset edge gate failed "
+                f"(shrunk upset lift {shrunk_upset_lift:+.2f}pp < "
+                f"min {min_shrunk_upset_lift:+.2f}pp)"
+            )
+            if not upset_rate_ok:
+                reasons.append(
+                    f"upset rate {upset_rate:.1f}% outside "
+                    f"[{min_upset_rate:.1f}, {max_upset_rate:.1f}]"
+                )
+
+    details: Dict[str, Any] = {
+        "ml_min_payout": float(candidate.get("ml_min_payout", MIN_ML_PAYOUT)),
+        "loss_margin": loss_margin,
+        "use_hybrid_loss_gate": use_hybrid_loss_gate,
+        "hybrid_val_weight": hybrid_val_weight,
+        "hybrid_margin": hybrid_margin,
+        "max_val_loss_regress": max_val_loss_regress,
+        "has_all_loss": has_all_loss,
+        "baseline_val_loss": baseline_loss,
+        "candidate_val_loss": candidate_loss,
+        "baseline_all_loss": baseline_all_loss if has_all_loss else None,
+        "candidate_all_loss": candidate_all_loss if has_all_loss else None,
+        "baseline_hybrid_loss": baseline_hybrid_loss if has_all_loss else None,
+        "candidate_hybrid_loss": candidate_hybrid_loss if has_all_loss else None,
+        "val_loss_improved": val_loss_improved,
+        "hybrid_loss_improved": hybrid_loss_improved if has_all_loss else False,
+        "val_not_much_worse": val_not_much_worse,
+        "winner_drop_tol": winner_drop_tol,
+        "favorites_slack": favorites_slack,
+        "adaptive_winner_drop_tol": adaptive_winner_drop_tol,
+        "adaptive_favorites_slack": adaptive_favorites_slack,
+        "upset_relax_lift": relax_lift,
+        "compression_floor": compression_floor,
+        "min_upset_count": min_upset_count,
+        "min_upset_rate": min_upset_rate,
+        "max_upset_rate": max_upset_rate,
+        "upset_prior_weight": upset_prior_weight,
+        "min_shrunk_upset_lift": min_shrunk_upset_lift,
+        "min_ml_bets": min_ml_bets,
+        "min_roi_lift": min_roi_lift,
+        "roi_lb95_slack": roi_lb95_slack,
+        "loss_improved": loss_improved,
+        "winner_guard": winner_guard,
+        "favorites_guard": favorites_guard,
+        "compression_ok": compression_ok,
+        "roi_sample_ok": roi_sample_ok,
+        "roi_edge_ok": roi_edge_ok,
+        "use_roi_gate": use_roi_gate,
+        "upset_sample_ok": upset_sample_ok,
+        "upset_rate_ok": upset_rate_ok,
+        "upset_edge_ok": upset_edge_ok,
+        "edge_ok": edge_ok,
+        "roi_lift": roi_lift,
+        "candidate_ml_roi_lb95": candidate_ml_roi_lb95,
+        "shrunk_upset_accuracy": shrunk_upset_accuracy,
+        "shrunk_upset_lift": shrunk_upset_lift,
+    }
+    reason = "pass" if save_ok else "; ".join(reasons)
+    return save_ok, reason, details
 
 
 class VectorizedGames:
@@ -194,6 +509,8 @@ class VectorizedGames:
         self.away_elo = np.array([g.away_elo for g in games])
         self.home_travel_miles = np.array([g.home_travel_miles for g in games])
         self.away_travel_miles = np.array([g.away_travel_miles for g in games])
+        self.home_cum_travel_7d = np.array([g.home_cum_travel_7d for g in games])
+        self.away_cum_travel_7d = np.array([g.away_cum_travel_7d for g in games])
         self.home_tz_crossings = np.array([g.home_tz_crossings for g in games], dtype=float)
         self.away_tz_crossings = np.array([g.away_tz_crossings for g in games], dtype=float)
         self.home_streak = np.array([g.home_streak for g in games], dtype=float)
@@ -209,8 +526,12 @@ class VectorizedGames:
         self.away_lookahead = np.array([float(g.away_lookahead) for g in games])
         self.home_letdown = np.array([float(g.home_letdown) for g in games])
         self.away_letdown = np.array([float(g.away_letdown) for g in games])
+        self.home_road_trip_game = np.array([g.home_road_trip_game for g in games], dtype=float)
+        self.away_road_trip_game = np.array([g.away_road_trip_game for g in games], dtype=float)
         self.home_srs = np.array([g.home_srs for g in games])
         self.away_srs = np.array([g.away_srs for g in games])
+        self.home_pythag_wpct = np.array([g.home_pythag_wpct for g in games], dtype=float)
+        self.away_pythag_wpct = np.array([g.away_pythag_wpct for g in games], dtype=float)
         self.home_onoff = np.array([g.home_onoff_impact for g in games])
         self.away_onoff = np.array([g.away_onoff_impact for g in games])
         self.pace_diff = np.array([abs(g.home_pace - g.away_pace) for g in games])
@@ -247,11 +568,14 @@ class VectorizedGames:
         self._spread_sharp_scaled = self.spread_sharp_edge / 100.0
         self._elo_diff_scaled = (self.home_elo - self.away_elo) / 400.0
         self._travel_diff_scaled = (self.away_travel_miles - self.home_travel_miles) / 1000.0
+        self._cum_travel_diff_scaled = (self.away_cum_travel_7d - self.home_cum_travel_7d) / 1000.0
         self._tz_diff = self.away_tz_crossings - self.home_tz_crossings
         self._streak_diff = (self.home_streak - self.away_streak).astype(float)
         self._mov_diff = self.home_mov_trend - self.away_mov_trend
         self._injury_diff = self.away_injury_vorp - self.home_injury_vorp
+        self._road_trip_diff = self.away_road_trip_game - self.home_road_trip_game
         self._srs_diff = self.home_srs - self.away_srs
+        self._pythag_diff = self.home_pythag_wpct - self.away_pythag_wpct
         self._onoff_diff = self.home_onoff - self.away_onoff
         self._fg3_luck_diff = self.home_fg3_luck - self.away_fg3_luck
         self._process_total_edge = (self._process_paint_edge + self._process_fb_edge
@@ -259,6 +583,10 @@ class VectorizedGames:
 
         from src.config import get as get_setting
         self._upset_bonus_mult = float(get_setting("upset_bonus_mult", 0.5))
+        self._min_ml_payout = max(
+            1.0,
+            _safe_float_setting("optimizer_min_ml_payout", MIN_ML_PAYOUT),
+        )
 
     def evaluate(self, w: WeightConfig, include_sharp: bool = False,
                  fast: bool = False) -> Dict[str, float]:
@@ -343,6 +671,7 @@ class VectorizedGames:
         game_score += self._elo_diff_scaled * w.elo_diff_mult
         game_score -= self._travel_diff_scaled * w.travel_dist_mult
         game_score -= self._tz_diff * w.timezone_crossing_mult
+        game_score += self._cum_travel_diff_scaled * w.cum_travel_7d_mult
         game_score += self._streak_diff * w.momentum_streak_mult
         game_score += self._mov_diff * w.mov_trend_mult
         game_score += self._injury_diff * w.injury_vorp_mult
@@ -350,7 +679,9 @@ class VectorizedGames:
         game_score += self._spread_sharp_scaled * w.sharp_spread_weight
         game_score += (-(self.home_lookahead * w.lookahead_penalty + self.home_letdown * w.letdown_penalty)
                        + (self.away_lookahead * w.lookahead_penalty + self.away_letdown * w.letdown_penalty))
+        game_score += self._road_trip_diff * w.road_trip_game_mult
         game_score += self._srs_diff * w.srs_diff_mult
+        game_score += self._pythag_diff * w.pythag_diff_mult
         game_score += self._onoff_diff * w.onoff_impact_mult
         game_score -= self._fg3_luck_diff * w.fg3_luck_mult  # negative: hot team regresses down
         game_score += self._process_total_edge * w.process_edge_mult
@@ -420,6 +751,8 @@ class VectorizedGames:
         # ML ROI (diagnostic only — not in loss function, skip in fast mode)
         ml_roi = -4.54
         ml_win_rate = winner_pct
+        ml_bet_count = 0
+        ml_roi_lb95 = ml_roi
         spread_mae = 0.0
         if not fast:
             ml_mask = (self.vegas_home_ml != 0) & (self.vegas_away_ml != 0)
@@ -441,7 +774,7 @@ class VectorizedGames:
                                   1.0 + a_ml / 100.0)
 
                 picked_mult = np.where(pick_home_ml, h_mult, a_mult)
-                payout_ok = picked_mult >= MIN_ML_PAYOUT
+                payout_ok = picked_mult >= self._min_ml_payout
 
                 # Profit calculation
                 h_profit = np.where(pick_home_ml & actual_home_win_ml, h_mult - 1.0,
@@ -451,11 +784,19 @@ class VectorizedGames:
                 total_profit = h_profit + a_profit
 
                 if np.any(payout_ok):
+                    ml_bet_count = int(np.sum(payout_ok))
                     bettable_correct = (((pick_home_ml & actual_home_win_ml)
                                          | (~pick_home_ml & ~actual_home_win_ml))
                                         & payout_ok)
-                    ml_win_rate = float(np.sum(bettable_correct)) / float(np.sum(payout_ok)) * 100.0
-                    ml_roi = float(np.mean(total_profit[payout_ok])) * 100.0
+                    ml_win_rate = float(np.sum(bettable_correct)) / max(1.0, float(ml_bet_count)) * 100.0
+                    roi_samples = total_profit[payout_ok]
+                    ml_roi = float(np.mean(roi_samples)) * 100.0
+                    if ml_bet_count > 1:
+                        roi_std = float(np.std(roi_samples, ddof=1)) * 100.0
+                        roi_sem = roi_std / np.sqrt(float(ml_bet_count))
+                        ml_roi_lb95 = ml_roi - (1.96 * roi_sem)
+                    else:
+                        ml_roi_lb95 = ml_roi
 
             # Spread MAE (diagnostic)
             spread_mae = float(np.mean(np.abs(game_score - self.actual_spread)))
@@ -483,6 +824,9 @@ class VectorizedGames:
             "upset_count": upset_count,
             "ml_roi": ml_roi,
             "ml_win_rate": ml_win_rate,
+            "ml_bet_count": ml_bet_count,
+            "ml_roi_lb95": ml_roi_lb95,
+            "ml_min_payout": self._min_ml_payout,
             "spread_mae": spread_mae,
             "compression_ratio": compression_ratio,
             "loss": loss,
@@ -502,7 +846,7 @@ def optimize_weights(
     remainder for validation. Optuna optimises on the training set; weights
     are only saved when they also improve on the held-out validation set.
 
-    Save gate: best_winner_pct must beat BOTH favorites_pct and previous best.
+    Save gate: anti-gaming validation gate blends loss, ROI, and upset lift.
     """
     # Walk-forward split
     sorted_games = sorted(games, key=lambda g: g.game_date)
@@ -517,6 +861,7 @@ def optimize_weights(
 
     vg_train = VectorizedGames(train_games)
     vg_val = VectorizedGames(val_games)
+    vg_all = VectorizedGames(sorted_games)
 
     if callback:
         callback(f"Walk-forward: {len(train_games)} train "
@@ -528,6 +873,7 @@ def optimize_weights(
     baseline_w = get_weight_config()
     baseline_train = vg_train.evaluate(baseline_w, include_sharp=include_sharp)
     baseline_val = vg_val.evaluate(baseline_w, include_sharp=include_sharp)
+    baseline_all = vg_all.evaluate(baseline_w, include_sharp=include_sharp)
 
     if callback:
         callback(f"Baseline (train): Winner={baseline_train['winner_pct']:.1f}%, "
@@ -537,10 +883,15 @@ def optimize_weights(
                  f"Upset={baseline_val['upset_accuracy']:.1f}% @ {baseline_val['upset_rate']:.1f}% rate, "
                  f"Favorites={baseline_val['favorites_pct']:.1f}%, "
                  f"Loss={baseline_val['loss']:.3f}")
+        callback(f"Baseline (all):   Winner={baseline_all['winner_pct']:.1f}%, "
+                 f"Upset={baseline_all['upset_accuracy']:.1f}% @ {baseline_all['upset_rate']:.1f}% rate, "
+                 f"Loss={baseline_all['loss']:.3f}")
 
     best_w = baseline_w
     best_train_loss = baseline_train["loss"]
     best_train_result = baseline_train
+    last_saved_w = [baseline_w]
+    min_weight_delta = _safe_float_setting("optimizer_save_min_weight_delta", 1e-4)
 
     # Select parameter ranges
     ranges = SHARP_MODE_RANGES if include_sharp else OPTIMIZER_RANGES
@@ -657,14 +1008,28 @@ def optimize_weights(
                         ckpt_w = WeightConfig.from_dict(
                             {**baseline_w.to_dict(), **trial.params})
                         ckpt_val = vg_val.evaluate(ckpt_w, include_sharp=include_sharp)
-                        # Only save if it beats favorites and baseline on validation
-                        if (ckpt_val["winner_pct"] > ckpt_val.get("favorites_pct", 0)
-                                and ckpt_val["winner_pct"] > baseline_val.get("winner_pct", 0)):
-                            save_weight_config(ckpt_w)
-                            invalidate_weight_cache()
-                            logger.info("Checkpoint saved: train loss=%.3f, "
-                                        "val winner=%.1f%%",
-                                        trial.value, ckpt_val["winner_pct"])
+                        ckpt_all = vg_all.evaluate(ckpt_w, include_sharp=include_sharp)
+                        ckpt_ok, _, _ = _passes_robust_save_gate(
+                            baseline=baseline_val,
+                            candidate=ckpt_val,
+                            n_validation_games=len(val_games),
+                            baseline_all=baseline_all,
+                            candidate_all=ckpt_all,
+                        )
+                        if ckpt_ok:
+                            ckpt_delta = _max_weight_delta(last_saved_w[0], ckpt_w)
+                            if ckpt_delta >= min_weight_delta:
+                                save_weight_config(ckpt_w)
+                                invalidate_weight_cache()
+                                last_saved_w[0] = ckpt_w
+                                logger.info("Checkpoint saved: train loss=%.3f, "
+                                            "val winner=%.1f%%, dW=%.6f",
+                                            trial.value, ckpt_val["winner_pct"], ckpt_delta)
+                            else:
+                                logger.info(
+                                    "Checkpoint skipped (no-op): dW=%.6f < %.6f",
+                                    ckpt_delta, min_weight_delta
+                                )
                     except Exception:
                         pass  # checkpoint is best-effort
             else:
@@ -692,6 +1057,14 @@ def optimize_weights(
                     callback(f"Trial {trial.number}/{n_trials}: loss={trial.value:.3f} "
                              f"(Winner={win:.1f}%, "
                              f"Upset={upset_acc:.1f}% @ {upset_r:.1f}% rate)")
+                    if is_new_best:
+                        merged_params = {**baseline_w.to_dict(), **trial.params}
+                        callback(
+                            "  Best multipliers: "
+                            f"pythag={float(merged_params.get('pythag_diff_mult', baseline_w.pythag_diff_mult)):.3f}, "
+                            f"road_trip={float(merged_params.get('road_trip_game_mult', baseline_w.road_trip_game_mult)):.3f}, "
+                            f"cum_travel_7d={float(merged_params.get('cum_travel_7d_mult', baseline_w.cum_travel_7d_mult)):.3f}"
+                        )
 
         study.optimize(objective, n_trials=n_trials, callbacks=[trial_callback])
 
@@ -797,6 +1170,7 @@ def optimize_weights(
 
     # Walk-forward validation
     best_val = vg_val.evaluate(best_w, include_sharp=include_sharp)
+    best_all = vg_all.evaluate(best_w, include_sharp=include_sharp)
 
     if callback:
         callback("-- Walk-forward results --")
@@ -809,40 +1183,78 @@ def optimize_weights(
                  f"@ {best_val['upset_rate']:.1f}% rate, "
                  f"Favorites={best_val['favorites_pct']:.1f}%, "
                  f"Loss={best_val['loss']:.3f}")
+        callback(f"  All:    Winner={best_all['winner_pct']:.1f}%, "
+                 f"Upset={best_all['upset_accuracy']:.1f}% "
+                 f"@ {best_all['upset_rate']:.1f}% rate, "
+                 f"Loss={best_all['loss']:.3f}")
 
-    # Save gate: winner_pct must beat both favorites baseline AND previous best
+    # Save gate: robust anti-gaming guardrails on validation
     baseline_winner_pct = baseline_val.get("winner_pct", 0)
     favorites_pct = best_val.get("favorites_pct", 0)
     best_winner_pct = best_val.get("winner_pct", 0)
+    save_ok, save_reason, save_details = _passes_robust_save_gate(
+        baseline=baseline_val,
+        candidate=best_val,
+        n_validation_games=len(val_games),
+        baseline_all=baseline_all,
+        candidate_all=best_all,
+    )
 
-    save_ok = (best_winner_pct > max(favorites_pct, baseline_winner_pct))
+    if callback:
+        callback(
+            "Save gate diagnostics: "
+            f"loss(val) {baseline_val.get('loss', 0.0):.3f}->{best_val.get('loss', 0.0):.3f}, "
+            f"loss(all) {baseline_all.get('loss', 0.0):.3f}->{best_all.get('loss', 0.0):.3f}, "
+            f"hybrid {float(save_details.get('baseline_hybrid_loss', baseline_val.get('loss', 0.0))):.3f}"
+            f"->{float(save_details.get('candidate_hybrid_loss', best_val.get('loss', 0.0))):.3f}, "
+            f"ROI {baseline_val.get('ml_roi', 0.0):+.2f}%->{best_val.get('ml_roi', 0.0):+.2f}% "
+            f"(lb95 {best_val.get('ml_roi_lb95', 0.0):+.2f}%), "
+            f"min ML payout {best_val.get('ml_min_payout', MIN_ML_PAYOUT):.2f}x, "
+            f"ROI gate {'ON' if bool(save_details.get('use_roi_gate', False)) else 'OFF'}, "
+            f"hybrid loss gate {'ON' if bool(save_details.get('use_hybrid_loss_gate', False)) else 'OFF'}, "
+            f"shrunk upset lift {float(save_details.get('shrunk_upset_lift', 0.0)):+.2f}pp"
+        )
 
-    if save_ok:
+    weight_delta = _max_weight_delta(last_saved_w[0], best_w)
+    weight_change_ok = weight_delta >= min_weight_delta
+    save_details["weight_delta"] = weight_delta
+    save_details["min_weight_delta"] = min_weight_delta
+    save_details["weight_change_ok"] = weight_change_ok
+    did_save = False
+
+    if save_ok and weight_change_ok:
         save_weight_config(best_w)
         invalidate_weight_cache()
+        last_saved_w[0] = best_w
+        did_save = True
         if callback:
             callback(f"Saved optimized weights "
                      f"(val Winner: {baseline_winner_pct:.1f}% -> {best_winner_pct:.1f}%, "
-                     f"vs Favorites baseline: {favorites_pct:.1f}%)")
-    else:
-        reason = ""
-        if best_winner_pct <= favorites_pct:
-            reason = (f" (winner {best_winner_pct:.1f}% "
-                      f"<= favorites baseline {favorites_pct:.1f}%)")
-        elif best_winner_pct <= baseline_winner_pct:
-            reason = (f" (winner {best_winner_pct:.1f}% "
-                      f"<= previous best {baseline_winner_pct:.1f}%)")
+                     f"vs Favorites baseline: {favorites_pct:.1f}%, "
+                     f"dW={weight_delta:.6f})")
+    elif save_ok:
+        save_ok = False
+        save_reason = (f"no-op weight update (dW {weight_delta:.6f} "
+                       f"< {min_weight_delta:.6f})")
         if callback:
-            callback(f"Validation winner% did not improve{reason} "
+            callback(f"Validation save gate rejected: {save_reason} "
+                     f"- keeping current weights")
+    else:
+        if callback:
+            callback(f"Validation save gate rejected: {save_reason} "
                      f"- keeping current weights")
 
     return {
         "baseline_loss": baseline_val["loss"],
         "best_loss": best_val["loss"],
+        "baseline_all_loss": baseline_all["loss"],
+        "best_all_loss": best_all["loss"],
         "baseline_winner_pct": baseline_winner_pct,
         "best_winner_pct": best_winner_pct,
         "favorites_pct": favorites_pct,
-        "improved": save_ok,
+        "improved": did_save,
+        "save_gate_reason": save_reason,
+        "save_gate_details": save_details,
         "train_loss": best_train_loss,
         **best_val,
     }
@@ -983,8 +1395,8 @@ def coordinate_descent(
     CD_RANGES bounds.  Accepts a new value only when it improves training loss.
     Repeats for up to `max_rounds` until convergence.
 
-    Save gate: validation winner_pct must beat both favorites_pct and the
-    baseline winner_pct (same gate as optimize_weights).
+    Save gate: anti-gaming validation gate blends loss, ROI, and upset lift
+    (same gate as optimize_weights).
     """
     # Walk-forward split (same as Optuna)
     sorted_games = sorted(games, key=lambda g: g.game_date)
@@ -999,6 +1411,7 @@ def coordinate_descent(
 
     vg_train = VectorizedGames(train_games)
     vg_val = VectorizedGames(val_games)
+    vg_all = VectorizedGames(sorted_games)
 
     if callback:
         callback(f"CD: {len(train_games)} train, {len(val_games)} validation")
@@ -1019,13 +1432,17 @@ def coordinate_descent(
     # Baseline evaluation
     baseline_train = vg_train.evaluate(w, include_sharp=include_sharp)
     baseline_val = vg_val.evaluate(w, include_sharp=include_sharp)
+    baseline_all = vg_all.evaluate(w, include_sharp=include_sharp)
     current_train_loss = baseline_train["loss"]
+    min_weight_delta = _safe_float_setting("optimizer_save_min_weight_delta", 1e-4)
 
     if callback:
         callback(f"CD baseline (train): Winner={baseline_train['winner_pct']:.1f}%, "
                  f"Loss={baseline_train['loss']:.3f}")
         callback(f"CD baseline (valid): Winner={baseline_val['winner_pct']:.1f}%, "
                  f"Favorites={baseline_val['favorites_pct']:.1f}%")
+        callback(f"CD baseline (all):   Winner={baseline_all['winner_pct']:.1f}%, "
+                 f"Loss={baseline_all['loss']:.3f}")
 
     best_w_dict = w_dict.copy()
     history = []
@@ -1122,12 +1539,19 @@ def coordinate_descent(
     final_w = WeightConfig.from_dict(best_w_dict)
     final_val = vg_val.evaluate(final_w, include_sharp=include_sharp)
     final_train = vg_train.evaluate(final_w, include_sharp=include_sharp)
+    final_all = vg_all.evaluate(final_w, include_sharp=include_sharp)
 
-    # Save gate: same as optimize_weights
+    # Save gate: same robust anti-gaming gate as optimize_weights
     baseline_winner_pct = baseline_val.get("winner_pct", 0)
     favorites_pct = final_val.get("favorites_pct", 0)
     best_winner_pct = final_val.get("winner_pct", 0)
-    save_ok = best_winner_pct > max(favorites_pct, baseline_winner_pct)
+    save_ok, save_reason, save_details = _passes_robust_save_gate(
+        baseline=baseline_val,
+        candidate=final_val,
+        n_validation_games=len(val_games),
+        baseline_all=baseline_all,
+        candidate_all=final_all,
+    )
 
     if callback:
         callback("--- CD Final ---")
@@ -1136,21 +1560,47 @@ def coordinate_descent(
         callback(f"  Valid:  Winner={best_winner_pct:.1f}% "
                  f"(was {baseline_winner_pct:.1f}%), "
                  f"Favorites={favorites_pct:.1f}%")
+        callback(f"  All:    Winner={final_all['winner_pct']:.1f}% "
+                 f"Loss={final_all['loss']:.3f}")
+        callback(
+            "  Save gate diagnostics: "
+            f"loss(val) {baseline_val.get('loss', 0.0):.3f}->{final_val.get('loss', 0.0):.3f}, "
+            f"loss(all) {baseline_all.get('loss', 0.0):.3f}->{final_all.get('loss', 0.0):.3f}, "
+            f"hybrid {float(save_details.get('baseline_hybrid_loss', baseline_val.get('loss', 0.0))):.3f}"
+            f"->{float(save_details.get('candidate_hybrid_loss', final_val.get('loss', 0.0))):.3f}, "
+            f"ROI {baseline_val.get('ml_roi', 0.0):+.2f}%->{final_val.get('ml_roi', 0.0):+.2f}% "
+            f"(lb95 {final_val.get('ml_roi_lb95', 0.0):+.2f}%), "
+            f"min ML payout {final_val.get('ml_min_payout', MIN_ML_PAYOUT):.2f}x, "
+            f"ROI gate {'ON' if bool(save_details.get('use_roi_gate', False)) else 'OFF'}, "
+            f"hybrid loss gate {'ON' if bool(save_details.get('use_hybrid_loss_gate', False)) else 'OFF'}, "
+            f"shrunk upset lift {float(save_details.get('shrunk_upset_lift', 0.0)):+.2f}pp"
+        )
 
-    if save and save_ok:
+    weight_delta = _max_weight_delta(w, final_w)
+    weight_change_ok = weight_delta >= min_weight_delta
+    save_details["weight_delta"] = weight_delta
+    save_details["min_weight_delta"] = min_weight_delta
+    save_details["weight_change_ok"] = weight_change_ok
+    did_save = False
+
+    if save and save_ok and weight_change_ok:
         save_weight_config(final_w)
         invalidate_weight_cache()
+        did_save = True
         if callback:
             callback(f"CD saved improved weights "
-                     f"({baseline_winner_pct:.1f}% -> {best_winner_pct:.1f}%)")
-    elif save:
-        reason = ""
-        if best_winner_pct <= favorites_pct:
-            reason = f" (winner {best_winner_pct:.1f}% <= favorites {favorites_pct:.1f}%)"
-        elif best_winner_pct <= baseline_winner_pct:
-            reason = f" (winner {best_winner_pct:.1f}% <= baseline {baseline_winner_pct:.1f}%)"
+                     f"({baseline_winner_pct:.1f}% -> {best_winner_pct:.1f}%, "
+                     f"dW={weight_delta:.6f})")
+    elif save and save_ok:
+        save_ok = False
+        save_reason = (f"no-op weight update (dW {weight_delta:.6f} "
+                       f"< {min_weight_delta:.6f})")
         if callback:
-            callback(f"CD: validation winner% did not improve{reason} "
+            callback(f"CD: validation save gate rejected: {save_reason} "
+                     f"- keeping current weights")
+    elif save:
+        if callback:
+            callback(f"CD: validation save gate rejected: {save_reason} "
                      f"- keeping current weights")
 
     return {
@@ -1158,11 +1608,15 @@ def coordinate_descent(
         "history": history,
         "changes": all_changes,
         "rounds": len(history),
-        "improved": save_ok,
+        "improved": did_save,
+        "save_gate_reason": save_reason,
+        "save_gate_details": save_details,
         "initial_winner_pct": baseline_winner_pct,
         "final_winner_pct": best_winner_pct,
         "initial_loss": baseline_val["loss"],
         "final_loss": final_val["loss"],
+        "initial_all_loss": baseline_all["loss"],
+        "final_all_loss": final_all["loss"],
         "favorites_pct": favorites_pct,
         **final_val,
     }
