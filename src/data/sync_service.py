@@ -107,12 +107,13 @@ def nuke_synced_data(callback: Optional[Callable] = None):
         "team_tuning", "model_weights", "team_weight_overrides",
         "predictions",
     ]
-    for table in tables:
-        try:
+    db.execute("PRAGMA foreign_keys=OFF")
+    try:
+        for table in tables:
             db.execute(f"DELETE FROM {table}")
             emit(f"  Cleared table: {table}")
-        except Exception as e:
-            emit(f"  Skipped table {table}: {e}")
+    finally:
+        db.execute("PRAGMA foreign_keys=ON")
 
     # 2. Delete disk caches (precompute cache preserved — incremental & independent)
     cache_paths = [
