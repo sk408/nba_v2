@@ -1273,6 +1273,15 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
         callback("Building historical roster & injury context...")
     ctx = _build_precompute_context(all_games)
 
+    # Pre-load memory store so player_splits() / _get_team_metrics() use
+    # pandas DataFrames instead of per-player DB queries.
+    from src.analytics.memory_store import InMemoryDataStore
+    _store = InMemoryDataStore()
+    if not _store.is_loaded:
+        if callback:
+            callback("Loading memory store for fast lookups...")
+        _store.load()
+
     cfg = get_config()
     max_workers = cfg.get("worker_threads", 4)
     _pc_lock = threading.Lock()
