@@ -522,11 +522,13 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
                                      as_of_date=as_of_date,
                                      injured_players=injured_players)
 
+    # Season for this game (needed before HCA + team metrics)
+    game_season = _game_date_to_season(game_date)
+
     # Home court advantage
-    home_court = get_home_court_advantage(home_team_id)
+    home_court = get_home_court_advantage(home_team_id, season=game_season)
 
     # Team metrics
-    game_season = _game_date_to_season(game_date)
     hm = _get_team_metrics(home_team_id, season=game_season)
     am = _get_team_metrics(away_team_id, season=game_season)
 
@@ -654,10 +656,10 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
 
     _home_travel = compute_travel(home_team_id, game_date, away_team_id, is_home=True)
     _away_travel = compute_travel(away_team_id, game_date, home_team_id, is_home=False)
-    _home_momentum = compute_momentum(home_team_id, game_date)
-    _away_momentum = compute_momentum(away_team_id, game_date)
-    _home_sched = compute_schedule_spots(home_team_id, game_date, away_team_id)
-    _away_sched = compute_schedule_spots(away_team_id, game_date, home_team_id)
+    _home_momentum = compute_momentum(home_team_id, game_date, season=game_season)
+    _away_momentum = compute_momentum(away_team_id, game_date, season=game_season)
+    _home_sched = compute_schedule_spots(home_team_id, game_date, away_team_id, season=game_season)
+    _away_sched = compute_schedule_spots(away_team_id, game_date, home_team_id, season=game_season)
 
     # On/Off impact
     _home_onoff = 0.0
@@ -795,8 +797,8 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
         # Pace diff
         pace_diff=abs(home_pace - away_pace),
         # 3PT luck
-        home_fg3_luck=compute_fg3_luck(home_team_id, game_date),
-        away_fg3_luck=compute_fg3_luck(away_team_id, game_date),
+        home_fg3_luck=compute_fg3_luck(home_team_id, game_date, season=game_season),
+        away_fg3_luck=compute_fg3_luck(away_team_id, game_date, season=game_season),
         # Process stats
         home_process=h_process,
         away_process=a_process,

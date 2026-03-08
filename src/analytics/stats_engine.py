@@ -34,8 +34,8 @@ _team_abbr_cache: Optional[Dict[int, str]] = None
 _team_name_cache: Optional[Dict[int, str]] = None
 _team_cache_lock = threading.Lock()
 
-# home court advantage cache: team_id → float
-_hca_cache: Dict[int, float] = {}
+# home court advantage cache: (team_id, season) → float
+_hca_cache: Dict[tuple, float] = {}
 _hca_cache_lock = threading.Lock()
 
 
