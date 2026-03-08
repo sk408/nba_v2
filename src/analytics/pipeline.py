@@ -145,8 +145,8 @@ def run_data_sync(callback=None, is_cancelled=None) -> Dict:
     """Step 2: Full data sync (teams, players, stats, odds, injuries)."""
     from src.data.sync_service import full_sync
 
-    result = full_sync(force=False, callback=callback)
-    return {"sync_result": result}
+    failures = full_sync(force=False, callback=callback)
+    return {"sync_result": "complete" if not failures else "partial", "sync_failures": failures}
 
 
 def run_seed_arenas(callback=None, is_cancelled=None) -> Dict:

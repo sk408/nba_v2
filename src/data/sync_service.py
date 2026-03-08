@@ -3,7 +3,7 @@
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional
 
 from src.database import db
 from src.config import get_season
@@ -712,11 +712,15 @@ def sync_historical_seasons(callback: Optional[Callable] = None, force: bool = F
             callback(f"Historical season {hist_season} sync complete")
 
 
-def full_sync(callback: Optional[Callable] = None, force: bool = False):
+def full_sync(callback: Optional[Callable] = None, force: bool = False) -> Dict[str, str]:
     """Full 8-step data sync.
 
     Args:
         force: If True, bypass all freshness checks and re-fetch everything.
+
+    Returns:
+        Dict of step label -> error message for any steps that failed.
+        Empty dict means all steps succeeded.
     """
     if force:
         if callback:
@@ -733,6 +737,7 @@ def full_sync(callback: Optional[Callable] = None, force: bool = False):
         ("7/8 Player impact", sync_player_impact),
         ("8/8 Vegas odds", sync_historical_odds),
     ]
+    failures: Dict[str, str] = {}
     for label, func in steps:
         if callback:
             callback(f"=== {label} ===")
@@ -742,5 +747,11 @@ def full_sync(callback: Optional[Callable] = None, force: bool = False):
             logger.error(f"Error in {label}: {e}")
             if callback:
                 callback(f"ERROR in {label}: {e}")
+            failures[label] = str(e)
+
     if callback:
-        callback("Full data sync complete!")
+        if failures:
+            callback(f"Data sync finished with {len(failures)} error(s)")
+        else:
+            callback("Full data sync complete!")
+    return failures
