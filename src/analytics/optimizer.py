@@ -260,11 +260,16 @@ class VectorizedGames:
         from src.config import get as get_setting
         self._upset_bonus_mult = float(get_setting("upset_bonus_mult", 0.5))
 
-    def evaluate(self, w: WeightConfig, include_sharp: bool = False) -> Dict[str, float]:
+    def evaluate(self, w: WeightConfig, include_sharp: bool = False,
+                 fast: bool = False) -> Dict[str, float]:
         """Vectorized evaluation. Returns metrics dict including loss.
 
         Formula mirrors predict() in prediction.py exactly, but operates on
         entire arrays at once for speed during optimization.
+
+        When ``fast=True``, skip diagnostics not used by the loss function
+        (ML ROI, spread MAE, favorites_pct, total score).  This is ~30%
+        faster and intended for inner-loop Optuna trials.
         """
         # 1. Defensive adjustment (dampened)
         away_def_f = 1.0 + (self.away_def_factor_raw - 1.0) * w.def_factor_dampening
@@ -351,22 +356,23 @@ class VectorizedGames:
         game_score += self._process_total_edge * w.process_edge_mult
 
         # ──────────────────────────────────────────────────────────
-        # TOTAL (projected combined score — diagnostic)
+        # TOTAL (projected combined score — diagnostic, skip in fast mode)
         # ──────────────────────────────────────────────────────────
-        total = home_base + away_base
-        # Defensive disruption total adjustment
-        total -= (np.maximum(0, self.combined_steals - w.steals_threshold) * w.steals_penalty +
-                  np.maximum(0, self.combined_blocks - w.blocks_threshold) * w.blocks_penalty)
-        # Hustle deflection total adjustment
-        defl_over = np.maximum(0, self.combined_deflections - w.hustle_defl_baseline)
-        total -= defl_over * w.hustle_defl_penalty
-        # Fatigue total
-        total -= (home_fat + away_fat) * w.fatigue_total_mult
-        # V2.1 total adjustments
-        total += self.pace_diff * w.pace_mismatch_mult
-        total += self._ref_fouls_centered * w.ref_fouls_mult
-        # Clamp total
-        total = np.clip(total, w.total_min, w.total_max)
+        if not fast:
+            total = home_base + away_base
+            # Defensive disruption total adjustment
+            total -= (np.maximum(0, self.combined_steals - w.steals_threshold) * w.steals_penalty +
+                      np.maximum(0, self.combined_blocks - w.blocks_threshold) * w.blocks_penalty)
+            # Hustle deflection total adjustment
+            defl_over = np.maximum(0, self.combined_deflections - w.hustle_defl_baseline)
+            total -= defl_over * w.hustle_defl_penalty
+            # Fatigue total
+            total -= (home_fat + away_fat) * w.fatigue_total_mult
+            # V2.1 total adjustments
+            total += self.pace_diff * w.pace_mismatch_mult
+            total += self._ref_fouls_centered * w.ref_fouls_mult
+            # Clamp total
+            total = np.clip(total, w.total_min, w.total_max)
 
         # ──────────────────────────────────────────────────────────
         # METRICS
@@ -384,19 +390,23 @@ class VectorizedGames:
                     | (actual_push & (np.abs(game_score) <= 3.0)))
         winner_pct = float(np.mean(correct)) * 100.0
 
-        # Favorites baseline — how often does the Vegas favorite win?
+        # Vegas favorite direction (needed by both favorites_pct and upset detection)
         vegas_fav_home = self.vegas_spread < 0  # negative spread = home favored
-        actual_fav_won = ((vegas_fav_home & actual_home_win)
-                          | (~vegas_fav_home & actual_away_win))
-        non_push = ~actual_push
-        n_non_push = int(np.sum(non_push))
-        favorites_pct = (float(np.sum(actual_fav_won & non_push))
-                         / max(1, n_non_push) * 100.0)
+
+        # Favorites baseline — how often does the Vegas favorite win?
+        if not fast:
+            actual_fav_won = ((vegas_fav_home & actual_home_win)
+                              | (~vegas_fav_home & actual_away_win))
+            non_push = ~actual_push
+            n_non_push = int(np.sum(non_push))
+            favorites_pct = (float(np.sum(actual_fav_won & non_push))
+                             / max(1, n_non_push) * 100.0)
+        else:
+            favorites_pct = 0.0
 
         # Upset detection
         # Model picks home when game_score > 0, away when game_score < 0
         model_picks_home = game_score > 0
-        # Vegas favorite is home when spread < 0
         # Upset = model disagrees with Vegas on who wins
         model_picks_upset = model_picks_home != vegas_fav_home
         upset_correct = (model_picks_upset
@@ -407,46 +417,48 @@ class VectorizedGames:
         upset_accuracy = float(np.sum(upset_correct)) / max(1, upset_count) * 100.0
         upset_correct_count = int(np.sum(upset_correct))
 
-        # ML ROI (diagnostic only — not in loss function)
-        ml_mask = (self.vegas_home_ml != 0) & (self.vegas_away_ml != 0)
+        # ML ROI (diagnostic only — not in loss function, skip in fast mode)
         ml_roi = -4.54
         ml_win_rate = winner_pct
-        if np.any(ml_mask):
-            h_ml = self.vegas_home_ml[ml_mask]
-            a_ml = self.vegas_away_ml[ml_mask]
-            p_score_ml = game_score[ml_mask]
-            a_spread_ml = self.actual_spread[ml_mask]
+        spread_mae = 0.0
+        if not fast:
+            ml_mask = (self.vegas_home_ml != 0) & (self.vegas_away_ml != 0)
+            if np.any(ml_mask):
+                h_ml = self.vegas_home_ml[ml_mask]
+                a_ml = self.vegas_away_ml[ml_mask]
+                p_score_ml = game_score[ml_mask]
+                a_spread_ml = self.actual_spread[ml_mask]
 
-            pick_home_ml = p_score_ml > 0
-            actual_home_win_ml = a_spread_ml > 0
+                pick_home_ml = p_score_ml > 0
+                actual_home_win_ml = a_spread_ml > 0
 
-            # ML payout multipliers
-            h_mult = np.where(h_ml < 0,
-                              1.0 + 100.0 / np.maximum(np.abs(h_ml), 1),
-                              1.0 + h_ml / 100.0)
-            a_mult = np.where(a_ml < 0,
-                              1.0 + 100.0 / np.maximum(np.abs(a_ml), 1),
-                              1.0 + a_ml / 100.0)
+                # ML payout multipliers
+                h_mult = np.where(h_ml < 0,
+                                  1.0 + 100.0 / np.maximum(np.abs(h_ml), 1),
+                                  1.0 + h_ml / 100.0)
+                a_mult = np.where(a_ml < 0,
+                                  1.0 + 100.0 / np.maximum(np.abs(a_ml), 1),
+                                  1.0 + a_ml / 100.0)
 
-            picked_mult = np.where(pick_home_ml, h_mult, a_mult)
-            payout_ok = picked_mult >= MIN_ML_PAYOUT
+                picked_mult = np.where(pick_home_ml, h_mult, a_mult)
+                payout_ok = picked_mult >= MIN_ML_PAYOUT
 
-            # Profit calculation
-            h_profit = np.where(pick_home_ml & actual_home_win_ml, h_mult - 1.0,
-                       np.where(pick_home_ml & ~actual_home_win_ml, -1.0, 0.0))
-            a_profit = np.where(~pick_home_ml & ~actual_home_win_ml, a_mult - 1.0,
-                       np.where(~pick_home_ml & actual_home_win_ml, -1.0, 0.0))
-            total_profit = h_profit + a_profit
+                # Profit calculation
+                h_profit = np.where(pick_home_ml & actual_home_win_ml, h_mult - 1.0,
+                           np.where(pick_home_ml & ~actual_home_win_ml, -1.0, 0.0))
+                a_profit = np.where(~pick_home_ml & ~actual_home_win_ml, a_mult - 1.0,
+                           np.where(~pick_home_ml & actual_home_win_ml, -1.0, 0.0))
+                total_profit = h_profit + a_profit
 
-            if np.any(payout_ok):
-                bettable_correct = (((pick_home_ml & actual_home_win_ml)
-                                     | (~pick_home_ml & ~actual_home_win_ml))
-                                    & payout_ok)
-                ml_win_rate = float(np.sum(bettable_correct)) / float(np.sum(payout_ok)) * 100.0
-                ml_roi = float(np.mean(total_profit[payout_ok])) * 100.0
+                if np.any(payout_ok):
+                    bettable_correct = (((pick_home_ml & actual_home_win_ml)
+                                         | (~pick_home_ml & ~actual_home_win_ml))
+                                        & payout_ok)
+                    ml_win_rate = float(np.sum(bettable_correct)) / float(np.sum(payout_ok)) * 100.0
+                    ml_roi = float(np.mean(total_profit[payout_ok])) * 100.0
 
-        # Spread MAE (diagnostic)
-        spread_mae = float(np.mean(np.abs(game_score - self.actual_spread)))
+            # Spread MAE (diagnostic)
+            spread_mae = float(np.mean(np.abs(game_score - self.actual_spread)))
 
         # Compression ratio
         pred_std = float(np.std(game_score))
@@ -543,7 +555,7 @@ def optimize_weights(
                 params[key] = trial.suggest_float(key, lo, hi)
 
             w = WeightConfig.from_dict({**baseline_w.to_dict(), **params})
-            result = vg_train.evaluate(w, include_sharp=include_sharp)
+            result = vg_train.evaluate(w, include_sharp=include_sharp, fast=True)
             trial.set_user_attr("result", result)
             return result["loss"]
 
@@ -618,6 +630,8 @@ def optimize_weights(
         _best_logged_loss = best_train_loss
         _stagnation_counter = [0]
         _stagnation_threshold = int(get_setting("optuna_stagnation_threshold", 500))
+        _early_stop_trials = int(get_setting("optuna_early_stop_trials", 2000))
+        _min_trials_before_stop = int(get_setting("optuna_min_trials_before_stop", 500))
 
         # Track best weights for checkpoint saving
         _checkpoint_best_loss = [best_train_loss]
@@ -656,12 +670,18 @@ def optimize_weights(
             else:
                 _stagnation_counter[0] += 1
 
-            # Stagnation warning
-            if (_stagnation_counter[0] > 0
-                    and _stagnation_counter[0] % _stagnation_threshold == 0
-                    and callback):
-                callback(f"  Stagnation: {_stagnation_counter[0]} trials "
-                         f"without improvement (best loss={_best_logged_loss:.3f})")
+            # Stagnation: warn at threshold intervals, early-stop at multiplied threshold
+            if _stagnation_counter[0] > 0 and _stagnation_counter[0] % _stagnation_threshold == 0:
+                if callback:
+                    callback(f"  Stagnation: {_stagnation_counter[0]} trials "
+                             f"without improvement (best loss={_best_logged_loss:.3f})")
+                # Early stop after extended stagnation (once enough trials have run)
+                if (_stagnation_counter[0] >= _early_stop_trials
+                        and trial.number >= _min_trials_before_stop):
+                    if callback:
+                        callback(f"  Early stopping: {_stagnation_counter[0]} trials "
+                                 f"without improvement after {trial.number} total trials")
+                    study.stop()
 
             if trial.number % log_interval == 0 or is_new_best:
                 if callback:
@@ -722,6 +742,7 @@ def optimize_weights(
 
         if candidates and candidates[0].value < best_train_loss:
             best_val_loss = float("inf")
+            chosen_rank = 0
             if callback:
                 callback(f"Validating top {len(candidates)} training trials...")
 
@@ -746,15 +767,12 @@ def optimize_weights(
                     best_train_result = trial.user_attrs.get(
                         "result",
                         vg_train.evaluate(cand_w, include_sharp=include_sharp))
+                    chosen_rank = rank
 
-            if callback:
-                chosen_rank = next(
-                    i for i, t in enumerate(candidates)
-                    if t.value == best_train_loss)
-                if chosen_rank > 0:
-                    callback(
-                        f"Selected trial #{chosen_rank + 1} "
-                        f"(not #1) -- better validation performance")
+            if callback and chosen_rank > 0:
+                callback(
+                    f"Selected trial #{chosen_rank + 1} "
+                    f"(not #1) -- better validation performance")
 
     except ImportError:
         if callback:
@@ -768,7 +786,7 @@ def optimize_weights(
             for key, (lo, hi) in ranges.items():
                 params[key] = random.uniform(lo, hi)
             w = WeightConfig.from_dict({**baseline_w.to_dict(), **params})
-            result = vg_train.evaluate(w, include_sharp=include_sharp)
+            result = vg_train.evaluate(w, include_sharp=include_sharp, fast=True)
             if result["loss"] < best_train_loss:
                 best_w = w
                 best_train_loss = result["loss"]
@@ -1038,7 +1056,7 @@ def coordinate_descent(
             for val in grid:
                 test_dict = {**w_dict, param_name: float(val)}
                 test_w = WeightConfig.from_dict(test_dict)
-                result = vg_train.evaluate(test_w, include_sharp=include_sharp)
+                result = vg_train.evaluate(test_w, include_sharp=include_sharp, fast=True)
                 if result["loss"] < best_param_loss:
                     best_param_loss = result["loss"]
                     best_param_val = float(val)
