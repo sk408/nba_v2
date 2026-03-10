@@ -19,6 +19,24 @@ _HEADERS = {
 from src.utils.team_mapper import normalize_espn_abbr, normalize_action_abbr
 
 
+def _extract_total_record(competitor: Dict[str, Any]) -> str:
+    """Return overall team record from ESPN competitor record list."""
+    records = competitor.get("records", [])
+    if not isinstance(records, list):
+        return ""
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("type") == "total":
+            return str(rec.get("summary", "") or rec.get("displayValue", "")).strip()
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("name", "")).lower() == "overall":
+            return str(rec.get("summary", "") or rec.get("displayValue", "")).strip()
+    return ""
+
+
 def fetch_espn_scoreboard() -> List[Dict[str, Any]]:
     """Fetch today's ESPN scoreboard with retry on transient errors."""
     import time as _time
@@ -47,6 +65,8 @@ def fetch_espn_scoreboard() -> List[Dict[str, Any]]:
                     "away_team": normalize_espn_abbr(away.get("team", {}).get("abbreviation", "")),
                     "home_team_id": home.get("team", {}).get("id", ""),
                     "away_team_id": away.get("team", {}).get("id", ""),
+                    "home_record": _extract_total_record(home),
+                    "away_record": _extract_total_record(away),
                     "home_score": int(home.get("score", 0) or 0),
                     "away_score": int(away.get("score", 0) or 0),
                 })

@@ -18,8 +18,8 @@ class ScoreboardWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(160)
-        self.setMaximumHeight(200)
+        self.setMinimumHeight(184)
+        self.setMaximumHeight(228)
 
         # State
         self._away_abbr = ""
@@ -40,6 +40,12 @@ class ScoreboardWidget(QWidget):
         self._home_bonus = False
         self._away_fouls = 0
         self._home_fouls = 0
+        self._away_record = ""
+        self._home_record = ""
+        self._away_streak = ""
+        self._home_streak = ""
+        self._away_last_game_days: Optional[int] = None
+        self._home_last_game_days: Optional[int] = None
 
         self._timeout_seconds = 0
         self._timeout_timer = QTimer(self)
@@ -284,7 +290,11 @@ class ScoreboardWidget(QWidget):
                     clock: str = "", period: int = 0,
                     away_timeouts: int = -1, home_timeouts: int = -1,
                     away_bonus: bool = False, home_bonus: bool = False,
-                    away_fouls: int = 0, home_fouls: int = 0):
+                    away_fouls: int = 0, home_fouls: int = 0,
+                    away_record: str = "", home_record: str = "",
+                    away_streak: str = "", home_streak: str = "",
+                    away_last_game_days: Optional[int] = None,
+                    home_last_game_days: Optional[int] = None):
         """Set scoreboard data and trigger repaint. Triggers animations on score change."""
         if self._away_score > 0 and away_score > self._away_score:
             self._anim_away.start()
@@ -314,6 +324,12 @@ class ScoreboardWidget(QWidget):
         self._home_bonus = home_bonus
         self._away_fouls = away_fouls
         self._home_fouls = home_fouls
+        self._away_record = away_record or ""
+        self._home_record = home_record or ""
+        self._away_streak = away_streak or ""
+        self._home_streak = home_streak or ""
+        self._away_last_game_days = away_last_game_days
+        self._home_last_game_days = home_last_game_days
         self.update()
 
     def paintEvent(self, event):
@@ -415,23 +431,28 @@ class ScoreboardWidget(QWidget):
             painter.setPen(color)
             painter.drawText(int(x), int(y), text)
 
+        p.setFont(name_font)
         fm_name = p.fontMetrics()
+        p.setFont(tiny_font)
+        fm_tiny = p.fontMetrics()
 
         # Away abbreviation
-        p.setFont(name_font)
         away_name_w = fm_name.horizontalAdvance(self._away_abbr)
         away_name_x = (mid_x - 300 - logo_size / 2) - away_name_w / 2
-        draw_text_with_shadow(p, away_name_x, h - 30, self._away_abbr, name_font, QColor("#e2e8f0"))
-
-        # Away Bonus, Timeouts, and Fouls
-        if self._away_bonus:
-            draw_text_with_shadow(p, (mid_x - 300 - logo_size / 2) - 15, h - 10, "BONUS", tiny_font, QColor("#fbbf24"))
+        draw_text_with_shadow(p, away_name_x, h - 42, self._away_abbr, name_font, QColor("#e2e8f0"))
+        away_meta = self._compose_team_meta(
+            self._away_record, self._away_streak, self._away_last_game_days
+        )
+        if away_meta:
+            away_meta_w = fm_tiny.horizontalAdvance(away_meta)
+            away_meta_x = (mid_x - 300 - logo_size / 2) - away_meta_w / 2
+            draw_text_with_shadow(p, away_meta_x, h - 28, away_meta, tiny_font, QColor("#cbd5e1"))
 
         if self._away_timeouts >= 0:
             to_start_x = (mid_x - 300 - logo_size / 2) - (7 * 8) / 2
             for t in range(7):
                 to_x = to_start_x + (t * 8)
-                to_y = h - 20
+                to_y = h - 18
                 if t < self._away_timeouts:
                     p.fillRect(int(to_x), int(to_y), 5, 2, QColor("#ffffff"))
                 else:
@@ -455,20 +476,22 @@ class ScoreboardWidget(QWidget):
             p.drawPixmap(int(lx), int(ly), home_logo)
 
         # Home abbreviation
-        p.setFont(name_font)
         home_name_w = fm_name.horizontalAdvance(self._home_abbr)
         home_name_x = (mid_x + 300 + logo_size / 2) - home_name_w / 2
-        draw_text_with_shadow(p, home_name_x, h - 30, self._home_abbr, name_font, QColor("#e2e8f0"))
-
-        # Home Bonus and Timeouts
-        if self._home_bonus:
-            draw_text_with_shadow(p, (mid_x + 300 + logo_size / 2) - 15, h - 10, "BONUS", tiny_font, QColor("#fbbf24"))
+        draw_text_with_shadow(p, home_name_x, h - 42, self._home_abbr, name_font, QColor("#e2e8f0"))
+        home_meta = self._compose_team_meta(
+            self._home_record, self._home_streak, self._home_last_game_days
+        )
+        if home_meta:
+            home_meta_w = fm_tiny.horizontalAdvance(home_meta)
+            home_meta_x = (mid_x + 300 + logo_size / 2) - home_meta_w / 2
+            draw_text_with_shadow(p, home_meta_x, h - 28, home_meta, tiny_font, QColor("#cbd5e1"))
 
         if self._home_timeouts >= 0:
             to_start_x = (mid_x + 300 + logo_size / 2) - (7 * 8) / 2
             for t in range(7):
                 to_x = to_start_x + (t * 8)
-                to_y = h - 20
+                to_y = h - 18
                 if t < self._home_timeouts:
                     p.fillRect(int(to_x), int(to_y), 5, 2, QColor("#ffffff"))
                 else:
@@ -486,9 +509,52 @@ class ScoreboardWidget(QWidget):
         bg_rect = QRectF(q_start_x - 10, q_y - 12, max_quarters * 32 + 50, 40)
         p.fillRect(bg_rect, QColor(0, 0, 0, 150))
 
-        # Fouls next to quarters
-        draw_text_with_shadow(p, q_start_x - 55, q_y + 14, f"FOULS: {self._away_fouls}", tiny_font, QColor("#94a3b8"))
-        draw_text_with_shadow(p, q_start_x + max_quarters * 32 + 45, q_y + 14, f"FOULS: {self._home_fouls}", tiny_font, QColor("#94a3b8"))
+        # Fouls/bonus indicators outside quarter grid
+        away_foul_text = f"FOULS: {self._away_fouls}"
+        home_foul_text = f"FOULS: {self._home_fouls}"
+        away_foul_x = q_start_x - 150
+        home_foul_x = q_start_x + max_quarters * 32 + 80
+        foul_y = q_y + 14
+        bonus_y = q_y + 26
+
+        def clamp_text_x(x: float, text: str) -> float:
+            tw = fm_tiny.horizontalAdvance(text)
+            return max(8.0, min(x, w - tw - 8.0))
+
+        draw_text_with_shadow(
+            p,
+            clamp_text_x(away_foul_x, away_foul_text),
+            foul_y,
+            away_foul_text,
+            tiny_font,
+            QColor("#94a3b8"),
+        )
+        draw_text_with_shadow(
+            p,
+            clamp_text_x(home_foul_x, home_foul_text),
+            foul_y,
+            home_foul_text,
+            tiny_font,
+            QColor("#94a3b8"),
+        )
+        if self._away_bonus:
+            draw_text_with_shadow(
+                p,
+                clamp_text_x(away_foul_x, "BONUS"),
+                bonus_y,
+                "BONUS",
+                tiny_font,
+                QColor("#fbbf24"),
+            )
+        if self._home_bonus:
+            draw_text_with_shadow(
+                p,
+                clamp_text_x(home_foul_x, "BONUS"),
+                bonus_y,
+                "BONUS",
+                tiny_font,
+                QColor("#fbbf24"),
+            )
 
         # Quarter headers
         for qi in range(max_quarters):
@@ -577,6 +643,16 @@ class ScoreboardWidget(QWidget):
             draw_text_with_shadow(p, mid_x - 15, h/2 + 25, "<<", small_font, QColor("#64748b"))
 
         p.end()
+
+    def _compose_team_meta(self, record: str, streak: str, rest_days: Optional[int]) -> str:
+        bits: List[str] = []
+        if record:
+            bits.append(str(record))
+        if streak:
+            bits.append(str(streak).upper())
+        if isinstance(rest_days, int) and rest_days >= 0:
+            bits.append(f"{rest_days}D REST")
+        return " | ".join(bits)
 
     def _get_logo(self, team_id: Optional[int], abbr: str, size: int) -> Optional[QPixmap]:
         """Get team logo or fallback to placeholder."""

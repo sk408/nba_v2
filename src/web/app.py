@@ -17,7 +17,7 @@ import signal
 import threading
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from flask import Flask, render_template, jsonify, request
 
@@ -89,8 +89,70 @@ def _get_todays_games() -> List[Dict[str, Any]]:
     return predictions
 
 
+def _format_starters_out(starters_out: List[Dict[str, Any]]) -> List[str]:
+    """Format starters-out entries for compact UI display."""
+    formatted: List[str] = []
+    for entry in starters_out or []:
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        status = str(entry.get("status") or "").strip()
+        if status and status.lower() != "out":
+            formatted.append(f"{name} ({status})")
+        else:
+            formatted.append(name)
+    return formatted
+
+
+def _build_matchup_team_context(
+    home_id: int,
+    away_id: int,
+    game_date: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Build per-team context used by matchup views."""
+    from src.analytics.team_context import get_team_display_context
+
+    return {
+        "home": get_team_display_context(
+            home_id, game_date=game_date, include_starters_out=True
+        ),
+        "away": get_team_display_context(
+            away_id, game_date=game_date, include_starters_out=True
+        ),
+    }
+
+
+def _attach_team_context(
+    pred_dict: Dict[str, Any],
+    team_context: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Attach display context fields to prediction dict."""
+    if not team_context:
+        return pred_dict
+
+    home_ctx = team_context.get("home", {})
+    away_ctx = team_context.get("away", {})
+
+    pred_dict.update({
+        "home_record": home_ctx.get("record", ""),
+        "away_record": away_ctx.get("record", ""),
+        "home_streak": home_ctx.get("streak", ""),
+        "away_streak": away_ctx.get("streak", ""),
+        "home_days_since_last_game": home_ctx.get("days_since_last_game"),
+        "away_days_since_last_game": away_ctx.get("days_since_last_game"),
+        "home_last_game_text": home_ctx.get("last_game_text", ""),
+        "away_last_game_text": away_ctx.get("last_game_text", ""),
+        "home_last_game_short": home_ctx.get("last_game_short", ""),
+        "away_last_game_short": away_ctx.get("last_game_short", ""),
+        "home_starters_out": _format_starters_out(home_ctx.get("starters_out", [])),
+        "away_starters_out": _format_starters_out(away_ctx.get("starters_out", [])),
+    })
+    return pred_dict
+
+
 def _run_prediction(home_id: int, away_id: int, game_date: str,
-                    include_sharp: bool = False) -> Dict[str, Any]:
+                    include_sharp: bool = False,
+                    team_context: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Run a single prediction and return as dict."""
     from src.analytics.prediction import predict_matchup
     from src.analytics.stats_engine import get_team_names
@@ -100,7 +162,7 @@ def _run_prediction(home_id: int, away_id: int, game_date: str,
     name_map = get_team_names()
     pred_dict["home_name"] = name_map.get(home_id, pred_dict.get("home_team", ""))
     pred_dict["away_name"] = name_map.get(away_id, pred_dict.get("away_team", ""))
-    return pred_dict
+    return _attach_team_context(pred_dict, team_context=team_context)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -196,8 +258,17 @@ def matchup_by_abbr(home_abbr, away_abbr, date):
                 f"DB has {len(found)} teams: {', '.join(found[:10])}..."
             )
 
-        fund_pred = _run_prediction(home_id, away_id, date, include_sharp=False)
-        sharp_pred = _run_prediction(home_id, away_id, date, include_sharp=True)
+        team_context = {}
+        try:
+            team_context = _build_matchup_team_context(home_id, away_id, date)
+        except Exception as ctx_err:
+            logger.debug("Matchup team context unavailable: %s", ctx_err)
+        fund_pred = _run_prediction(
+            home_id, away_id, date, include_sharp=False, team_context=team_context
+        )
+        sharp_pred = _run_prediction(
+            home_id, away_id, date, include_sharp=True, team_context=team_context
+        )
     except Exception as e:
         logger.error("Matchup by abbr error: %s", e, exc_info=True)
         error = str(e)
@@ -231,8 +302,17 @@ def matchup_detail(home_id, away_id, date):
     sharp_pred = None
 
     try:
-        fund_pred = _run_prediction(home_id, away_id, date, include_sharp=False)
-        sharp_pred = _run_prediction(home_id, away_id, date, include_sharp=True)
+        team_context = {}
+        try:
+            team_context = _build_matchup_team_context(home_id, away_id, date)
+        except Exception as ctx_err:
+            logger.debug("Matchup team context unavailable: %s", ctx_err)
+        fund_pred = _run_prediction(
+            home_id, away_id, date, include_sharp=False, team_context=team_context
+        )
+        sharp_pred = _run_prediction(
+            home_id, away_id, date, include_sharp=True, team_context=team_context
+        )
     except Exception as e:
         logger.error("Matchup detail error: %s", e, exc_info=True)
         error = str(e)
@@ -416,6 +496,33 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
                     return href
         return team_obj.get("logo", "") or ""
 
+    def _extract_total_record(competitor_obj):
+        records = competitor_obj.get("record") or competitor_obj.get("records") or []
+        if not isinstance(records, list):
+            return ""
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("type") == "total":
+                return str(rec.get("summary", "") or rec.get("displayValue", "")).strip()
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            if str(rec.get("name", "")).lower() == "overall":
+                return str(rec.get("summary", "") or rec.get("displayValue", "")).strip()
+        return ""
+
+    def _is_team_in_bonus(competitor_obj):
+        fouls = competitor_obj.get("fouls", {})
+        if isinstance(fouls, dict):
+            bonus_state = str(fouls.get("bonusState", "")).strip().lower()
+            if bonus_state and ("bonus" in bonus_state or "double" in bonus_state):
+                return True
+            if _as_int(fouls.get("foulsToGive"), 1) <= 0:
+                return True
+        lines = competitor_obj.get("linescores", [])
+        return bool(lines and isinstance(lines[-1], dict) and lines[-1].get("isBonus", False))
+
     result = {
         "game_id": game_id,
         "header": {"home": {}, "away": {}, "status": {}},
@@ -443,8 +550,31 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
     # ── Header ──
     header = summary.get("header", {})
     competitions = header.get("competitions", [{}])
+    game_date_for_context = datetime.now().strftime("%Y-%m-%d")
     if competitions:
         comp = competitions[0]
+        raw_comp_date = str(comp.get("date", "") or "")
+        if len(raw_comp_date) >= 10:
+            game_date_for_context = raw_comp_date[:10]
+
+        get_team_display_context = None
+        try:
+            from src.analytics.team_context import get_team_display_context
+        except Exception:
+            get_team_display_context = None
+
+        abbr_to_id = {}
+        try:
+            from src.analytics.stats_engine import get_team_abbreviations
+
+            abbr_map = get_team_abbreviations()
+            abbr_to_id = {
+                str(v).upper(): _as_int(k, 0)
+                for k, v in (abbr_map or {}).items()
+            }
+        except Exception:
+            abbr_to_id = {}
+
         status = comp.get("status", {})
         result["header"]["status"] = {
             "state": status.get("type", {}).get("state", ""),
@@ -458,13 +588,32 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
             if side not in ("home", "away"):
                 continue
             team = c.get("team", {})
+            team_abbr = normalize_abbr(team.get("abbreviation", ""))
             linescores = c.get("linescores", [])
-            bonus = bool(linescores[-1].get("isBonus", False)) if linescores else False
+            bonus = _is_team_in_bonus(c)
+            team_id_int = _as_int(abbr_to_id.get(str(team_abbr).upper(), 0), 0)
+            ctx = {}
+            if get_team_display_context and team_id_int:
+                try:
+                    ctx = get_team_display_context(
+                        team_id_int,
+                        game_date=game_date_for_context,
+                        include_starters_out=True,
+                    )
+                except Exception:
+                    ctx = {}
+            record = _extract_total_record(c) or ctx.get("record", "")
             result["header"][side] = {
-                "abbr": normalize_abbr(team.get("abbreviation", "")),
+                "abbr": team_abbr,
                 "name": team.get("displayName", ""),
                 "id": str(team.get("id", "") or ""),
+                "db_id": str(team_id_int or ""),
                 "logo": _extract_logo(team),
+                "record": record,
+                "streak": ctx.get("streak", ""),
+                "days_since_last_game": ctx.get("days_since_last_game"),
+                "last_game_text": ctx.get("last_game_text", ""),
+                "starters_out": ctx.get("starters_out", []),
                 "score": _as_int(c.get("score", 0), 0),
                 "timeouts_remaining": _as_int(c.get("timeoutsRemaining", -1), -1),
                 "bonus": bonus,

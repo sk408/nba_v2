@@ -28,6 +28,13 @@ PIPELINE_STATE_PATH = os.path.join(
 )
 
 
+def _fmt_step_seconds(seconds: float) -> str:
+    """Format step duration with enough precision for fast steps."""
+    if seconds < 1.0:
+        return f"{seconds:.3f}s"
+    return f"{seconds:.1f}s"
+
+
 class NumpyEncoder(json.JSONEncoder):
     """JSON encoder that handles numpy types gracefully."""
 
@@ -329,17 +336,17 @@ def run_pipeline(
                     is_cancelled=cancel_check,
                 )
                 step_elapsed = time.time() - step_start
-                step_timings[step_name] = round(step_elapsed, 1)
+                step_timings[step_name] = round(step_elapsed, 3)
 
                 # Store result (strip bulky per_game lists from state file)
                 results[step_name] = step_result
                 state[f"step_{step_name}"] = {
                     "status": "completed",
-                    "elapsed_seconds": round(step_elapsed, 1),
+                    "elapsed_seconds": round(step_elapsed, 3),
                     "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
 
-                emit(f"  {step_name} completed in {step_elapsed:.1f}s")
+                emit(f"  {step_name} completed in {_fmt_step_seconds(step_elapsed)}")
 
             except Exception as e:
                 step_elapsed = time.time() - step_start
@@ -350,7 +357,7 @@ def run_pipeline(
                 state[f"step_{step_name}"] = {
                     "status": "error",
                     "error": str(e),
-                    "elapsed_seconds": round(step_elapsed, 1),
+                    "elapsed_seconds": round(step_elapsed, 3),
                     "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
                 # Continue to next step even on failure

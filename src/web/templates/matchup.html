@@ -17,6 +17,19 @@
     <div class="matchup-team away-team">
         <span class="matchup-abbr">{{ fund.away_team }}</span>
         <span class="matchup-name">{{ fund.away_name }}</span>
+        <div class="matchup-meta">
+            <span class="matchup-chip">{{ fund.away_record or '—' }}</span>
+            <span class="matchup-chip">{{ fund.away_streak or 'EVEN' }}</span>
+            <span class="matchup-chip">{{ fund.away_last_game_short or 'Rest n/a' }}</span>
+        </div>
+        <div class="starters-out">
+            <span class="starters-out-label">Projected Starters Out</span>
+            {% if fund.away_starters_out %}
+            <span class="starters-out-value">{{ fund.away_starters_out|join(', ') }}</span>
+            {% else %}
+            <span class="starters-out-value none">None</span>
+            {% endif %}
+        </div>
     </div>
     <div class="matchup-vs">
         <span class="vs-at">@</span>
@@ -25,6 +38,19 @@
     <div class="matchup-team home-team">
         <span class="matchup-abbr">{{ fund.home_team }}</span>
         <span class="matchup-name">{{ fund.home_name }}</span>
+        <div class="matchup-meta">
+            <span class="matchup-chip">{{ fund.home_record or '—' }}</span>
+            <span class="matchup-chip">{{ fund.home_streak or 'EVEN' }}</span>
+            <span class="matchup-chip">{{ fund.home_last_game_short or 'Rest n/a' }}</span>
+        </div>
+        <div class="starters-out">
+            <span class="starters-out-label">Projected Starters Out</span>
+            {% if fund.home_starters_out %}
+            <span class="starters-out-value">{{ fund.home_starters_out|join(', ') }}</span>
+            {% else %}
+            <span class="starters-out-value none">None</span>
+            {% endif %}
+        </div>
     </div>
 </div>
 

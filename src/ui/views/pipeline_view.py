@@ -556,6 +556,8 @@ class PipelineView(QWidget):
 
     @staticmethod
     def _fmt_seconds(secs: float) -> str:
+        if secs < 1:
+            return f"{secs:.3f}s"
         if secs < 60:
             return f"{secs:.0f}s"
         m = int(secs // 60)

@@ -437,8 +437,9 @@ class GamecastView(QWidget):
         )
         table.setColumnWidth(0, 32)
         table.setColumnWidth(1, 120)
-        for col in range(2, 12):
+        for col in range(2, 11):
             table.setColumnWidth(col, 50)
+        table.setColumnWidth(11, 170)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.setAlternatingRowColors(True)
         table.verticalHeader().setVisible(False)
@@ -788,18 +789,16 @@ class GamecastView(QWidget):
         home_timeouts = home_comp.get("timeoutsRemaining", -1)
         away_timeouts = away_comp.get("timeoutsRemaining", -1)
 
-        home_bonus = (
-            home_comp.get("linescores", [{}])[-1].get("isBonus", False)
-            if home_comp.get("linescores") else False
-        )
-        away_bonus = (
-            away_comp.get("linescores", [{}])[-1].get("isBonus", False)
-            if away_comp.get("linescores") else False
-        )
+        home_bonus = self._is_team_in_bonus(home_comp)
+        away_bonus = self._is_team_in_bonus(away_comp)
 
-        # Calculate team fouls from box score
-        home_fouls = 0
-        away_fouls = 0
+        # Prefer ESPN competitor foul counts (current period where available).
+        home_fouls = self._extract_team_foul_count(home_comp)
+        away_fouls = self._extract_team_foul_count(away_comp)
+
+        # Fallback: calculate team fouls from box score if foul payload absent.
+        home_fouls_box = 0
+        away_fouls_box = 0
         box_players = (
             boxscore.get("players", []) if isinstance(boxscore, dict) else []
         )
@@ -822,17 +821,33 @@ class GamecastView(QWidget):
                         try:
                             f = int(stats[pf_index])
                             if side == "home":
-                                home_fouls += f
+                                home_fouls_box += f
                             else:
-                                away_fouls += f
+                                away_fouls_box += f
                         except ValueError:
                             pass
+        if home_fouls <= 0 and home_fouls_box > 0:
+            home_fouls = home_fouls_box
+        if away_fouls <= 0 and away_fouls_box > 0:
+            away_fouls = away_fouls_box
 
         status_detail = comp.get("status", {})
         status_text = status_detail.get("type", {}).get("description", "")
         status_state = status_detail.get("type", {}).get("state", "")
         period = int(status_detail.get("period", 0) or 0)
         clock_str = status_detail.get("displayClock", "0:00")
+        game_date = str(comp.get("date", "") or "")[:10]
+        if not game_date:
+            game_date = datetime.now().strftime("%Y-%m-%d")
+
+        home_record = self._extract_total_record(home_comp)
+        away_record = self._extract_total_record(away_comp)
+        home_streak = ""
+        away_streak = ""
+        home_last_game_days = None
+        away_last_game_days = None
+        home_starters_out = []
+        away_starters_out = []
 
         # Resolve NBA team IDs
         home_team_id = self._resolve_team_id(home_abbr)
@@ -841,6 +856,29 @@ class GamecastView(QWidget):
         self._away_team_id = away_team_id
         self._home_abbr = normalize_espn_abbr(home_abbr)
         self._away_abbr = normalize_espn_abbr(away_abbr)
+
+        try:
+            from src.analytics.team_context import get_team_display_context
+
+            if home_team_id:
+                home_ctx = get_team_display_context(
+                    home_team_id, game_date=game_date, include_starters_out=True
+                )
+                home_record = home_record or home_ctx.get("record", "")
+                home_streak = home_ctx.get("streak", "")
+                home_last_game_days = home_ctx.get("days_since_last_game")
+                home_starters_out = home_ctx.get("starters_out", []) or []
+
+            if away_team_id:
+                away_ctx = get_team_display_context(
+                    away_team_id, game_date=game_date, include_starters_out=True
+                )
+                away_record = away_record or away_ctx.get("record", "")
+                away_streak = away_ctx.get("streak", "")
+                away_last_game_days = away_ctx.get("days_since_last_game")
+                away_starters_out = away_ctx.get("starters_out", []) or []
+        except Exception as e:
+            logger.debug("Team context unavailable for gamecast scoreboard: %s", e)
 
         # Live indicator
         if status_state == "in":
@@ -871,6 +909,10 @@ class GamecastView(QWidget):
             away_timeouts=away_timeouts, home_timeouts=home_timeouts,
             away_bonus=away_bonus, home_bonus=home_bonus,
             away_fouls=away_fouls, home_fouls=home_fouls,
+            away_record=away_record, home_record=home_record,
+            away_streak=away_streak, home_streak=home_streak,
+            away_last_game_days=away_last_game_days,
+            home_last_game_days=home_last_game_days,
         )
 
         # Court
@@ -1091,9 +1133,9 @@ class GamecastView(QWidget):
         self.box_tabs.setTabText(0, normalize_espn_abbr(away_abbr))
         self.box_tabs.setTabText(1, normalize_espn_abbr(home_abbr))
         self._fill_box_table(boxscore, competitors, is_home=False,
-                             table=self._away_box)
+                             table=self._away_box, starters_out=away_starters_out)
         self._fill_box_table(boxscore, competitors, is_home=True,
-                             table=self._home_box)
+                             table=self._home_box, starters_out=home_starters_out)
 
         # Play feed
         self.play_feed.set_teams(
@@ -1121,6 +1163,72 @@ class GamecastView(QWidget):
             self.live_timer.start(60_000)
 
     # ──────────────────────── HELPERS ────────────────────────
+
+    def _extract_total_record(self, competitor: dict) -> str:
+        records = competitor.get("record") or competitor.get("records") or []
+        if not isinstance(records, list):
+            return ""
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("type") == "total":
+                return str(rec.get("summary", "") or rec.get("displayValue", "")).strip()
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            if str(rec.get("name", "")).lower() == "overall":
+                return str(rec.get("summary", "") or rec.get("displayValue", "")).strip()
+        return ""
+
+    @staticmethod
+    def _player_name_key(name: str) -> str:
+        return "".join(ch for ch in str(name or "").lower() if ch.isalnum())
+
+    @staticmethod
+    def _injury_status_message(entry: dict) -> str:
+        status = str((entry or {}).get("status", "")).strip() or "Out"
+        reason = str((entry or {}).get("reason", "")).strip()
+        expected = str((entry or {}).get("expected_return", "")).strip()
+        if reason:
+            return f"{status}: {reason}"
+        if expected:
+            return f"{status} ({expected})"
+        return status
+
+    @staticmethod
+    def _to_int(value, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _extract_team_foul_count(self, competitor: dict) -> int:
+        fouls = competitor.get("fouls", {})
+        if not isinstance(fouls, dict):
+            return 0
+        current = self._to_int(fouls.get("teamFoulsCurrent"), -1)
+        if current >= 0:
+            return current
+        total = self._to_int(fouls.get("teamFouls"), -1)
+        if total >= 0:
+            return total
+        return 0
+
+    def _is_team_in_bonus(self, competitor: dict) -> bool:
+        fouls = competitor.get("fouls", {})
+        if isinstance(fouls, dict):
+            bonus_state = str(fouls.get("bonusState", "")).strip().lower()
+            if bonus_state and (
+                "bonus" in bonus_state or "double" in bonus_state
+            ):
+                return True
+            if self._to_int(fouls.get("foulsToGive"), 1) <= 0:
+                return True
+
+        linescores = competitor.get("linescores") or []
+        if linescores and isinstance(linescores[-1], dict):
+            return bool(linescores[-1].get("isBonus", False))
+        return False
 
     def _resolve_team_id(self, abbr: str) -> Optional[int]:
         nba_abbr = normalize_espn_abbr(abbr)
@@ -1250,7 +1358,7 @@ class GamecastView(QWidget):
             self._apply_data(data)
 
     def _fill_box_table(self, boxscore, competitors, is_home: bool,
-                        table: QTableWidget):
+                        table: QTableWidget, starters_out: Optional[list] = None):
         box_teams = boxscore.get("players", [])
         if not isinstance(box_teams, list):
             return
@@ -1283,13 +1391,56 @@ class GamecastView(QWidget):
         stat_block = statistics[0]
         labels = stat_block.get("labels", [])
         athletes = stat_block.get("athletes", [])
+        athlete_rows = list(athletes) if isinstance(athletes, list) else []
+        starters_out_keys = {
+            self._player_name_key((entry or {}).get("name", ""))
+            for entry in (starters_out or [])
+            if (entry or {}).get("name")
+        }
+        starters_out_status = {
+            self._player_name_key((entry or {}).get("name", "")): self._injury_status_message(entry or {})
+            for entry in (starters_out or [])
+            if (entry or {}).get("name")
+        }
+        existing_keys = {
+            self._player_name_key(
+                (ath.get("athlete", {}) or {}).get("displayName", "")
+            )
+            for ath in athlete_rows
+        }
+        for entry in starters_out or []:
+            name = str((entry or {}).get("name", "")).strip()
+            name_key = self._player_name_key(name)
+            if not name_key or name_key in existing_keys:
+                continue
+            athlete_rows.append(
+                {
+                    "active": False,
+                    "athlete": {
+                        "displayName": name,
+                        "id": "",
+                    },
+                    "stats": [],
+                    "_starter_out_missing": True,
+                }
+            )
+            existing_keys.add(name_key)
 
-        table.setRowCount(len(athletes))
-        for r, ath in enumerate(athletes):
+        table.setRowCount(len(athlete_rows))
+        for r, ath in enumerate(athlete_rows):
             is_active = ath.get("active", False)
             athlete_info = ath.get("athlete", {})
             name = athlete_info.get("displayName", "")
-            name_display = f"\U0001f7e2 {name}" if is_active else name
+            is_missing_out_row = bool(ath.get("_starter_out_missing"))
+            name_key = self._player_name_key(name)
+            is_out_starter = name_key in starters_out_keys
+            out_status_msg = starters_out_status.get(name_key, "")
+            if is_out_starter:
+                name_display = f"\U0001f534 {name}"
+            elif is_active:
+                name_display = f"\U0001f7e2 {name}"
+            else:
+                name_display = name
             player_id = athlete_info.get("id", "")
             stats = ath.get("stats", [])
             stat_map = (
@@ -1364,7 +1515,10 @@ class GamecastView(QWidget):
             table.setItem(r, 0, photo_item)
 
             # Column 1: Name
-            table.setItem(r, 1, QTableWidgetItem(name_display))
+            name_item = QTableWidgetItem(name_display)
+            if is_out_starter:
+                name_item.setForeground(QColor("#ef4444"))
+            table.setItem(r, 1, name_item)
 
             # Columns 2-11: Stats
             stat_keys = [
@@ -1373,8 +1527,18 @@ class GamecastView(QWidget):
             ]
             for c, key in enumerate(stat_keys):
                 val = stat_map.get(key, "")
+                if is_missing_out_row and key == "MIN" and not val:
+                    val = "OUT"
+                if is_out_starter and key == "+/-" and out_status_msg:
+                    val = out_status_msg
                 item = QTableWidgetItem(str(val))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if key == "+/-" and is_out_starter and out_status_msg:
+                    item.setToolTip(out_status_msg)
+                    item.setForeground(QColor("#ef4444"))
+                    item.setTextAlignment(
+                        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                    )
                 if (key == "PF" and val and str(val).isdigit()
                         and int(val) > 0):
                     item.setForeground(QColor("#ef4444"))

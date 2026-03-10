@@ -352,12 +352,21 @@ class MatchupView(QWidget):
         self._away_logo.setFixedSize(56, 56)
         self._away_logo.setStyleSheet("background: transparent;")
         th_layout.addWidget(self._away_logo)
+        away_text = QVBoxLayout()
+        away_text.setSpacing(2)
         self._away_name_lbl = QLabel("AWAY")
         self._away_name_lbl.setStyleSheet(
             "color: #e2e8f0; font-size: 18px; font-weight: 700; "
             "font-family: 'Oswald'; text-transform: uppercase; letter-spacing: 1px;"
         )
-        th_layout.addWidget(self._away_name_lbl)
+        away_text.addWidget(self._away_name_lbl)
+        self._away_meta_lbl = QLabel("—")
+        self._away_meta_lbl.setProperty("class", "text-hint")
+        self._away_meta_lbl.setStyleSheet(
+            "color: #94a3b8; font-size: 11px; font-family: 'Segoe UI';"
+        )
+        away_text.addWidget(self._away_meta_lbl)
+        th_layout.addLayout(away_text)
 
         th_layout.addStretch()
 
@@ -368,18 +377,64 @@ class MatchupView(QWidget):
 
         th_layout.addStretch()
 
+        home_text = QVBoxLayout()
+        home_text.setSpacing(2)
         self._home_name_lbl = QLabel("HOME")
         self._home_name_lbl.setStyleSheet(
             "color: #e2e8f0; font-size: 18px; font-weight: 700; "
             "font-family: 'Oswald'; text-transform: uppercase; letter-spacing: 1px;"
         )
-        th_layout.addWidget(self._home_name_lbl)
+        home_text.addWidget(self._home_name_lbl)
+        self._home_meta_lbl = QLabel("—")
+        self._home_meta_lbl.setProperty("class", "text-hint")
+        self._home_meta_lbl.setStyleSheet(
+            "color: #94a3b8; font-size: 11px; font-family: 'Segoe UI';"
+        )
+        home_text.addWidget(self._home_meta_lbl)
+        th_layout.addLayout(home_text)
         self._home_logo = QLabel()
         self._home_logo.setFixedSize(56, 56)
         self._home_logo.setStyleSheet("background: transparent;")
         th_layout.addWidget(self._home_logo)
 
         layout.addWidget(team_header)
+
+        # ── Availability panel (projected starters out) ──
+        out_panel = QFrame()
+        out_panel.setProperty("class", "broadcast-card")
+        out_layout = QHBoxLayout(out_panel)
+        out_layout.setContentsMargins(14, 10, 14, 10)
+        out_layout.setSpacing(20)
+
+        away_out_col = QVBoxLayout()
+        away_out_col.setSpacing(4)
+        away_out_hdr = QLabel("AWAY STARTERS OUT")
+        away_out_hdr.setProperty("class", "muted")
+        self._away_out_lbl = QLabel("None")
+        self._away_out_lbl.setWordWrap(True)
+        self._away_out_lbl.setStyleSheet(
+            "color: #86efac; font-size: 12px; font-family: 'Segoe UI';"
+        )
+        away_out_col.addWidget(away_out_hdr)
+        away_out_col.addWidget(self._away_out_lbl)
+        out_layout.addLayout(away_out_col)
+
+        out_layout.addStretch()
+
+        home_out_col = QVBoxLayout()
+        home_out_col.setSpacing(4)
+        home_out_hdr = QLabel("HOME STARTERS OUT")
+        home_out_hdr.setProperty("class", "muted")
+        self._home_out_lbl = QLabel("None")
+        self._home_out_lbl.setWordWrap(True)
+        self._home_out_lbl.setStyleSheet(
+            "color: #86efac; font-size: 12px; font-family: 'Segoe UI';"
+        )
+        home_out_col.addWidget(home_out_hdr)
+        home_out_col.addWidget(self._home_out_lbl)
+        out_layout.addLayout(home_out_col)
+
+        layout.addWidget(out_panel)
 
         # ── Prediction cards ──
         cards_layout = QGridLayout()
@@ -792,6 +847,73 @@ class MatchupView(QWidget):
                 f"color: {primary}; font-size: 18px; font-weight: 700; "
                 f"font-family: 'Oswald'; text-transform: uppercase; letter-spacing: 1px;"
             )
+
+        self._update_team_context(game_data)
+
+    def _update_team_context(self, game_data: dict):
+        """Update record/streak/rest labels and projected starters out."""
+        home_id = game_data.get("home_team_id") or 0
+        away_id = game_data.get("away_team_id") or 0
+        game_date = game_data.get("game_date", datetime.now().strftime("%Y-%m-%d"))
+
+        home_ctx = {}
+        away_ctx = {}
+        try:
+            from src.analytics.team_context import get_team_display_context
+
+            if home_id:
+                home_ctx = get_team_display_context(
+                    int(home_id), game_date=game_date, include_starters_out=True
+                )
+            if away_id:
+                away_ctx = get_team_display_context(
+                    int(away_id), game_date=game_date, include_starters_out=True
+                )
+        except Exception as e:
+            logger.debug("Matchup team context unavailable: %s", e)
+
+        self._home_meta_lbl.setText(self._format_team_meta(home_ctx))
+        self._away_meta_lbl.setText(self._format_team_meta(away_ctx))
+
+        home_out = self._format_starters_out(home_ctx)
+        away_out = self._format_starters_out(away_ctx)
+        self._home_out_lbl.setText(home_out)
+        self._away_out_lbl.setText(away_out)
+
+        self._home_out_lbl.setStyleSheet(
+            "color: #fca5a5; font-size: 12px; font-family: 'Segoe UI';"
+            if "None" not in home_out else
+            "color: #86efac; font-size: 12px; font-family: 'Segoe UI';"
+        )
+        self._away_out_lbl.setStyleSheet(
+            "color: #fca5a5; font-size: 12px; font-family: 'Segoe UI';"
+            if "None" not in away_out else
+            "color: #86efac; font-size: 12px; font-family: 'Segoe UI';"
+        )
+
+    def _format_team_meta(self, ctx: dict) -> str:
+        if not ctx:
+            return "Record — | EVEN | Rest n/a"
+        record = ctx.get("record") or "—"
+        streak = ctx.get("streak") or "EVEN"
+        rest = ctx.get("last_game_short") or "Rest n/a"
+        return f"Record {record} | {streak} | {rest}"
+
+    def _format_starters_out(self, ctx: dict) -> str:
+        starters_out = (ctx or {}).get("starters_out") or []
+        if not starters_out:
+            return "None"
+        names = []
+        for p in starters_out:
+            name = str(p.get("name") or "").strip()
+            if not name:
+                continue
+            status = str(p.get("status") or "").strip()
+            if status and status.lower() != "out":
+                names.append(f"{name} ({status})")
+            else:
+                names.append(name)
+        return ", ".join(names) if names else "None"
 
     def _display_result(self, result: dict):
         """Populate all UI elements with a prediction result dict."""

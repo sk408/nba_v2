@@ -42,6 +42,7 @@
             <img class="gc-sb-logo" id="gc-away-logo" alt="Away team logo" style="display:none">
             <span class="gc-sb-abbr" id="gc-away-abbr"></span>
             <span class="gc-sb-name" id="gc-away-name"></span>
+            <span class="gc-sb-meta" id="gc-away-meta"></span>
             <span class="gc-sb-score" id="gc-away-score"></span>
         </div>
         <div class="gc-sb-center">
@@ -55,6 +56,7 @@
             <img class="gc-sb-logo" id="gc-home-logo" alt="Home team logo" style="display:none">
             <span class="gc-sb-abbr" id="gc-home-abbr"></span>
             <span class="gc-sb-name" id="gc-home-name"></span>
+            <span class="gc-sb-meta" id="gc-home-meta"></span>
             <span class="gc-sb-score" id="gc-home-score"></span>
         </div>
         <div class="gc-ls-wrap" id="gc-linescores"></div>
@@ -559,9 +561,11 @@ const GC = {
 
         document.getElementById('gc-away-abbr').textContent = away.abbr || '';
         document.getElementById('gc-away-name').textContent = away.name || '';
+        document.getElementById('gc-away-meta').textContent = this.formatTeamMeta(away);
         document.getElementById('gc-away-score').textContent = isPre ? '' : (away.score ?? 0);
         document.getElementById('gc-home-abbr').textContent = home.abbr || '';
         document.getElementById('gc-home-name').textContent = home.name || '';
+        document.getElementById('gc-home-meta').textContent = this.formatTeamMeta(home);
         document.getElementById('gc-home-score').textContent = isPre ? '' : (home.score ?? 0);
         this.renderLogo('gc-away-logo', away.logo, away.abbr || 'Away');
         this.renderLogo('gc-home-logo', home.logo, home.abbr || 'Home');
@@ -711,6 +715,16 @@ const GC = {
         const box = d.boxscore || {};
         const side = this.boxSide;
         const team = box[side];
+        const startersOut = Array.isArray(d.header?.[side]?.starters_out)
+            ? d.header[side].starters_out
+            : [];
+        const outInfo = new Map();
+        startersOut.forEach(p => {
+            const key = this.playerKey(p?.name || '');
+            if (!key) return;
+            outInfo.set(key, p || {});
+        });
+        const outSet = new Set(outInfo.keys());
 
         // Update tab labels
         document.getElementById('gc-tab-away').textContent = d.header?.away?.abbr || 'AWAY';
@@ -731,7 +745,20 @@ const GC = {
         cols.forEach(c => html += `<th>${c}</th>`);
         html += '</tr></thead><tbody>';
 
-        const starters = team.players.filter(p => p.starter);
+        const playerKeySet = new Set(
+            team.players.map(p => this.playerKey(p?.name || '')).filter(Boolean)
+        );
+        const missingOutRows = startersOut
+            .filter(p => !playerKeySet.has(this.playerKey(p?.name || '')))
+            .map(p => ({
+                name: p?.name || '',
+                stats: {},
+                active: false,
+                starter: true,
+                out_placeholder: true,
+            }));
+
+        const starters = [...team.players.filter(p => p.starter), ...missingOutRows];
         const bench = team.players.filter(p => !p.starter);
 
         const renderGroup = (players, label) => {
@@ -741,20 +768,39 @@ const GC = {
             players.forEach(p => {
                 const s = p.stats || {};
                 const active = p.active ? ' gc-box-active' : '';
+                const pKey = this.playerKey(p.name || '');
+                const outEntry = outInfo.get(pKey);
+                const outStarter = Boolean(outEntry);
+                const outClass = outStarter ? ' gc-box-out' : '';
+                const dotClass = outStarter ? 'out' : (p.active ? 'on' : '');
                 const photo = p.headshot
                     ? `<img class="gc-box-photo" loading="lazy" src="${this.escapeAttr(p.headshot)}" alt="${this.escapeAttr(p.name || 'Player')}">`
                     : '<span class="gc-box-photo gc-box-photo-empty"></span>';
-                html += `<tr class="${active}">
+                html += `<tr class="${active}${outClass}">
                     <td class="gc-box-name">
                         <div class="gc-box-player">
-                            <span class="gc-box-active-dot ${p.active ? 'on' : ''}"></span>
+                            <span class="gc-box-active-dot ${dotClass}"></span>
                             ${photo}
                             <span class="gc-box-name-txt">${this.escapeHtml(p.name || '')}</span>
                         </div>
                     </td>`;
                 cols.forEach(c => {
-                    const cls = c === 'PTS' ? ' class="gc-box-pts"' : '';
-                    html += `<td${cls}>${s[c] ?? '-'}</td>`;
+                    const isInjuryStatus = outStarter && c === '+/-';
+                    const cls = isInjuryStatus
+                        ? ' class="gc-box-injury-note"'
+                        : (c === 'PTS' ? ' class="gc-box-pts"' : '');
+
+                    let val = s[c] ?? ((p.out_placeholder && c === 'MIN') ? 'OUT' : '-');
+                    let titleAttr = '';
+                    if (isInjuryStatus) {
+                        const fullStatus = this.injuryStatusMessage(outEntry);
+                        const displayStatus = fullStatus.length > 34
+                            ? `${fullStatus.slice(0, 31)}...`
+                            : fullStatus;
+                        val = displayStatus || 'Out';
+                        titleAttr = fullStatus ? ` title="${this.escapeAttr(fullStatus)}"` : '';
+                    }
+                    html += `<td${cls}${titleAttr}>${this.escapeHtml(String(val))}</td>`;
                 });
                 html += '</tr>';
             });
@@ -927,6 +973,58 @@ const GC = {
             btn.classList.toggle('active', btn.dataset.filter === filter);
         });
         if (this.data) this.renderCourt(this.data);
+    },
+
+    formatTeamMeta(team) {
+        const bits = [];
+        if (team.record) bits.push(String(team.record));
+
+        const streak = this.formatStreak(team.streak);
+        if (streak) bits.push(streak);
+
+        const rest = this.formatRest(team.days_since_last_game, team.last_game_text);
+        if (rest) bits.push(rest);
+
+        return bits.join(' · ');
+    },
+
+    formatStreak(value) {
+        if (value == null) return '';
+        const text = String(value).trim();
+        if (!text) return '';
+        const up = text.toUpperCase();
+        if (/^[WL]\d+$/.test(up) || up === 'EVEN') return up;
+        const num = Number(text);
+        if (Number.isFinite(num) && num !== 0) {
+            return `${num > 0 ? 'W' : 'L'}${Math.abs(Math.round(num))}`;
+        }
+        return '';
+    },
+
+    formatRest(daysSinceLastGame, fallbackText) {
+        const num = Number(daysSinceLastGame);
+        if (Number.isFinite(num) && num >= 0) {
+            return `${Math.round(num)}D REST`;
+        }
+        if (fallbackText) return String(fallbackText).toUpperCase();
+        return '';
+    },
+
+    injuryStatusMessage(entry) {
+        const status = String(entry?.status || 'Out').trim() || 'Out';
+        const reason = String(entry?.reason || '').trim();
+        const expected = String(entry?.expected_return || '').trim();
+        if (reason) return `${status}: ${reason}`;
+        if (expected) return `${status} (${expected})`;
+        return status;
+    },
+
+    playerKey(name) {
+        return String(name || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, '');
     },
 
     escapeHtml(value) {
