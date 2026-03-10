@@ -4,8 +4,6 @@ __pycache__/
 data/cache/
 data/backtest_cache/
 data/snapshots/
-data/*.db-wal
-data/*.db-shm
 
 data/optuna_studies.db
 .worktrees/
