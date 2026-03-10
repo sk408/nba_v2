@@ -21,7 +21,7 @@
   "sync_freshness_hours": 4,
   "optimizer_log_interval": 300,
   "prediction_mode": "fundamentals_sharp",
-  "upset_bonus_mult": 2.5,
+  "upset_bonus_mult": 1.5,
   "upset_bonus_mult_max": 5.0,
   "optimizer_competitive_dog_margin": 7.5,
   "optimizer_min_ml_payout": 1.5,
