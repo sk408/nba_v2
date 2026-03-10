@@ -58,6 +58,7 @@
   "score_calibration_strict_sign_lock": true,
   "score_calibration_sign_epsilon": 0.05,
   "score_calibration_min_abs_spread": 0.1,
+  "score_calibration_near_spread_enabled": false,
   "score_calibration_near_spread_identity_band": 1.5,
   "score_calibration_near_spread_deadband": 4.0,
   "score_calibration_near_spread_raw_weight": 0.85,

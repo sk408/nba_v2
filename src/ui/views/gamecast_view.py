@@ -293,6 +293,9 @@ class GamecastView(QWidget):
         self._game_ids: list = []
         self._team_id_cache: Dict[str, Optional[int]] = {}
         self._pending_headshots: set = set()
+        self._headshot_failures: Dict[str, int] = {}
+        self._headshot_retry_after: Dict[str, float] = {}
+        self._max_headshot_retries = 3
         self._prediction_cache: Dict[tuple, dict] = {}
 
         # Thread pool for preloading (limit to avoid ESPN rate-limit)
@@ -1324,32 +1327,56 @@ class GamecastView(QWidget):
             return None
 
     def _queue_headshot_fetch(self, url: str, size: int):
+        now = time.time()
+        if now < self._headshot_retry_after.get(url, 0.0):
+            return
+
         cache_key = (url, size)
         with _headshot_lock:
             if cache_key in _espn_headshot_cache:
                 return
-        if url in self._pending_headshots:
-            return
-        self._pending_headshots.add(url)
+            if url in self._pending_headshots:
+                return
+            self._pending_headshots.add(url)
 
         class _HeadshotRunnable(QRunnable):
-            def __init__(self, u, s):
+            def __init__(self, view, u, s):
                 super().__init__()
+                self.view = view
                 self.url = u
                 self.size = s
                 self.setAutoDelete(True)
 
             def run(self):
+                success = False
                 try:
                     import requests as _req
                     resp = _req.get(self.url, timeout=5)
                     if resp.status_code == 200 and resp.content:
                         with _headshot_lock:
                             _espn_headshot_data[self.url] = resp.content
+                        success = True
                 except Exception:
                     pass
+                finally:
+                    with _headshot_lock:
+                        self.view._pending_headshots.discard(self.url)
 
-        self._pool.start(_HeadshotRunnable(url, size))
+                    if success:
+                        self.view._headshot_failures.pop(self.url, None)
+                        self.view._headshot_retry_after.pop(self.url, None)
+                        return
+
+                    failures = self.view._headshot_failures.get(self.url, 0) + 1
+                    if failures > self.view._max_headshot_retries:
+                        # Cool down noisy failures, then allow retry again.
+                        self.view._headshot_failures[self.url] = 0
+                        self.view._headshot_retry_after[self.url] = time.time() + 300.0
+                    else:
+                        self.view._headshot_failures[self.url] = failures
+                        self.view._headshot_retry_after[self.url] = time.time() + min(60.0, float(2 ** failures))
+
+        self._pool.start(_HeadshotRunnable(self, url, size))
 
     def _refresh_for_headshots(self):
         self._headshot_timer_active = False

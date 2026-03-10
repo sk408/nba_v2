@@ -18,6 +18,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from src.database import db
+from src.utils.settings_helpers import (
+    safe_bool_setting as _safe_bool_setting,
+    safe_float_setting as _safe_float_setting,
+    safe_int_setting as _safe_int_setting,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,38 +40,6 @@ _cache_payload: Optional[Dict[str, Any]] = None
 _cache_signature: str = ""
 
 
-def _safe_float_setting(key: str, default: float) -> float:
-    from src.config import get as get_setting
-    try:
-        return float(get_setting(key, default))
-    except (TypeError, ValueError):
-        return float(default)
-
-
-def _safe_int_setting(key: str, default: int) -> int:
-    from src.config import get as get_setting
-    try:
-        return int(get_setting(key, default))
-    except (TypeError, ValueError):
-        return int(default)
-
-
-def _safe_bool_setting(key: str, default: bool) -> bool:
-    from src.config import get as get_setting
-    raw = get_setting(key, default)
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, (int, float)):
-        return bool(raw)
-    if isinstance(raw, str):
-        v = raw.strip().lower()
-        if v in ("1", "true", "yes", "on", "y"):
-            return True
-        if v in ("0", "false", "no", "off", "n"):
-            return False
-    return bool(default)
-
-
 def _settings_snapshot() -> Dict[str, Any]:
     """Return calibrator settings used for fit/apply."""
     return {
@@ -78,6 +51,18 @@ def _settings_snapshot() -> Dict[str, Any]:
         "strict_sign_lock": _safe_bool_setting("score_calibration_strict_sign_lock", True),
         "sign_epsilon": max(0.0, _safe_float_setting("score_calibration_sign_epsilon", 0.05)),
         "min_abs_spread": max(0.0, _safe_float_setting("score_calibration_min_abs_spread", 0.10)),
+        "near_spread_enabled": _safe_bool_setting("score_calibration_near_spread_enabled", False),
+        "near_spread_identity_band": max(
+            0.0,
+            _safe_float_setting("score_calibration_near_spread_identity_band", 1.5),
+        ),
+        "near_spread_deadband": max(
+            0.0,
+            _safe_float_setting("score_calibration_near_spread_deadband", 4.0),
+        ),
+        "near_spread_raw_weight": float(
+            np.clip(_safe_float_setting("score_calibration_near_spread_raw_weight", 0.85), 0.0, 1.0)
+        ),
         "spread_cap": max(1.0, _safe_float_setting("score_calibration_spread_cap", 28.0)),
         "total_min": _safe_float_setting("score_calibration_total_min", 165.0),
         "total_max": _safe_float_setting("score_calibration_total_max", 270.0),
@@ -91,6 +76,15 @@ def _settings_snapshot() -> Dict[str, Any]:
             0.0,
             _safe_float_setting("score_calibration_team_max_abs_correction", 5.0),
         ),
+        "team_range_enabled": _safe_bool_setting("score_calibration_team_range_enabled", True),
+        "team_range_min_games": max(5, _safe_int_setting("score_calibration_team_range_min_games", 35)),
+        "team_range_quantile_low": float(
+            np.clip(_safe_float_setting("score_calibration_team_range_quantile_low", 0.03), 0.0, 0.49)
+        ),
+        "team_range_quantile_high": float(
+            np.clip(_safe_float_setting("score_calibration_team_range_quantile_high", 0.97), 0.51, 1.0)
+        ),
+        "team_range_padding": max(0.0, _safe_float_setting("score_calibration_team_range_padding", 6.0)),
     }
 
 
@@ -301,6 +295,107 @@ def _apply_team_offsets_arrays(
     return out_home, out_away
 
 
+def _blend_near_spread(
+    raw_spread: np.ndarray,
+    calibrated_spread: np.ndarray,
+    identity_band: float,
+    deadband: float,
+    raw_weight: float,
+    enabled: bool = False,
+) -> np.ndarray:
+    """Blend toward raw spread near pick'em to avoid over-correction noise."""
+    out = np.asarray(calibrated_spread, dtype=np.float64).copy()
+    if not enabled:
+        return out
+
+    raw = np.asarray(raw_spread, dtype=np.float64)
+    abs_raw = np.abs(raw)
+    identity_band = max(0.0, float(identity_band))
+    deadband = max(identity_band, float(deadband))
+    raw_weight = float(np.clip(raw_weight, 0.0, 1.0))
+    if raw_weight <= 0.0:
+        return out
+
+    if deadband <= identity_band + 1e-9:
+        w = np.where(abs_raw <= identity_band, raw_weight, 0.0)
+    else:
+        taper = (deadband - abs_raw) / max(1e-6, deadband - identity_band)
+        taper = np.clip(taper, 0.0, 1.0)
+        w = np.where(abs_raw <= identity_band, raw_weight, raw_weight * taper)
+
+    return (out * (1.0 - w)) + (raw * w)
+
+
+def _fit_team_point_ranges(
+    home_ids: np.ndarray,
+    away_ids: np.ndarray,
+    actual_home: np.ndarray,
+    actual_away: np.ndarray,
+    min_games: int,
+    q_low: float,
+    q_high: float,
+    padding: float,
+) -> Dict[str, Dict[str, float]]:
+    """Learn per-team scoring ranges from historical outcomes."""
+    team_scores: Dict[int, List[float]] = {}
+    for idx in range(len(home_ids)):
+        hid = int(home_ids[idx])
+        aid = int(away_ids[idx])
+        team_scores.setdefault(hid, []).append(float(actual_home[idx]))
+        team_scores.setdefault(aid, []).append(float(actual_away[idx]))
+
+    ranges: Dict[str, Dict[str, float]] = {}
+    q_low = float(np.clip(q_low, 0.0, 0.49))
+    q_high = float(np.clip(q_high, 0.51, 1.0))
+    pad = max(0.0, float(padding))
+    for team_id, scores in team_scores.items():
+        if len(scores) < int(min_games):
+            continue
+        arr = np.asarray(scores, dtype=np.float64)
+        lo = float(np.quantile(arr, q_low) - pad)
+        hi = float(np.quantile(arr, q_high) + pad)
+        if hi <= lo:
+            continue
+        ranges[str(team_id)] = {
+            "point_floor": lo,
+            "point_ceiling": hi,
+            "games": int(len(scores)),
+        }
+    return ranges
+
+
+def _apply_team_point_ranges_arrays(
+    home_ids: np.ndarray,
+    away_ids: np.ndarray,
+    home_pts: np.ndarray,
+    away_pts: np.ndarray,
+    team_point_ranges: Dict[str, Dict[str, float]],
+    global_floor: float,
+    global_ceiling: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Apply per-team point floor/ceiling constraints."""
+    out_home = np.asarray(home_pts, dtype=np.float64).copy()
+    out_away = np.asarray(away_pts, dtype=np.float64).copy()
+    if not team_point_ranges:
+        return (
+            np.clip(out_home, global_floor, global_ceiling),
+            np.clip(out_away, global_floor, global_ceiling),
+        )
+
+    for idx in range(len(home_ids)):
+        hid = str(int(home_ids[idx]))
+        aid = str(int(away_ids[idx]))
+        h_cfg = team_point_ranges.get(hid, {})
+        a_cfg = team_point_ranges.get(aid, {})
+        h_floor = float(h_cfg.get("point_floor", global_floor))
+        h_ceiling = float(h_cfg.get("point_ceiling", global_ceiling))
+        a_floor = float(a_cfg.get("point_floor", global_floor))
+        a_ceiling = float(a_cfg.get("point_ceiling", global_ceiling))
+        out_home[idx] = float(np.clip(out_home[idx], h_floor, h_ceiling))
+        out_away[idx] = float(np.clip(out_away[idx], a_floor, a_ceiling))
+    return out_home, out_away
+
+
 def _mode_key(include_sharp: bool) -> str:
     return "sharp" if include_sharp else "fundamentals"
 
@@ -414,6 +509,19 @@ def _fit_mode_payload(
             team_offsets=team_offsets,
         )
 
+    team_point_ranges: Dict[str, Dict[str, float]] = {}
+    if bool(settings["team_range_enabled"]):
+        team_point_ranges = _fit_team_point_ranges(
+            home_ids=hid_arr,
+            away_ids=aid_arr,
+            actual_home=ah_arr,
+            actual_away=aa_arr,
+            min_games=int(settings["team_range_min_games"]),
+            q_low=float(settings["team_range_quantile_low"]),
+            q_high=float(settings["team_range_quantile_high"]),
+            padding=float(settings["team_range_padding"]),
+        )
+
     home_pts = np.clip(home_pts, float(settings["point_floor"]), float(settings["point_ceiling"]))
     away_pts = np.clip(away_pts, float(settings["point_floor"]), float(settings["point_ceiling"]))
 
@@ -434,6 +542,7 @@ def _fit_mode_payload(
         float(settings["near_spread_identity_band"]),
         float(settings["near_spread_deadband"]),
         float(settings["near_spread_raw_weight"]),
+        enabled=bool(settings["near_spread_enabled"]),
     )
     final_home = (final_total + final_spread) / 2.0
     final_away = (final_total - final_spread) / 2.0
@@ -493,6 +602,7 @@ def _fit_mode_payload(
         "spread_map": spread_map,
         "total_map": total_map,
         "team_offsets": team_offsets,
+        "team_point_ranges": team_point_ranges,
         "metrics": {
             "status": "ok",
             "sample_size": int(len(rs_arr)),
@@ -754,6 +864,7 @@ def apply_score_calibration(pred: Any, game: Any, include_sharp: bool = False):
     spread_map = mode_payload.get("spread_map", {})
     total_map = mode_payload.get("total_map", {})
     team_offsets = mode_payload.get("team_offsets", {})
+    team_point_ranges = mode_payload.get("team_point_ranges", {})
 
     cal_spread = _interp_piecewise(raw_spread, spread_map)
     cal_total = _interp_piecewise(raw_total, total_map)
@@ -768,6 +879,16 @@ def apply_score_calibration(pred: Any, game: Any, include_sharp: bool = False):
             float(settings["min_abs_spread"]),
         )[0]
     )
+    cal_spread = float(
+        _blend_near_spread(
+            np.asarray([raw_spread], dtype=np.float64),
+            np.asarray([cal_spread], dtype=np.float64),
+            float(settings["near_spread_identity_band"]),
+            float(settings["near_spread_deadband"]),
+            float(settings["near_spread_raw_weight"]),
+            enabled=bool(settings["near_spread_enabled"]),
+        )[0]
+    )
 
     home_pts = (cal_total + cal_spread) / 2.0
     away_pts = (cal_total - cal_spread) / 2.0
@@ -778,8 +899,21 @@ def apply_score_calibration(pred: Any, game: Any, include_sharp: bool = False):
         home_pts += float(team_offsets.get(hid, {}).get("home_pts_correction", 0.0))
         away_pts += float(team_offsets.get(aid, {}).get("away_pts_correction", 0.0))
 
-    home_pts = float(np.clip(home_pts, settings["point_floor"], settings["point_ceiling"]))
-    away_pts = float(np.clip(away_pts, settings["point_floor"], settings["point_ceiling"]))
+    if team_point_ranges:
+        adj_home, adj_away = _apply_team_point_ranges_arrays(
+            home_ids=np.asarray([int(getattr(game, "home_team_id", 0))], dtype=np.int32),
+            away_ids=np.asarray([int(getattr(game, "away_team_id", 0))], dtype=np.int32),
+            home_pts=np.asarray([home_pts], dtype=np.float64),
+            away_pts=np.asarray([away_pts], dtype=np.float64),
+            team_point_ranges=team_point_ranges,
+            global_floor=float(settings["point_floor"]),
+            global_ceiling=float(settings["point_ceiling"]),
+        )
+        home_pts = float(adj_home[0])
+        away_pts = float(adj_away[0])
+    else:
+        home_pts = float(np.clip(home_pts, settings["point_floor"], settings["point_ceiling"]))
+        away_pts = float(np.clip(away_pts, settings["point_floor"], settings["point_ceiling"]))
     cal_total = float(np.clip(home_pts + away_pts, settings["total_min"], settings["total_max"]))
     cal_spread = float(np.clip(home_pts - away_pts, -settings["spread_cap"], settings["spread_cap"]))
     cal_spread = float(

@@ -312,6 +312,15 @@ _an_odds_cache = {}
 _an_last_fetch = 0.0
 _an_odds_lock = threading.Lock()
 
+
+def invalidate_actionnetwork_cache() -> None:
+    """Clear cached Action Network scoreboard payload."""
+    global _an_odds_cache, _an_last_fetch
+    with _an_odds_lock:
+        _an_odds_cache = {}
+        _an_last_fetch = 0.0
+
+
 def get_actionnetwork_odds(home_abbr: str, away_abbr: str) -> Dict[str, Any]:
     """Fetch live odds from Action Network API.
     Matches based on team abbreviations.

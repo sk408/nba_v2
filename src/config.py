@@ -6,6 +6,13 @@ import threading
 from pathlib import Path
 from typing import Any, Dict
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    # Optional dependency for local env overrides.
+    pass
+
 _SETTINGS_PATH = Path("data") / "app_settings.json"
 _settings_lock = threading.Lock()
 
@@ -67,6 +74,7 @@ _DEFAULTS: Dict[str, Any] = {
     "score_calibration_strict_sign_lock": True,
     "score_calibration_sign_epsilon": 0.05,
     "score_calibration_min_abs_spread": 0.10,
+    "score_calibration_near_spread_enabled": False,
     "score_calibration_near_spread_identity_band": 1.5,
     "score_calibration_near_spread_deadband": 4.0,
     "score_calibration_near_spread_raw_weight": 0.85,
@@ -135,6 +143,26 @@ def save_settings(settings: Dict[str, Any] | None = None):
 
 
 def get(key: str, default: Any = None) -> Any:
+    env_key = f"NBA_{key.upper()}"
+    env_raw = os.environ.get(env_key)
+    if env_raw is not None:
+        ref = _DEFAULTS.get(key, default)
+        if isinstance(ref, bool):
+            return env_raw.strip().lower() in ("1", "true", "yes", "on", "y")
+        if isinstance(ref, int) and not isinstance(ref, bool):
+            try:
+                return int(env_raw)
+            except ValueError:
+                return ref
+        if isinstance(ref, float):
+            try:
+                return float(env_raw)
+            except ValueError:
+                return ref
+        if isinstance(ref, list):
+            return [v.strip() for v in env_raw.split(",") if v.strip()]
+        return env_raw
+
     s = load_settings()
     return s.get(key, default)
 

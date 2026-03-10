@@ -25,6 +25,11 @@ from src.analytics.weight_config import (
     OPTIMIZER_RANGES, SHARP_MODE_RANGES, invalidate_weight_cache,
     CD_RANGES, CD_SHARP_RANGES,
 )
+from src.utils.settings_helpers import (
+    safe_bool_setting,
+    safe_float_setting,
+    safe_int_setting,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,37 +58,17 @@ LONG_DOG_MIN_PAYOUT = 3.0
 
 def _safe_float_setting(key: str, default: float) -> float:
     """Read a float setting with defensive fallback."""
-    from src.config import get as get_setting
-    try:
-        return float(get_setting(key, default))
-    except (TypeError, ValueError):
-        return float(default)
+    return safe_float_setting(key, default)
 
 
 def _safe_int_setting(key: str, default: int) -> int:
     """Read an int setting with defensive fallback."""
-    from src.config import get as get_setting
-    try:
-        return max(0, int(get_setting(key, default)))
-    except (TypeError, ValueError):
-        return max(0, int(default))
+    return max(0, safe_int_setting(key, default))
 
 
 def _safe_bool_setting(key: str, default: bool) -> bool:
     """Read a bool setting with tolerant parsing."""
-    from src.config import get as get_setting
-    raw = get_setting(key, default)
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, (int, float)):
-        return bool(raw)
-    if isinstance(raw, str):
-        v = raw.strip().lower()
-        if v in ("1", "true", "yes", "on", "y"):
-            return True
-        if v in ("0", "false", "no", "off", "n"):
-            return False
-    return bool(default)
+    return safe_bool_setting(key, default)
 
 
 def _max_weight_delta(a: WeightConfig, b: WeightConfig) -> float:

@@ -856,9 +856,9 @@ def compute_schedule_spots(team_id: int, game_date: str,
         # Lookahead: check next game's opponent
         next_rows = db.fetch_all(
             """SELECT DISTINCT ps.opponent_team_id FROM player_stats ps
-               WHERE ps.game_date > ? AND ps.team_id = ?
+               WHERE ps.game_date > ? AND ps.season = ? AND ps.team_id = ?
                ORDER BY ps.game_date ASC LIMIT 1""",
-            (game_date, team_id)
+            (game_date, season, team_id)
         )
         if next_rows and not current_is_top8:
             next_opp = next_rows[0]["opponent_team_id"]

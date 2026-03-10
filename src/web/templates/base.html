@@ -27,9 +27,11 @@
                 <button id="sync-btn" class="btn btn-sm btn-outline" onclick="triggerSync()">
                     <span id="sync-icon" class="sync-icon">&#8635;</span><span class="btn-label"> Sync</span>
                 </button>
+                {% if shutdown_enabled %}
                 <button id="shutdown-btn" class="btn btn-sm btn-outline btn-danger" onclick="shutdownServer()" title="Stop server and injury monitor">
                     &#9724;<span class="btn-label"> Shutdown</span>
                 </button>
+                {% endif %}
             </div>
         </div>
     </nav>
@@ -45,6 +47,8 @@
     </footer>
 
     <script>
+        const CSRF_TOKEN = "{{ csrf_token }}";
+
         async function triggerSync() {
             const btn = document.getElementById('sync-btn');
             const icon = document.getElementById('sync-icon');
@@ -53,11 +57,18 @@
             btn.innerHTML = '<span id="sync-icon" class="sync-icon spinning">&#8635;</span><span class="btn-label"> Syncing...</span>';
 
             try {
-                const resp = await fetch('/api/sync', { method: 'POST' });
+                const resp = await fetch('/api/sync', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': CSRF_TOKEN },
+                });
                 const data = await resp.json();
 
                 if (data.status === 'already_running') {
                     btn.innerHTML = '<span class="sync-icon spinning">&#8635;</span><span class="btn-label"> Running...</span>';
+                } else if (data.status === 'rate_limited') {
+                    btn.innerHTML = '<span class="sync-icon">&#8635;</span><span class="btn-label"> Slow Down</span>';
+                    btn.disabled = false;
+                    return;
                 } else {
                     btn.innerHTML = '<span class="sync-icon spinning">&#8635;</span><span class="btn-label"> Syncing...</span>';
                 }
@@ -94,10 +105,19 @@
         async function shutdownServer() {
             if (!confirm('Shut down the server and injury monitor?')) return;
             const btn = document.getElementById('shutdown-btn');
+            if (!btn) return;
             btn.disabled = true;
             btn.textContent = 'Shutting down...';
             try {
-                await fetch('/api/shutdown', { method: 'POST' });
+                const resp = await fetch('/api/shutdown', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': CSRF_TOKEN },
+                });
+                if (!resp.ok) {
+                    btn.textContent = 'Shutdown blocked';
+                    btn.disabled = false;
+                    return;
+                }
             } catch (e) {
                 // Expected — server is stopping
             }

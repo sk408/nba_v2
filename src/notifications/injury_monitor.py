@@ -6,7 +6,7 @@ import time
 from typing import Dict, Set, Optional
 
 from src.database import db
-from src.data.injury_scraper import scrape_all_injuries
+from src.data.injury_scraper import sync_injuries
 from src.notifications.service import create_notification
 from src.notifications.models import NotificationCategory, NotificationSeverity
 
@@ -78,9 +78,10 @@ class InjuryMonitor:
 
     def _check_changes(self):
         """Check for injury changes and create notifications."""
-        # Scrape current injuries
+        # Sync source feed into DB first so diffing compares fresh state.
         try:
-            scrape_all_injuries()
+            updated = int(sync_injuries())
+            logger.info("injury_monitor_db_updates=%d", updated)
         except Exception as e:
             logger.debug(f"Scrape failed in monitor: {e}")
             return

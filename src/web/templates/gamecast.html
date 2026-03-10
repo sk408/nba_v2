@@ -168,6 +168,9 @@ const GC = {
     gameId: null,
     timer: null,
     data: null,
+    requestSeq: 0,
+    isFetching: false,
+    inFlightFetches: 0,
     boxSide: 'away',
     games: [],
     courtFilter: 'both',
@@ -211,7 +214,7 @@ const GC = {
         el.innerHTML = this.games.map(g => {
             const showScore = g.state !== 'pre';
             return `
-            <button class="gc-ti" data-id="${g.espn_id}" onclick="GC.select('${g.espn_id}')">
+            <button class="gc-ti" data-id="${g.espn_id}" data-game-id="${g.espn_id}">
                 <div class="gc-ti-matchup">
                     <span class="gc-ti-team">${this.escapeHtml(g.away_team || '')}</span>
                     <span class="gc-ti-score">${showScore ? g.away_score : ''}</span>
@@ -285,8 +288,12 @@ const GC = {
         const replaceHistory = options.replaceHistory === true;
         const targetId = String(gameId || '');
         if (!targetId) return;
+        const switchingGames = targetId !== this.gameId;
         if (this.timer) { clearInterval(this.timer); this.timer = null; }
         this.gameId = targetId;
+        if (switchingGames) {
+            this.resetLiveStateOnGameChange();
+        }
         if (syncUrl) {
             this.syncUrl(targetId, replaceHistory);
         }
@@ -302,37 +309,69 @@ const GC = {
         document.getElementById('gc-main').style.display = 'none';
         document.getElementById('gc-loading').style.display = '';
 
-        await this.fetchData();
+        const seq = ++this.requestSeq;
+        const loaded = await this.fetchData({ seq, allowConcurrent: true });
+        if (seq !== this.requestSeq) {
+            return;
+        }
 
         document.getElementById('gc-loading').style.display = 'none';
-        if (!this.data) return;
+        if (!loaded || !this.data) return;
         document.getElementById('gc-main').style.display = '';
         this.render();
 
         // Start smart polling
         const state = this.data?.header?.status?.state;
         if (state === 'in') {
-            this.timer = setInterval(() => this.fetchData(), 10000);
+            this.timer = setInterval(() => this.fetchData({ seq: this.requestSeq }), 10000);
         } else if (state === 'pre') {
-            this.timer = setInterval(() => this.fetchData(), 60000);
+            this.timer = setInterval(() => this.fetchData({ seq: this.requestSeq }), 60000);
         }
     },
 
-    async fetchData() {
+    async fetchData(options = {}) {
+        const seq = Number.isInteger(options.seq) ? options.seq : this.requestSeq;
+        const allowConcurrent = options.allowConcurrent === true;
+        const requestGameId = String(this.gameId || '');
+        if (!requestGameId) return false;
+        if (this.isFetching && !allowConcurrent) return false;
+
+        this.inFlightFetches += 1;
+        this.isFetching = true;
         try {
-            const resp = await fetch('/api/gamecast/' + encodeURIComponent(this.gameId));
+            const resp = await fetch('/api/gamecast/' + encodeURIComponent(requestGameId));
             const data = await resp.json();
+            if (seq !== this.requestSeq || requestGameId !== this.gameId) {
+                return false;
+            }
             if (data.error) throw new Error(data.error);
             this.data = data;
             this.render();
+            return true;
         } catch (e) {
+            if (seq !== this.requestSeq) {
+                return false;
+            }
             console.error('Fetch error:', e);
             this.data = null;
             document.getElementById('gc-loading').style.display = 'none';
             document.getElementById('gc-main').style.display = '';
             document.getElementById('gc-box-body').innerHTML =
                 '<div class="gc-no-data">Unable to load game data</div>';
+            return false;
+        } finally {
+            this.inFlightFetches = Math.max(0, this.inFlightFetches - 1);
+            this.isFetching = this.inFlightFetches > 0;
         }
+    },
+
+    resetLiveStateOnGameChange() {
+        this.clearOverlay();
+        this.timeoutRemaining = 0;
+        this.timeoutKey = '';
+        this.lastOverlayKey = '';
+        const inline = document.getElementById('gc-event-inline');
+        if (inline) inline.textContent = '';
     },
 
     render() {
@@ -1042,6 +1081,14 @@ const GC = {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+    const ticker = document.getElementById('gc-ticker');
+    if (ticker) {
+        ticker.addEventListener('click', (e) => {
+            const btn = e.target.closest('.gc-ti[data-id]');
+            if (!btn) return;
+            GC.select(btn.dataset.id, { replaceHistory: false, syncUrl: true });
+        });
+    }
     document.querySelectorAll('.gc-box-tab').forEach(tab =>
         tab.addEventListener('click', () => GC.switchTab(tab.dataset.side)));
     document.getElementById('gc-select').addEventListener('change', (e) => {

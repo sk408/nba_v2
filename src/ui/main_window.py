@@ -156,20 +156,20 @@ class MainWindow(QMainWindow):
         """Clean up on close."""
         logger.info("Application closing")
 
-        # If a pipeline worker is running, signal cancellation so it can
-        # finish its current trial and run the save gate.
-        if hasattr(self, 'pipeline') and hasattr(self.pipeline, '_current_worker'):
-            worker = getattr(self.pipeline, '_current_worker', None)
-            if worker and hasattr(worker, 'isRunning') and worker.isRunning():
-                try:
-                    from src.analytics.pipeline import request_cancel
-                    logger.info("Pipeline running -- requesting graceful stop...")
-                    self.status_bar.showMessage("Saving optimization results...")
-                    request_cancel()
-                    worker.stop()
-                    if hasattr(worker, '_thread_ref') and worker._thread_ref is not None:
-                        worker._thread_ref.wait(10000)
-                except Exception as e:
-                    logger.warning("Error during graceful pipeline stop: %s", e)
+        # If a pipeline worker is running, request graceful cancellation and
+        # wait briefly so save-gate logic can complete.
+        pipeline_view = getattr(self, "pipeline", None)
+        if pipeline_view and hasattr(pipeline_view, "request_stop"):
+            try:
+                from src.analytics.pipeline import request_cancel
+
+                logger.info("Pipeline running -- requesting graceful stop...")
+                self.status_bar.showMessage("Saving optimization results...")
+                request_cancel()
+                stopped = bool(pipeline_view.request_stop(timeout_ms=10000))
+                if not stopped:
+                    logger.warning("Pipeline threads did not stop within timeout")
+            except Exception as e:
+                logger.warning("Error during graceful pipeline stop: %s", e)
 
         event.accept()

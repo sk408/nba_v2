@@ -12,14 +12,18 @@ Routes:
 """
 
 import logging
+import hmac
 import os
+import re
+import secrets
 import signal
 import threading
+import time
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, session, abort
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +33,84 @@ app = Flask(
     static_folder=os.path.join(os.path.dirname(__file__), "static"),
 )
 
-# Secret key for session/flash (not critical -- we don't use sessions heavily)
-app.secret_key = os.urandom(24)
+# Secret key for session + CSRF token signing.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or os.urandom(24)
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+
+_MATCHUP_ABBR_RE = re.compile(r"^[A-Za-z]{2,4}$")
+_MATCHUP_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_SYNC_RATE_LIMIT_SECONDS = max(1, int(os.environ.get("NBA_SYNC_RATE_LIMIT_SECONDS", "5")))
+_SHUTDOWN_ENABLED = os.environ.get("NBA_WEB_SHUTDOWN_ENABLED", "0") == "1"
+_SHUTDOWN_TOKEN = os.environ.get("NBA_SHUTDOWN_TOKEN", "").strip()
+_CSRF_PROTECTED_ENDPOINTS = {"api_predict", "api_sync", "api_shutdown"}
+
+
+def _ensure_csrf_token() -> str:
+    token = session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+@app.context_processor
+def _inject_template_globals():
+    return {
+        "csrf_token": _ensure_csrf_token(),
+        "shutdown_enabled": _SHUTDOWN_ENABLED,
+    }
+
+
+@app.before_request
+def _csrf_protect():
+    if request.method != "POST":
+        return None
+    if request.endpoint not in _CSRF_PROTECTED_ENDPOINTS:
+        return None
+    expected = session.get("_csrf_token", "")
+    provided = request.headers.get("X-CSRF-Token", "")
+    if not expected or not provided or not hmac.compare_digest(expected, provided):
+        return jsonify({"error": "CSRF validation failed"}), 403
+    return None
+
+
+@app.after_request
+def _apply_security_headers(response):
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "base-uri 'self'; "
+        "frame-ancestors 'self'; "
+        "form-action 'self'; "
+        "connect-src 'self'; "
+        "img-src 'self' data: https:; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com data:",
+    )
+    return response
+
+
+def _is_valid_matchup_path(home_abbr: str, away_abbr: str, date: str) -> bool:
+    if not _MATCHUP_ABBR_RE.match(home_abbr or ""):
+        return False
+    if not _MATCHUP_ABBR_RE.match(away_abbr or ""):
+        return False
+    if not _MATCHUP_DATE_RE.match(date or ""):
+        return False
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
+def _json_error(message: str, status: int):
+    return jsonify({"error": message}), status
 
 
 # ──────────────────────────────────────────────────────────────
@@ -83,7 +163,7 @@ def _get_todays_games() -> List[Dict[str, Any]]:
                 "is_value_zone": False,
                 "game_score": 0,
                 "vegas_spread": g.get("spread") or 0,
-                "error": str(e),
+                "error": "Prediction unavailable",
             })
 
     return predictions
@@ -236,6 +316,9 @@ def matchup_picker():
 @app.route("/matchup/<home_abbr>/<away_abbr>/<date>")
 def matchup_by_abbr(home_abbr, away_abbr, date):
     """Matchup detail by team abbreviation — resolves to IDs internally."""
+    if not _is_valid_matchup_path(home_abbr, away_abbr, date):
+        abort(404)
+
     from src.database import db as _db
 
     error = None
@@ -271,7 +354,7 @@ def matchup_by_abbr(home_abbr, away_abbr, date):
         )
     except Exception as e:
         logger.error("Matchup by abbr error: %s", e, exc_info=True)
-        error = str(e)
+        error = "Unable to load matchup details right now."
 
     if fund_pred and fund_pred.get("adjustments"):
         sorted_adj = sorted(
@@ -297,6 +380,13 @@ def matchup_by_abbr(home_abbr, away_abbr, date):
 @app.route("/matchup/<int:home_id>/<int:away_id>/<date>")
 def matchup_detail(home_id, away_id, date):
     """Game detail with breakdown + sharp money panel."""
+    if not _MATCHUP_DATE_RE.match(date or ""):
+        abort(404)
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        abort(404)
+
     error = None
     fund_pred = None
     sharp_pred = None
@@ -315,7 +405,7 @@ def matchup_detail(home_id, away_id, date):
         )
     except Exception as e:
         logger.error("Matchup detail error: %s", e, exc_info=True)
-        error = str(e)
+        error = "Unable to load matchup details right now."
 
     # Sort adjustments by absolute magnitude for breakdown table
     if fund_pred and fund_pred.get("adjustments"):
@@ -350,7 +440,7 @@ def accuracy():
         results = run_backtest()
     except Exception as e:
         logger.error("Accuracy page error: %s", e, exc_info=True)
-        error = str(e)
+        error = "Unable to load accuracy metrics right now."
 
     fund = results.get("fundamentals", {}) if results else {}
     sharp = results.get("sharp", {}) if results else {}
@@ -372,40 +462,63 @@ def api_predict():
     Accepts JSON body: {home_id, away_id, date, include_sharp (optional)}
     Returns prediction as JSON.
     """
-    data = request.get_json(force=True, silent=True) or {}
+    if not request.is_json:
+        return _json_error("Content-Type must be application/json", 415)
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return _json_error("Invalid JSON payload", 400)
+
     home_id = data.get("home_id")
     away_id = data.get("away_id")
     game_date = data.get("date")
     include_sharp = bool(data.get("include_sharp", False))
 
     if not home_id or not away_id or not game_date:
-        return jsonify({"error": "Missing required fields: home_id, away_id, date"}), 400
+        return _json_error("Missing required fields: home_id, away_id, date", 400)
+    if not _MATCHUP_DATE_RE.match(str(game_date)):
+        return _json_error("Invalid date format. Expected YYYY-MM-DD.", 400)
+    try:
+        home_id = int(home_id)
+        away_id = int(away_id)
+    except (TypeError, ValueError):
+        return _json_error("home_id and away_id must be integers.", 400)
 
     try:
-        pred = _run_prediction(int(home_id), int(away_id), game_date,
+        pred = _run_prediction(home_id, away_id, game_date,
                                include_sharp=include_sharp)
         return jsonify(pred)
     except Exception as e:
         logger.error("API predict error: %s", e, exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _json_error("Prediction failed. Please try again.", 500)
 
 
 # Background sync state
 _sync_lock = threading.Lock()
 _sync_running = False
 _sync_status = "idle"
+_last_sync_request_at = 0.0
 
 
 @app.route("/api/sync", methods=["POST"])
 def api_sync():
     """Trigger data sync (returns immediately, runs in background)."""
-    global _sync_running, _sync_status
+    global _sync_running, _sync_status, _last_sync_request_at
 
+    now = time.time()
     with _sync_lock:
+        since_last = now - _last_sync_request_at
+        if since_last < _SYNC_RATE_LIMIT_SECONDS:
+            wait_sec = int(max(1, _SYNC_RATE_LIMIT_SECONDS - since_last))
+            return jsonify({
+                "status": "rate_limited",
+                "message": f"Please wait {wait_sec}s before starting another sync.",
+            }), 429
         if _sync_running:
             return jsonify({"status": "already_running", "message": _sync_status})
         _sync_running = True
         _sync_status = "Starting sync..."
+        _last_sync_request_at = now
 
     def _run_sync():
         global _sync_running, _sync_status
@@ -416,7 +529,7 @@ def api_sync():
             _sync_status = "Sync complete"
         except Exception as e:
             logger.error("Background sync error: %s", e, exc_info=True)
-            _sync_status = f"Sync failed: {e}"
+            _sync_status = "Sync failed. See server logs."
         finally:
             with _sync_lock:
                 _sync_running = False
@@ -457,7 +570,7 @@ def api_gamecast_games():
         return jsonify({"games": games})
     except Exception as e:
         logger.error("Gamecast games error: %s", e, exc_info=True)
-        return jsonify({"games": [], "error": str(e)})
+        return jsonify({"games": [], "error": "Unable to load game list right now."}), 500
 
 
 @app.route("/api/gamecast/<game_id>")
@@ -474,7 +587,7 @@ def api_gamecast_data(game_id):
         return jsonify(result)
     except Exception as e:
         logger.error("Gamecast data error for %s: %s", game_id, e, exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return _json_error("Unable to load gamecast data right now.", 500)
 
 
 def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
@@ -938,6 +1051,13 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
 @app.route("/api/shutdown", methods=["POST"])
 def api_shutdown():
     """Shut down the web server and stop background services."""
+    if not _SHUTDOWN_ENABLED:
+        return _json_error("Shutdown endpoint is disabled.", 403)
+    if _SHUTDOWN_TOKEN:
+        provided = request.headers.get("X-Shutdown-Token", "")
+        if not provided or not hmac.compare_digest(provided, _SHUTDOWN_TOKEN):
+            return _json_error("Invalid shutdown token.", 403)
+
     from src.bootstrap import shutdown
     logger.info("Shutdown requested via web UI")
     shutdown()
@@ -947,6 +1067,24 @@ def api_shutdown():
 
     threading.Timer(0.5, _exit).start()
     return jsonify({"status": "shutting_down"})
+
+
+# ──────────────────────────────────────────────────────────────
+# Error handlers
+# ──────────────────────────────────────────────────────────────
+
+@app.errorhandler(404)
+def handle_not_found(_err):
+    if request.path.startswith("/api/"):
+        return _json_error("Not found", 404)
+    return render_template("404.html"), 404
+
+
+@app.errorhandler(500)
+def handle_server_error(_err):
+    if request.path.startswith("/api/"):
+        return _json_error("Internal server error", 500)
+    return render_template("500.html"), 500
 
 
 # ──────────────────────────────────────────────────────────────

@@ -47,13 +47,10 @@ def create_notification(category: str, severity: str, title: str,
     """Create and persist a notification."""
     data_json = json.dumps(data) if data else ""
 
-    db.execute("""
+    nid = db.execute_returning_id("""
         INSERT INTO notifications (category, severity, title, message, created_at, read, data)
         VALUES (?, ?, ?, ?, datetime('now'), 0, ?)
     """, (category, severity, title, message, data_json))
-
-    row = db.fetch_one("SELECT last_insert_rowid() as id")
-    nid = row["id"] if row else 0
 
     notif = {
         "id": nid,

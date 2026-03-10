@@ -130,7 +130,9 @@ class NotificationPanel(QFrame):
         while self.content_layout.count():
             child = self.content_layout.takeAt(0)
             if child.widget():
-                child.widget().deleteLater()
+                w = child.widget()
+                w.setParent(None)
+                w.deleteLater()
 
         try:
             from src.notifications.service import get_recent

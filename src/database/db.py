@@ -161,6 +161,38 @@ def execute(sql: str, params: tuple = ()) -> sqlite3.Cursor:
         _rwlock.write_release()
 
 
+def execute_returning_id(sql: str, params: tuple = ()) -> int:
+    """Execute a write and return inserted row id from the same operation."""
+    _rwlock.write_acquire()
+    try:
+        row_id = 0
+
+        # 1. Write to disk first (source of truth)
+        disk = _get_disk_conn()
+        try:
+            disk_cursor = disk.execute(sql, params)
+            row_id = int(disk_cursor.lastrowid or 0)
+            disk.commit()
+        except Exception:
+            disk.rollback()
+            raise
+
+        # 2. Replay to in-memory copy
+        mem = _get_mem_conn()
+        try:
+            mem_cursor = mem.execute(sql, params)
+            mem.commit()
+            if row_id <= 0:
+                row_id = int(mem_cursor.lastrowid or 0)
+        except Exception:
+            mem.rollback()
+            _reload_memory_unlocked()
+
+        return row_id
+    finally:
+        _rwlock.write_release()
+
+
 def execute_many(sql: str, params_list: List[tuple]) -> None:
     """Execute a write with multiple param sets on BOTH disk and memory."""
     _rwlock.write_acquire()

@@ -60,25 +60,49 @@ def _get_last_game_date() -> str:
 def clear_sync_cache():
     """Delete all freshness metadata so next sync re-fetches everything.
 
-    NOTE: Precompute cache is NOT cleared here — it rebuilds incrementally
-    and is never invalidated by weight/tuning/sync changes.
+    Also invalidates in-memory/disk caches so the next prediction/backtest
+    rebuilds from fresh synced data.
     """
     db.execute("DELETE FROM sync_meta")
     db.execute("DELETE FROM player_sync_cache")
-    # Invalidate compute caches (NOT precompute — it's incremental & independent)
-    # These modules may not exist yet during first-boot; skip gracefully.
+    # Invalidate compute caches. Keep each call isolated so one failure
+    # never prevents other invalidators from running.
     try:
-        from src.analytics.prediction import invalidate_residual_cache, invalidate_elo_cache
-        invalidate_residual_cache()
-        invalidate_elo_cache()
-    except (ImportError, ModuleNotFoundError):
-        pass
+        from src.analytics.prediction import invalidate_precompute_cache
+        invalidate_precompute_cache()
+    except Exception as e:
+        logger.debug("Failed to invalidate precompute cache: %s", e)
+
+    try:
+        from src.analytics.prediction import invalidate_results_cache
+        invalidate_results_cache()
+    except Exception as e:
+        logger.debug("Failed to invalidate results cache: %s", e)
+
+    try:
+        from src.analytics.backtester import invalidate_backtest_cache
+        invalidate_backtest_cache()
+    except Exception as e:
+        logger.debug("Failed to invalidate backtest cache: %s", e)
+
     try:
         from src.analytics.stats_engine import invalidate_stats_caches
         invalidate_stats_caches()
-    except (ImportError, ModuleNotFoundError):
-        pass
-    # TODO: re-implement odds cache invalidation when prediction_quality module is restored
+    except Exception as e:
+        logger.debug("Failed to invalidate stats caches: %s", e)
+
+    try:
+        from src.analytics.weight_config import invalidate_weight_cache
+        invalidate_weight_cache()
+    except Exception as e:
+        logger.debug("Failed to invalidate weight cache: %s", e)
+
+    try:
+        from src.data.gamecast import invalidate_actionnetwork_cache
+        invalidate_actionnetwork_cache()
+    except Exception as e:
+        logger.debug("Failed to invalidate Action Network cache: %s", e)
+
     logger.info("Cleared sync freshness caches (precompute cache preserved)")
 
 
@@ -115,7 +139,7 @@ def nuke_synced_data(callback: Optional[Callable] = None):
     finally:
         db.execute("PRAGMA foreign_keys=ON")
 
-    # 2. Delete disk caches (precompute cache preserved — incremental & independent)
+    # 2. Delete selected disk caches (remaining caches are invalidated below)
     cache_paths = [
         os.path.join("data", "pipeline_state.json"),
     ]
@@ -142,21 +166,42 @@ def nuke_synced_data(callback: Optional[Callable] = None):
         os.remove(csv)
         emit(f"  Deleted: {csv}")
 
-    # 3. Invalidate all in-memory caches
-    # TODO: re-implement odds cache invalidation when prediction_quality module is restored
+    # 3. Invalidate all in-memory caches (independent try blocks).
     try:
-        from src.analytics.prediction import invalidate_residual_cache, invalidate_tuning_cache, invalidate_elo_cache
-        from src.analytics.stats_engine import invalidate_stats_caches
-        from src.analytics.weight_config import invalidate_weight_cache
-        from src.analytics.backtester import invalidate_actual_results_cache
-        invalidate_residual_cache()
-        invalidate_tuning_cache()
-        invalidate_elo_cache()
-        invalidate_stats_caches()
-        invalidate_weight_cache()
-        invalidate_actual_results_cache()
+        from src.analytics.prediction import invalidate_precompute_cache
+        invalidate_precompute_cache()
     except Exception as e:
-        emit(f"  Cache invalidation warning: {e}")
+        emit(f"  Cache invalidation warning (precompute): {e}")
+
+    try:
+        from src.analytics.prediction import invalidate_results_cache
+        invalidate_results_cache()
+    except Exception as e:
+        emit(f"  Cache invalidation warning (results): {e}")
+
+    try:
+        from src.analytics.backtester import invalidate_backtest_cache
+        invalidate_backtest_cache()
+    except Exception as e:
+        emit(f"  Cache invalidation warning (backtest): {e}")
+
+    try:
+        from src.analytics.stats_engine import invalidate_stats_caches
+        invalidate_stats_caches()
+    except Exception as e:
+        emit(f"  Cache invalidation warning (stats): {e}")
+
+    try:
+        from src.analytics.weight_config import invalidate_weight_cache
+        invalidate_weight_cache()
+    except Exception as e:
+        emit(f"  Cache invalidation warning (weights): {e}")
+
+    try:
+        from src.data.gamecast import invalidate_actionnetwork_cache
+        invalidate_actionnetwork_cache()
+    except Exception as e:
+        emit(f"  Cache invalidation warning (actionnetwork): {e}")
 
     emit("Nuke complete! All synced data cleared. Run Force Full Sync to re-fetch.")
 

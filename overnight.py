@@ -19,6 +19,7 @@ from rich.text import Text
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
 
 from src.bootstrap import setup_logging
+from src.analytics.pipeline import PIPELINE_STEPS as CORE_PIPELINE_STEPS
 
 
 # ── Graceful shutdown ─────────────────────────────────────────
@@ -52,11 +53,7 @@ class RichOvernightConsole:
     """Parses pipeline callback messages and renders a structured rich display."""
 
     # Pipeline steps in execution order
-    PIPELINE_STEPS = [
-        "backup", "sync", "seed_arenas", "bbref_sync", "referee_sync",
-        "elo_compute", "precompute", "optimize_fundamentals",
-        "optimize_sharp", "backtest",
-    ]
+    PIPELINE_STEPS = [step_name for step_name, _ in CORE_PIPELINE_STEPS]
 
     STEP_LABELS = {
         "backup": "Backup",

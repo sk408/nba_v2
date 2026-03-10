@@ -2,6 +2,7 @@
 
 import atexit
 import logging
+import os
 import sys
 import threading
 import traceback
@@ -36,6 +37,13 @@ def _thread_excepthook(args):
             )
         ),
     )
+
+
+def should_bootstrap_for_reloader(debug: bool) -> bool:
+    """Return True only in the process that should run background services."""
+    if not debug:
+        return True
+    return os.environ.get("WERKZEUG_RUN_MAIN") == "true"
 
 
 def bootstrap(status_callback=None):

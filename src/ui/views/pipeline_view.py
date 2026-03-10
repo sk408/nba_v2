@@ -25,6 +25,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor
 
 from src.ui.theme import apply_card_shadow
+from src.analytics.pipeline import PIPELINE_STEPS as CORE_PIPELINE_STEPS
 
 logger = logging.getLogger(__name__)
 
@@ -38,18 +39,19 @@ TEXT_PRIMARY = "#e2e8f0"
 TEXT_MUTED = "#94a3b8"
 TEXT_DIM = "#64748b"
 
-# Pipeline steps (name, display label) — must match PIPELINE_STEPS in pipeline.py
+# Pipeline steps sourced from core orchestrator to prevent drift.
+_STEP_LABEL_OVERRIDES = {
+    "sync": "Data Sync",
+    "seed_arenas": "Arenas",
+    "bbref_sync": "BBRef",
+    "referee_sync": "Referees",
+    "elo_compute": "Elo",
+    "optimize_fundamentals": "Optimize Fund.",
+    "optimize_sharp": "Optimize Sharp",
+}
 STEP_LABELS = [
-    ("backup", "Backup"),
-    ("sync", "Data Sync"),
-    ("seed_arenas", "Arenas"),
-    ("bbref_sync", "BBRef"),
-    ("referee_sync", "Referees"),
-    ("elo_compute", "Elo"),
-    ("precompute", "Precompute"),
-    ("optimize_fundamentals", "Optimize Fund."),
-    ("optimize_sharp", "Optimize Sharp"),
-    ("backtest", "Backtest"),
+    (step_name, _STEP_LABEL_OVERRIDES.get(step_name, step_name.replace("_", " ").title()))
+    for step_name, _ in CORE_PIPELINE_STEPS
 ]
 
 
@@ -1051,6 +1053,34 @@ class PipelineView(QWidget):
         self._worker_thread = None
         self._worker = None
         self._current_worker = None
+
+    def request_stop(self, timeout_ms: int = 10000) -> bool:
+        """Request cancellation and wait briefly for active workers to stop."""
+        self._elapsed_timer.stop()
+        all_stopped = True
+
+        if self._worker is not None:
+            try:
+                self._worker.cancel()
+            except Exception as e:
+                logger.debug("Pipeline worker cancel failed: %s", e)
+
+        for thread_attr in ("_worker_thread", "_sync_thread", "_odds_thread"):
+            thread = getattr(self, thread_attr, None)
+            if thread is None:
+                continue
+            try:
+                if thread.isRunning():
+                    thread.quit()
+                    if not thread.wait(timeout_ms):
+                        all_stopped = False
+            except RuntimeError:
+                pass
+            except Exception as e:
+                logger.debug("Failed stopping thread %s: %s", thread_attr, e)
+                all_stopped = False
+
+        return all_stopped
 
     # ---------------------------------------------------------------
     # Snapshot management

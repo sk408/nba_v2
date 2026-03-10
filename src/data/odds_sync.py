@@ -132,7 +132,12 @@ def sync_odds_for_date(game_date: str, callback: Optional[Callable] = None) -> i
         except Exception as e:
             logger.error(f"Failed to parse odds for game {game.get('id')}: {e}")
             
-    # TODO: re-implement odds cache invalidation when prediction_quality module is restored
+    if saved_count > 0:
+        try:
+            from src.data.gamecast import invalidate_actionnetwork_cache
+            invalidate_actionnetwork_cache()
+        except Exception as e:
+            logger.debug("Action Network cache invalidation failed: %s", e)
 
     if callback:
         if saved_count > 0:
@@ -157,21 +162,28 @@ def backfill_odds(callback: Optional[Callable] = None, force: bool = False) -> i
     else:
         # Game-level completeness: find dates where the number of games
         # with complete odds is fewer than the number of games played.
-        # Each game has exactly one game_id; game_odds has one row per game.
+        # Match at game granularity (date + home team + away team).
         rows = db.fetch_all("""
             SELECT game_date
             FROM (
-                SELECT ps.game_date,
-                       COUNT(DISTINCT ps.game_id) as games_played,
-                       COUNT(DISTINCT go.home_team_id) as games_with_odds
-                FROM player_stats ps
-                LEFT JOIN game_odds go
-                    ON go.game_date = ps.game_date
-                    AND go.spread_home_public IS NOT NULL
-                WHERE ps.game_id IS NOT NULL
-                GROUP BY ps.game_date
+                SELECT p.game_date, p.home_team_id, p.away_team_id
+                FROM (
+                    SELECT DISTINCT ps.game_date, ps.team_id AS home_team_id, ps.opponent_team_id AS away_team_id
+                    FROM player_stats ps
+                    WHERE ps.game_id IS NOT NULL
+                      AND ps.is_home = 1
+                ) p
+                LEFT JOIN (
+                    SELECT DISTINCT go.game_date, go.home_team_id, go.away_team_id
+                    FROM game_odds go
+                    WHERE go.spread_home_public IS NOT NULL
+                ) o
+                  ON o.game_date = p.game_date
+                 AND o.home_team_id = p.home_team_id
+                 AND o.away_team_id = p.away_team_id
+                WHERE o.home_team_id IS NULL
             )
-            WHERE games_with_odds < games_played
+            GROUP BY game_date
             ORDER BY game_date DESC
         """)
     
