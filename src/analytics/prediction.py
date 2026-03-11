@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 from src.database import db
 from src.config import get_season, get_config, get_historical_seasons
 from src.analytics.weight_config import WeightConfig, get_weight_config
+from src.analytics.thresholds import MODEL_PICK_EDGE_THRESHOLD, ACTUAL_WIN_THRESHOLD
 from src.analytics.stats_engine import (
     aggregate_projection, get_home_court_advantage, compute_fatigue,
     get_team_abbreviations, get_team_names,
@@ -411,14 +412,14 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
 
     # Pick and confidence
     pred.game_score = game_score
-    pred.pick = "HOME" if game_score > 0 else "AWAY"
+    pred.pick = "HOME" if game_score > MODEL_PICK_EDGE_THRESHOLD else "AWAY"
     # Confidence: |game_score| normalized -- ~15 pts edge = 100% confidence
     pred.confidence = min(100.0, abs(game_score) / 15.0 * 100.0)
 
     # Sharp money agreement (for display, regardless of mode)
     if game.ml_home_public and game.ml_home_money:
         sharp_favors_home = game.ml_home_money > game.ml_home_public
-        model_favors_home = game_score > 0
+        model_favors_home = game_score > MODEL_PICK_EDGE_THRESHOLD
         pred.sharp_agrees = sharp_favors_home == model_favors_home
 
     # Optional post-prediction score calibration.
@@ -504,7 +505,7 @@ def _get_team_metrics(team_id: int, season: Optional[str] = None) -> Dict[str, f
                 team_cache.set(team_id, cache_key, result)
                 return result
     except Exception:
-        pass
+        logger.debug("memory_store team metrics fallback", exc_info=True)
 
     row = db.fetch_one(
         "SELECT * FROM team_metrics WHERE team_id = ? AND season = ?",
@@ -687,7 +688,7 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
                 ml_pub = live_odds.get("ml_home_public", 0) or 0
                 ml_mon = live_odds.get("ml_home_money", 0) or 0
         except Exception:
-            pass
+            logger.debug("live ActionNetwork odds unavailable", exc_info=True)
     if not ml_pub:
         # Fallback to DB (historical or if live fetch failed)
         odds_row = db.fetch_one(
@@ -712,7 +713,7 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
             vegas_home_ml = odds.get("home_moneyline") or 0
             vegas_away_ml = odds.get("away_moneyline") or 0
     except Exception:
-        pass
+        logger.debug("historical Vegas lines unavailable", exc_info=True)
 
     # ── V2.1 features ──
     from src.analytics.elo import get_team_elo
@@ -777,7 +778,7 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
             _ref_fouls_pg = sum(r.get("fouls_per_game", 38.0) or 38.0 for r in _ref_rows) / len(_ref_rows)
             _ref_home_bias = sum(r.get("home_win_pct", 50.0) or 50.0 for r in _ref_rows) / len(_ref_rows)
     except Exception:
-        pass
+        logger.debug("ref crew stats unavailable", exc_info=True)
 
     # Build GameInput
     game = GameInput(
@@ -908,8 +909,9 @@ _CONTEXT_CACHE_FILE = os.path.join(_PRECOMPUTE_CACHE_DIR, "precompute_context.pk
 _mem_pc_cache: Optional[Dict[str, GameInput]] = None
 _mem_pc_schema: Optional[str] = None
 _mem_ctx_cache: Optional[Dict[str, Any]] = None
-_mem_ctx_game_count: Optional[int] = None
+_mem_ctx_fingerprint: Optional[str] = None
 _mem_pc_lock = threading.Lock()
+_MEM_PC_CACHE_MAX_GAMES = 15000
 
 
 def _precompute_schema_version() -> str:
@@ -918,67 +920,171 @@ def _precompute_schema_version() -> str:
     return hashlib.md5(str(names).encode()).hexdigest()[:12]
 
 
+def _source_table_fingerprint(sql: str, params: tuple = ()) -> str:
+    row = db.fetch_one(sql, params) or {}
+    # Deterministic, compact, and cheap to compute.
+    payload = "|".join(str(row.get(k, "")) for k in sorted(row.keys()))
+    return hashlib.md5(payload.encode()).hexdigest()[:16]
+
+
+def _precompute_source_fingerprint() -> str:
+    """Fingerprint source tables used by precompute/cache pipelines."""
+    parts = [
+        _source_table_fingerprint(
+            "SELECT COUNT(*) AS c, COALESCE(MAX(game_date), '') AS max_date, "
+            "COALESCE(SUM(points), 0.0) AS points_sum FROM player_stats"
+        ),
+        _source_table_fingerprint(
+            "SELECT COUNT(*) AS c, COALESCE(MAX(game_date), '') AS max_date, "
+            "COALESCE(SUM(COALESCE(spread, 0.0)), 0.0) AS spread_sum FROM game_odds"
+        ),
+        _source_table_fingerprint(
+            "SELECT COUNT(*) AS c, COALESCE(MAX(last_synced_at), '') AS max_sync "
+            "FROM team_metrics"
+        ),
+        _source_table_fingerprint(
+            "SELECT COUNT(*) AS c, COALESCE(MAX(last_synced_at), '') AS max_sync "
+            "FROM player_impact"
+        ),
+        _source_table_fingerprint(
+            "SELECT COUNT(*) AS c, COALESCE(MAX(game_date), '') AS max_date FROM elo_ratings"
+        ),
+    ]
+    return hashlib.md5("|".join(parts).encode()).hexdigest()[:16]
+
+
+def _compute_actual_results_fingerprint() -> str:
+    """Fingerprint inputs used by get_actual_game_results()."""
+    parts = [
+        _source_table_fingerprint(
+            "SELECT COUNT(*) AS c, COALESCE(MAX(game_date), '') AS max_date, "
+            "COALESCE(SUM(points), 0.0) AS points_sum FROM player_stats"
+        ),
+        _source_table_fingerprint(
+            "SELECT COUNT(*) AS c, COALESCE(MAX(game_date), '') AS max_date, "
+            "COALESCE(SUM(COALESCE(spread, 0.0)), 0.0) AS spread_sum FROM game_odds"
+        ),
+    ]
+    return hashlib.md5("|".join(parts).encode()).hexdigest()[:16]
+
+
+def _backup_cache_file(path: str) -> None:
+    """Keep a single .bak copy before overwriting cache files."""
+    if not os.path.exists(path):
+        return
+    bak_path = f"{path}.bak"
+    try:
+        if os.path.exists(bak_path):
+            os.remove(bak_path)
+        os.replace(path, bak_path)
+    except Exception:
+        logger.debug("cache backup skipped for %s", path, exc_info=True)
+
+
 def _game_cache_key(home_team_id: int, away_team_id: int, game_date: str) -> str:
     """Unique key for a game."""
     return f"{home_team_id}_{away_team_id}_{game_date}"
 
 
-def _load_pc_cache() -> Dict[str, GameInput]:
-    """Load precompute cache from memory or disk. Returns empty dict on miss."""
+def _load_pc_cache(source_fingerprint: str) -> Dict[str, GameInput]:
+    """Load precompute cache from memory or disk.
+
+    Cache reuse is schema-gated (GameInput field layout). Source fingerprints are
+    advisory metadata for diagnostics/context-cache decisions, but do not force a
+    full precompute rebuild.
+    """
     global _mem_pc_cache, _mem_pc_schema
     schema = _precompute_schema_version()
 
     with _mem_pc_lock:
         if _mem_pc_cache is not None and _mem_pc_schema == schema:
-            return _mem_pc_cache
+            return dict(_mem_pc_cache)
 
         try:
             if os.path.exists(_PRECOMPUTE_CACHE_FILE):
                 with open(_PRECOMPUTE_CACHE_FILE, "rb") as f:
                     data = pickle.load(f)
-                if data.get("schema") == schema:
-                    _mem_pc_cache = data["games"]
-                    _mem_pc_schema = schema
-                    logger.info("Loaded precompute cache from disk (%d games)", len(_mem_pc_cache))
-                    return _mem_pc_cache
-                else:
+
+                if not isinstance(data, dict):
+                    logger.info("Precompute cache format mismatch -- will rebuild")
+                    return {}
+
+                if data.get("schema") != schema:
                     logger.info("Precompute cache schema mismatch -- will rebuild")
+                    return {}
+
+                loaded_games_raw = data.get("games")
+                if not isinstance(loaded_games_raw, dict):
+                    logger.info("Precompute cache payload mismatch -- will rebuild")
+                    return {}
+
+                loaded_games = dict(loaded_games_raw)
+                cached_source_fingerprint = str(data.get("source_fingerprint") or "")
+                if (
+                    cached_source_fingerprint
+                    and cached_source_fingerprint != source_fingerprint
+                ):
+                    logger.info(
+                        "Precompute source fingerprint changed "
+                        "(cache=%s, current=%s) -- reusing cached games and "
+                        "computing only missing keys",
+                        cached_source_fingerprint,
+                        source_fingerprint,
+                    )
+
+                if len(loaded_games) <= _MEM_PC_CACHE_MAX_GAMES:
+                    _mem_pc_cache = dict(loaded_games)
+                else:
+                    _mem_pc_cache = None
+                _mem_pc_schema = schema
+                logger.info(
+                    "Loaded precompute cache from disk (%d games)", len(loaded_games)
+                )
+                return dict(loaded_games)
         except Exception as e:
             logger.warning("Failed to load precompute cache: %s", e)
 
     return {}
 
 
-def _save_pc_cache(cache: Dict[str, GameInput]):
+def _save_pc_cache(cache: Dict[str, GameInput], source_fingerprint: str):
     """Persist precompute cache to disk and update in-memory copy."""
     global _mem_pc_cache, _mem_pc_schema
     schema = _precompute_schema_version()
+    snapshot = dict(cache)
     os.makedirs(_PRECOMPUTE_CACHE_DIR, exist_ok=True)
     with _mem_pc_lock:
         try:
+            _backup_cache_file(_PRECOMPUTE_CACHE_FILE)
             with open(_PRECOMPUTE_CACHE_FILE, "wb") as f:
-                pickle.dump({"schema": schema, "games": cache}, f,
+                pickle.dump(
+                    {
+                        "schema": schema,
+                        "source_fingerprint": source_fingerprint,
+                        "games": snapshot,
+                    },
+                    f,
                             protocol=pickle.HIGHEST_PROTOCOL)
-            logger.info("Saved precompute cache to disk (%d games)", len(cache))
+            logger.info("Saved precompute cache to disk (%d games)", len(snapshot))
         except Exception as e:
             logger.warning("Failed to save precompute cache: %s", e)
-        _mem_pc_cache = cache
+        _mem_pc_cache = dict(snapshot) if len(snapshot) <= _MEM_PC_CACHE_MAX_GAMES else None
         _mem_pc_schema = schema
 
 
 def invalidate_precompute_cache():
     """Clear all precompute caches (games + context, memory + disk)."""
-    global _mem_pc_cache, _mem_pc_schema, _mem_ctx_cache, _mem_ctx_game_count
+    global _mem_pc_cache, _mem_pc_schema, _mem_ctx_cache, _mem_ctx_fingerprint
     _mem_pc_cache = None
     _mem_pc_schema = None
     _mem_ctx_cache = None
-    _mem_ctx_game_count = None
+    _mem_ctx_fingerprint = None
     for path in (_PRECOMPUTE_CACHE_FILE, _CONTEXT_CACHE_FILE):
         try:
             if os.path.exists(path):
                 os.remove(path)
         except Exception:
-            pass
+            logger.debug("cache delete skipped for %s", path, exc_info=True)
     logger.info("Invalidated all precompute caches")
 
 
@@ -986,51 +1092,52 @@ def invalidate_precompute_cache():
 # Precompute context: historical rosters + inferred injuries
 # ──────────────────────────────────────────────────────────────
 
-def _load_ctx_cache(game_count: int) -> Optional[Dict[str, Any]]:
-    """Load precompute context from memory or disk if game count matches."""
-    global _mem_ctx_cache, _mem_ctx_game_count
-    if _mem_ctx_cache is not None and _mem_ctx_game_count == game_count:
+def _load_ctx_cache(source_fingerprint: str) -> Optional[Dict[str, Any]]:
+    """Load precompute context from memory or disk if fingerprint matches."""
+    global _mem_ctx_cache, _mem_ctx_fingerprint
+    if _mem_ctx_cache is not None and _mem_ctx_fingerprint == source_fingerprint:
         return _mem_ctx_cache
     try:
         if os.path.exists(_CONTEXT_CACHE_FILE):
             with open(_CONTEXT_CACHE_FILE, "rb") as f:
                 data = pickle.load(f)
-            if data.get("game_count") == game_count:
+            if data.get("source_fingerprint") == source_fingerprint:
                 _mem_ctx_cache = data["ctx"]
-                _mem_ctx_game_count = game_count
-                logger.info("Loaded precompute context from disk (%d games)", game_count)
+                _mem_ctx_fingerprint = source_fingerprint
+                logger.info("Loaded precompute context from disk")
                 return _mem_ctx_cache
     except Exception as e:
         logger.warning("Failed to load context cache: %s", e)
     return None
 
 
-def _save_ctx_cache(ctx: Dict[str, Any], game_count: int):
+def _save_ctx_cache(ctx: Dict[str, Any], source_fingerprint: str):
     """Persist precompute context to disk."""
-    global _mem_ctx_cache, _mem_ctx_game_count
+    global _mem_ctx_cache, _mem_ctx_fingerprint
     os.makedirs(_PRECOMPUTE_CACHE_DIR, exist_ok=True)
     try:
+        _backup_cache_file(_CONTEXT_CACHE_FILE)
         with open(_CONTEXT_CACHE_FILE, "wb") as f:
-            pickle.dump({"game_count": game_count, "ctx": ctx}, f,
+            pickle.dump({"source_fingerprint": source_fingerprint, "ctx": ctx}, f,
                         protocol=pickle.HIGHEST_PROTOCOL)
-        logger.info("Saved precompute context to disk (%d games)", game_count)
+        logger.info("Saved precompute context to disk")
     except Exception as e:
         logger.warning("Failed to save context cache: %s", e)
     _mem_ctx_cache = ctx
-    _mem_ctx_game_count = game_count
+    _mem_ctx_fingerprint = source_fingerprint
 
 
-def _build_precompute_context(games: List[Dict], force: bool = False) -> Dict[str, Any]:
+def _build_precompute_context(
+    games: List[Dict], source_fingerprint: str, force: bool = False
+) -> Dict[str, Any]:
     """Build lookup tables for historical roster + injury inference.
 
     One bulk SQL query determines which team each player was on for every
     game. For each game we can infer injuries by comparing the recent active
     roster vs who actually played. Cached to disk.
     """
-    game_count = len(games)
-
     if not force:
-        cached = _load_ctx_cache(game_count)
+        cached = _load_ctx_cache(source_fingerprint)
         if cached is not None:
             return cached
 
@@ -1050,13 +1157,29 @@ def _build_precompute_context(games: List[Dict], force: bool = False) -> Dict[st
             "position": r["position"],
         }
 
-    # All player game appearances
-    rows = db.fetch_all("""
-        SELECT player_id, game_id, game_date, is_home,
-               points, minutes
-        FROM player_stats
-        ORDER BY game_date
-    """)
+    # All player game appearances (scoped to seasons present in these games).
+    game_seasons = sorted({_game_date_to_season(g["game_date"]) for g in games if g.get("game_date")})
+    if game_seasons:
+        placeholders = ",".join("?" for _ in game_seasons)
+        rows = db.fetch_all(
+            f"""
+            SELECT player_id, game_id, game_date, is_home,
+                   points, minutes
+            FROM player_stats
+            WHERE season IN ({placeholders})
+            ORDER BY game_date
+            """,
+            tuple(game_seasons),
+        )
+    else:
+        rows = db.fetch_all(
+            """
+            SELECT player_id, game_id, game_date, is_home,
+                   points, minutes
+            FROM player_stats
+            ORDER BY game_date
+            """
+        )
 
     team_game_players: Dict[tuple, set] = defaultdict(set)
     player_season_stats: Dict[int, List[Dict]] = defaultdict(list)
@@ -1100,7 +1223,7 @@ def _build_precompute_context(games: List[Dict], force: bool = False) -> Dict[st
         "player_info": player_info,
         "player_avg": player_avg,
     }
-    _save_ctx_cache(result, game_count)
+    _save_ctx_cache(result, source_fingerprint)
     return result
 
 
@@ -1160,24 +1283,25 @@ def _infer_historical_injuries(team_id: int, game_date: str,
 # ──────────────────────────────────────────────────────────────
 
 _actual_results_cache: Optional[List[Dict]] = None
-_actual_results_game_count: Optional[int] = None
+_actual_results_fingerprint: Optional[str] = None
 
 
 def get_actual_game_results(team_id: Optional[int] = None) -> List[Dict[str, Any]]:
     """Aggregate player_stats by (game_id, is_home) to reconstruct game scores.
 
-    Cached at module level -- only rebuilt when game count changes.
+    Cached at module level and invalidated by source-data fingerprint.
     """
-    global _actual_results_cache, _actual_results_game_count
+    global _actual_results_cache, _actual_results_fingerprint
+    source_fingerprint = _compute_actual_results_fingerprint()
 
-    current_count_row = db.fetch_one("SELECT COUNT(*) as c FROM player_stats")
-    current_count = current_count_row["c"] if current_count_row else 0
-
-    if _actual_results_cache is not None and current_count == _actual_results_game_count:
+    if _actual_results_cache is not None and source_fingerprint == _actual_results_fingerprint:
         if team_id:
-            return [g for g in _actual_results_cache
-                    if g["home_team_id"] == team_id or g["away_team_id"] == team_id]
-        return list(_actual_results_cache)
+            return [
+                dict(g)
+                for g in _actual_results_cache
+                if g["home_team_id"] == team_id or g["away_team_id"] == team_id
+            ]
+        return [dict(g) for g in _actual_results_cache]
 
     query = """
         SELECT ps.game_id, ps.game_date, ps.is_home,
@@ -1216,9 +1340,9 @@ def get_actual_game_results(team_id: Optional[int] = None) -> List[Dict[str, Any
             continue
 
         spread = home_score - away_score
-        if spread > 0.5:
+        if spread > ACTUAL_WIN_THRESHOLD:
             winner = "HOME"
-        elif spread < -0.5:
+        elif spread < -ACTUAL_WIN_THRESHOLD:
             winner = "AWAY"
         else:
             winner = "PUSH"
@@ -1267,19 +1391,22 @@ def get_actual_game_results(team_id: Optional[int] = None) -> List[Dict[str, Any
             g["ml_home_money"] = None
 
     _actual_results_cache = results
-    _actual_results_game_count = current_count
+    _actual_results_fingerprint = source_fingerprint
 
     if team_id:
-        return [g for g in results
-                if g["home_team_id"] == team_id or g["away_team_id"] == team_id]
-    return list(results)
+        return [
+            dict(g)
+            for g in results
+            if g["home_team_id"] == team_id or g["away_team_id"] == team_id
+        ]
+    return [dict(g) for g in results]
 
 
 def invalidate_results_cache():
     """Clear cached game results (call when new data is synced)."""
-    global _actual_results_cache, _actual_results_game_count
+    global _actual_results_cache, _actual_results_fingerprint
     _actual_results_cache = None
-    _actual_results_game_count = None
+    _actual_results_fingerprint = None
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1291,14 +1418,16 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
 
     Uses a persistent disk + memory cache so that already-computed historical
     games are never reprocessed. Only truly new games go through the expensive
-    per-game projection pipeline.
+    per-game projection pipeline. Cache invalidates automatically when the
+    GameInput schema changes (or when ``force=True`` is used).
 
     Pass ``force=True`` to discard the cache and recompute everything.
     """
     from src.database.db import ensure_thread_local_db
+    source_fingerprint = _precompute_source_fingerprint()
 
     # Load cache
-    cache = {} if force else _load_pc_cache()
+    cache = {} if force else _load_pc_cache(source_fingerprint)
 
     all_games = get_actual_game_results()
     if not all_games:
@@ -1314,6 +1443,7 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
     valid_teams = {tid for tid, cnt in team_games.items() if cnt >= 5}
     games = [g for g in all_games
              if g.get("home_team_id") in valid_teams and g.get("away_team_id") in valid_teams]
+    game_seasons = sorted({_game_date_to_season(g["game_date"]) for g in games if g.get("game_date")})
 
     # Determine which games still need computing
     valid_keys = set()
@@ -1338,7 +1468,7 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
     # Build historical context ONCE
     if callback:
         callback("Building historical roster & injury context...")
-    ctx = _build_precompute_context(all_games)
+    ctx = _build_precompute_context(games, source_fingerprint)
 
     # Pre-load memory store so player_splits() / _get_team_metrics() use
     # pandas DataFrames instead of per-player DB queries.
@@ -1352,16 +1482,26 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
     # ── Pre-build invariant lookup caches (read once, used per-game) ──
     import bisect
 
-    # Elo: team_id -> sorted [(game_date, elo), ...]
-    _elo_rows = db.fetch_all(
-        "SELECT team_id, game_date, elo FROM elo_ratings ORDER BY team_id, game_date"
-    )
+    # Elo: (team_id, season) -> sorted [(game_date, elo), ...]
+    if game_seasons:
+        placeholders = ",".join("?" for _ in game_seasons)
+        _elo_rows = db.fetch_all(
+            f"SELECT team_id, game_date, season, elo FROM elo_ratings "
+            f"WHERE season IN ({placeholders}) ORDER BY team_id, season, game_date",
+            tuple(game_seasons),
+        )
+    else:
+        _elo_rows = db.fetch_all(
+            "SELECT team_id, game_date, season, elo FROM elo_ratings "
+            "ORDER BY team_id, season, game_date"
+        )
     _elo_by_team: dict = {}
     for _r in (_elo_rows or []):
-        _elo_by_team.setdefault(_r["team_id"], []).append((_r["game_date"], _r["elo"]))
+        _key = (_r["team_id"], _r.get("season") or "")
+        _elo_by_team.setdefault(_key, []).append((_r["game_date"], _r["elo"]))
 
-    def _cached_elo(team_id: int, game_date: str) -> float:
-        entries = _elo_by_team.get(team_id)
+    def _cached_elo(team_id: int, game_date: str, season: str) -> float:
+        entries = _elo_by_team.get((team_id, season)) or _elo_by_team.get((team_id, ""))
         if not entries:
             return 1500.0
         idx = bisect.bisect_left(entries, (game_date,)) - 1
@@ -1569,8 +1709,8 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
             vegas_away_ml=g.get("vegas_away_ml") or 0,
             # ── V2.1 fields ──
             # Elo (from pre-built cache)
-            home_elo=_cached_elo(htid, gdate),
-            away_elo=_cached_elo(atid, gdate),
+            home_elo=_cached_elo(htid, gdate, game_season),
+            away_elo=_cached_elo(atid, gdate, game_season),
             # Travel
             home_travel_miles=_home_travel["travel_miles"],
             away_travel_miles=_away_travel["travel_miles"],
@@ -1636,7 +1776,7 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
         cache[key] = gi
 
     if new_results:
-        _save_pc_cache(cache)
+        _save_pc_cache(cache, source_fingerprint)
 
     # Return only valid games
     result = [cache[k] for k in valid_keys if k in cache]

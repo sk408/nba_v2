@@ -34,7 +34,7 @@ TEXT_DIM = "#64748b"
 class _CDWorker(QObject):
     """Runs coordinate descent on a background thread."""
     progress = Signal(str)
-    finished = Signal(dict)
+    finished = Signal(object)
     error = Signal(str)
 
     def __init__(self, include_sharp: bool, steps: int, max_rounds: int):
@@ -949,7 +949,7 @@ class SettingsView(QWidget):
                     if k in defaults and abs(v - defaults[k]) > 0.001:
                         non_default += 1
             except Exception:
-                pass
+                logger.debug("default-weight summary unavailable", exc_info=True)
             total = len(d)
             self._weights_summary_lbl.setText(
                 f"Current weights: {total} parameters, "
@@ -1190,6 +1190,27 @@ class SettingsView(QWidget):
             self._cd_worker.deleteLater()
         self._cd_thread = None
         self._cd_worker = None
+
+    def request_stop(self, timeout_ms: int = 5000) -> bool:
+        """Cancel coordinate descent worker and wait for thread exit."""
+        if self._cd_worker is not None:
+            try:
+                self._cd_worker.cancel()
+            except Exception:
+                logger.debug("CD worker cancel failed", exc_info=True)
+        thread = self._cd_thread
+        if thread is None:
+            return True
+        try:
+            if not thread.isRunning():
+                return True
+        except RuntimeError:
+            return True
+        thread.quit()
+        stopped = bool(thread.wait(max(0, int(timeout_ms))))
+        if not stopped:
+            logger.warning("Settings coordinate-descent thread did not stop in %dms", timeout_ms)
+        return stopped
 
     def _notify(self, msg: str):
         """Show a status bar message."""

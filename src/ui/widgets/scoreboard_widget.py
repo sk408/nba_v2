@@ -127,7 +127,7 @@ class ScoreboardWidget(QWidget):
                         if r.status_code == 200 and r.content:
                             _espn_headshot_data[self.url] = r.content
                 except Exception:
-                    pass
+                    logger.debug("Substitution headshot fetch failed for %s", self.url, exc_info=True)
 
         for key, url_key, name_key in [("in_pixmap", "in_url", "in_name"), ("out_pixmap", "out_url", "out_name")]:
             if not self._sub_data.get(key):
@@ -145,7 +145,7 @@ class ScoreboardWidget(QWidget):
                             from src.ui.widgets.image_utils import get_player_photo
                             pix = get_player_photo(local_pid, 64, circle=True)
                 except Exception:
-                    pass
+                    logger.debug("Substitution local photo lookup failed for %s", name, exc_info=True)
                 
                 if not pix and url:
                     try:

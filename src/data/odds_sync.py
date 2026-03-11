@@ -1,8 +1,8 @@
 import logging
-import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, Callable
 from src.database import db
+from src.data.http_client import get_json, HttpClientError
 
 logger = logging.getLogger(__name__)
 
@@ -15,17 +15,26 @@ def fetch_action_odds(date_str: str) -> list:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json"
         }
-        resp = requests.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+        data = get_json(
+            url,
+            headers=headers,
+            timeout=10,
+            retries=3,
+            backoff_base=0.8,
+        )
         return data.get("games", [])
-    except Exception as e:
+    except HttpClientError as e:
         logger.error(f"Error fetching Action Network odds for {date_str}: {e}")
+        logger.debug("ActionNetwork fetch stacktrace", exc_info=True)
         return []
 
 from src.utils.team_mapper import normalize_action_abbr as _map_action_abbrev
 
-def sync_odds_for_date(game_date: str, callback: Optional[Callable] = None) -> int:
+def sync_odds_for_date(
+    game_date: str,
+    callback: Optional[Callable] = None,
+    invalidate_cache: bool = True,
+) -> int:
     """Fetch and store odds for all games on a date (YYYY-MM-DD)."""
     action_date = game_date.replace("-", "")
     games = fetch_action_odds(action_date)
@@ -132,12 +141,12 @@ def sync_odds_for_date(game_date: str, callback: Optional[Callable] = None) -> i
         except Exception as e:
             logger.error(f"Failed to parse odds for game {game.get('id')}: {e}")
             
-    if saved_count > 0:
+    if saved_count > 0 and invalidate_cache:
         try:
-            from src.data.gamecast import invalidate_actionnetwork_cache
-            invalidate_actionnetwork_cache()
+            from src.analytics.cache_registry import invalidate_for_event
+            invalidate_for_event("post_odds_sync")
         except Exception as e:
-            logger.debug("Action Network cache invalidation failed: %s", e)
+            logger.debug("Odds cache invalidation failed: %s", e)
 
     if callback:
         if saved_count > 0:
@@ -199,7 +208,7 @@ def backfill_odds(callback: Optional[Callable] = None, force: bool = False) -> i
         if not game_date or len(game_date) != 10:
             continue
         try:
-            saved = sync_odds_for_date(game_date)
+            saved = sync_odds_for_date(game_date, invalidate_cache=False)
             total_saved += saved
             # Sleep to avoid rate limiting from Action Network
             time.sleep(0.5)
@@ -211,5 +220,12 @@ def backfill_odds(callback: Optional[Callable] = None, force: bool = False) -> i
             
     if callback:
         callback(f"Odds backfill complete! Saved/updated odds for {total_saved} games.")
+
+    if total_saved > 0:
+        try:
+            from src.analytics.cache_registry import invalidate_for_event
+            invalidate_for_event("post_odds_sync")
+        except Exception as e:
+            logger.debug("Backfill cache invalidation failed: %s", e)
         
     return total_saved

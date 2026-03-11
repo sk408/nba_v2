@@ -61,7 +61,7 @@ STEP_LABELS = [
 
 class _PipelineWorker(QObject):
     """Background worker that runs the full pipeline."""
-    finished = Signal(dict)
+    finished = Signal(object)
     error = Signal(str)
     progress = Signal(str)
     step_changed = Signal(str)  # current step name
@@ -83,7 +83,7 @@ class _PipelineWorker(QObject):
             from src.analytics.pipeline import request_cancel
             request_cancel()
         except Exception:
-            pass
+            logger.debug("Pipeline cancel request failed", exc_info=True)
 
     def run(self):
         try:
@@ -114,7 +114,7 @@ class _PipelineWorker(QObject):
                 step_name = after_bracket.split("...")[0].strip()
                 self.step_changed.emit(step_name)
             except Exception:
-                pass
+                logger.debug("Failed to parse pipeline step from progress message", exc_info=True)
 
 
 # ----------------------------------------------------------------
@@ -123,7 +123,7 @@ class _PipelineWorker(QObject):
 
 class _SyncWorker(QObject):
     """Background worker that runs data sync only."""
-    finished = Signal(dict)
+    finished = Signal(object)
     error = Signal(str)
     progress = Signal(str)
 
@@ -148,7 +148,7 @@ class _SyncWorker(QObject):
 
 class _OddsSyncWorker(QObject):
     """Background worker that runs odds sync only."""
-    finished = Signal(dict)
+    finished = Signal(object)
     error = Signal(str)
     progress = Signal(str)
 
@@ -482,6 +482,13 @@ class PipelineView(QWidget):
         self._step_timing_lbl.setWordWrap(True)
         state_layout.addWidget(self._step_timing_lbl)
 
+        self._save_gate_lbl = QLabel("")
+        self._save_gate_lbl.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-size: 12px;"
+        )
+        self._save_gate_lbl.setWordWrap(True)
+        state_layout.addWidget(self._save_gate_lbl)
+
         apply_card_shadow(self._state_frame)
         parent_layout.addWidget(self._state_frame)
 
@@ -570,6 +577,13 @@ class PipelineView(QWidget):
         m = m % 60
         return f"{h}h {m}m"
 
+    @staticmethod
+    def _short_text(text: str, max_len: int = 170) -> str:
+        text = str(text or "").strip()
+        if len(text) <= max_len:
+            return text
+        return text[: max(0, max_len - 3)].rstrip() + "..."
+
     # ---------------------------------------------------------------
     # Pipeline state (last run)
     # ---------------------------------------------------------------
@@ -648,6 +662,32 @@ class PipelineView(QWidget):
 
         if timing_parts:
             self._step_timing_lbl.setText("  |  ".join(timing_parts))
+        else:
+            self._step_timing_lbl.setText("")
+
+        gate_parts = []
+        for step_name, short_name in (
+            ("optimize_fundamentals", "Fund"),
+            ("optimize_sharp", "Sharp"),
+        ):
+            info = state.get(f"step_{step_name}", {})
+            if not isinstance(info, dict):
+                continue
+            gate = info.get("save_gate")
+            if not isinstance(gate, dict):
+                continue
+            saved = bool(gate.get("saved", False))
+            reason = self._short_text(gate.get("reason", ""), 120)
+            if saved:
+                gate_parts.append(f"{short_name}: pass")
+            elif reason:
+                gate_parts.append(f"{short_name}: {reason}")
+            else:
+                gate_parts.append(f"{short_name}: blocked")
+        if gate_parts:
+            self._save_gate_lbl.setText("Save gate: " + "  |  ".join(gate_parts))
+        else:
+            self._save_gate_lbl.setText("")
 
         # Update step indicators from state
         for step_name, _ in STEP_LABELS:
@@ -992,6 +1032,8 @@ class PipelineView(QWidget):
                 f"color: {GREEN}; font-size: 13px; font-weight: 700;"
             )
 
+        self._append_save_gate_summary(result)
+
         self._reset_controls()
         self._load_pipeline_state()
         self._refresh_snapshots()
@@ -1001,6 +1043,44 @@ class PipelineView(QWidget):
                 f"Pipeline {'cancelled' if cancelled else 'complete'} "
                 f"in {self._fmt_seconds(elapsed)}"
             )
+
+    def _append_save_gate_summary(self, result: dict):
+        """Append save-gate decisions from pipeline/overnight payload."""
+        if not isinstance(result, dict):
+            return
+
+        for step_key, label in (
+            ("optimize_fundamentals", "Fundamentals"),
+            ("optimize_sharp", "Sharp"),
+        ):
+            step_result = result.get(step_key)
+            if not isinstance(step_result, dict):
+                continue
+            saved = bool(step_result.get("improved", False))
+            reason = self._short_text(step_result.get("save_gate_reason", ""), 180)
+            if saved:
+                self._log_text.append(f"{label} save gate: pass")
+            elif reason:
+                self._log_text.append(f"{label} save gate: {reason}")
+
+        pass_summaries = result.get("save_gate_passes")
+        if not isinstance(pass_summaries, list) or not pass_summaries:
+            return
+        self._log_text.append("Overnight save gate summary:")
+        for entry in pass_summaries[-5:]:
+            if not isinstance(entry, dict):
+                continue
+            pass_id = entry.get("pass", "?")
+            for model_key, label in (("fundamentals", "Fund"), ("sharp", "Sharp")):
+                gate = entry.get(model_key)
+                if not isinstance(gate, dict):
+                    continue
+                if bool(gate.get("saved", False)):
+                    self._log_text.append(f"  Pass {pass_id} {label}: pass")
+                else:
+                    reason = self._short_text(gate.get("reason", ""), 140)
+                    if reason:
+                        self._log_text.append(f"  Pass {pass_id} {label}: {reason}")
 
     def _on_error(self, msg: str):
         """Handle pipeline error."""
@@ -1075,7 +1155,7 @@ class PipelineView(QWidget):
                     if not thread.wait(timeout_ms):
                         all_stopped = False
             except RuntimeError:
-                pass
+                logger.debug("Thread already deleted while stopping %s", thread_attr, exc_info=True)
             except Exception as e:
                 logger.debug("Failed stopping thread %s: %s", thread_attr, e)
                 all_stopped = False

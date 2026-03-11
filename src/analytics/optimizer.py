@@ -25,6 +25,7 @@ from src.analytics.weight_config import (
     OPTIMIZER_RANGES, SHARP_MODE_RANGES, invalidate_weight_cache,
     CD_RANGES, CD_SHARP_RANGES,
 )
+from src.analytics.thresholds import MODEL_PICK_EDGE_THRESHOLD, ACTUAL_WIN_THRESHOLD
 from src.utils.settings_helpers import (
     safe_bool_setting,
     safe_float_setting,
@@ -834,11 +835,11 @@ class VectorizedGames:
         # ──────────────────────────────────────────────────────────
 
         # Winner accuracy
-        pred_home_win = game_score > 0
-        pred_away_win = game_score < 0
-        actual_home_win = self.actual_spread > 0.5
-        actual_away_win = self.actual_spread < -0.5
-        actual_push = np.abs(self.actual_spread) <= 0.5
+        pred_home_win = game_score > MODEL_PICK_EDGE_THRESHOLD
+        pred_away_win = game_score < -MODEL_PICK_EDGE_THRESHOLD
+        actual_home_win = self.actual_spread > ACTUAL_WIN_THRESHOLD
+        actual_away_win = self.actual_spread < -ACTUAL_WIN_THRESHOLD
+        actual_push = np.abs(self.actual_spread) <= ACTUAL_WIN_THRESHOLD
 
         correct = ((pred_home_win & actual_home_win)
                     | (pred_away_win & actual_away_win)
@@ -860,8 +861,8 @@ class VectorizedGames:
             favorites_pct = 0.0
 
         # Upset detection
-        # Model picks home when game_score > 0, away when game_score < 0
-        model_picks_home = game_score > 0
+        # Model picks home when game_score exceeds threshold.
+        model_picks_home = game_score > MODEL_PICK_EDGE_THRESHOLD
         # Upset = model disagrees with Vegas on who wins
         model_picks_upset = model_picks_home != vegas_fav_home
         upset_correct = (model_picks_upset
@@ -1069,6 +1070,13 @@ def optimize_weights(
 
     # Select parameter ranges
     ranges = SHARP_MODE_RANGES if include_sharp else OPTIMIZER_RANGES
+    deterministic = _safe_bool_setting("optimizer_deterministic", False)
+    deterministic_seed = _safe_int_setting("optimizer_deterministic_seed", 42)
+    if deterministic:
+        random.seed(deterministic_seed)
+        np.random.seed(deterministic_seed)
+        if callback:
+            callback(f"Deterministic optimizer mode enabled (seed={deterministic_seed})")
 
     try:
         import optuna
@@ -1089,6 +1097,8 @@ def optimize_weights(
         # A new hash creates a new study (old trials become irrelevant).
         range_keys = sorted(ranges.keys())
         version_blob = ",".join(range_keys) + "|" + train_games[-1].game_date
+        if deterministic:
+            version_blob += f"|deterministic:{deterministic_seed}"
         version_hash = hashlib.md5(version_blob.encode()).hexdigest()[:8]
         study_name = f"{'sharp' if include_sharp else 'fundamentals'}_{version_hash}"
 
@@ -1097,8 +1107,10 @@ def optimize_weights(
             "data", "optuna_studies.db")
         storage_url = f"sqlite:///{db_path}"
 
+        reuse_study_cache = not deterministic
+
         # Reuse cached in-memory study across passes (avoids reloading 18K+ trials)
-        if study_name in _study_cache:
+        if reuse_study_cache and study_name in _study_cache:
             study = _study_cache[study_name]
             prior_trials = len([t for t in study.trials
                                 if t.state == optuna.trial.TrialState.COMPLETE])
@@ -1109,7 +1121,10 @@ def optimize_weights(
             # First call: load from disk, then cache in memory.
             # IPOP restart strategy: when CMA-ES converges (step size shrinks),
             # it restarts with doubled population size to escape local minima.
-            sampler = optuna.samplers.CmaEsSampler(restart_strategy="ipop")
+            sampler = optuna.samplers.CmaEsSampler(
+                restart_strategy="ipop",
+                seed=deterministic_seed if deterministic else None,
+            )
 
             # Load best N trials from disk to warm-start CMA-ES.
             # Too many trials locks CMA-ES into a converged state;
@@ -1117,22 +1132,23 @@ def optimize_weights(
             MAX_SEED_TRIALS = 3000
             prior_trials = 0
             seed_trials = []
-            try:
-                disk_study = optuna.load_study(
-                    study_name=study_name,
-                    storage=storage_url,
-                )
-                disk_completed = [t for t in disk_study.trials
-                                  if t.state == optuna.trial.TrialState.COMPLETE]
-                prior_trials = len(disk_completed)
-                if prior_trials > MAX_SEED_TRIALS:
-                    # Keep the best trials for warm-starting
-                    disk_completed.sort(key=lambda t: t.value)
-                    seed_trials = disk_completed[:MAX_SEED_TRIALS]
-                else:
-                    seed_trials = disk_completed
-            except KeyError:
-                pass
+            if not deterministic:
+                try:
+                    disk_study = optuna.load_study(
+                        study_name=study_name,
+                        storage=storage_url,
+                    )
+                    disk_completed = [t for t in disk_study.trials
+                                      if t.state == optuna.trial.TrialState.COMPLETE]
+                    prior_trials = len(disk_completed)
+                    if prior_trials > MAX_SEED_TRIALS:
+                        # Keep the best trials for warm-starting
+                        disk_completed.sort(key=lambda t: t.value)
+                        seed_trials = disk_completed[:MAX_SEED_TRIALS]
+                    else:
+                        seed_trials = disk_completed
+                except KeyError:
+                    pass
 
             study = optuna.create_study(
                 study_name=study_name,
@@ -1142,7 +1158,8 @@ def optimize_weights(
             if seed_trials:
                 study.add_trials(seed_trials)
 
-            _study_cache[study_name] = study
+            if reuse_study_cache:
+                _study_cache[study_name] = study
             if callback:
                 loaded = len(seed_trials)
                 callback(f"Study '{study_name}': {prior_trials} prior trials on disk, "
@@ -1205,7 +1222,7 @@ def optimize_weights(
                                     ckpt_delta, min_weight_delta
                                 )
                     except Exception:
-                        pass  # checkpoint is best-effort
+                        logger.debug("checkpoint save skipped", exc_info=True)
             else:
                 _stagnation_counter[0] += 1
 
@@ -1447,6 +1464,8 @@ def optimize_weights(
         "save_gate_reason": save_reason,
         "save_gate_details": save_details,
         "train_loss": best_train_loss,
+        "deterministic": deterministic,
+        "deterministic_seed": deterministic_seed if deterministic else None,
         **best_val,
     }
 
@@ -1533,19 +1552,19 @@ def compare_modes(
     gs -= vg.away_b2b_at_altitude * w.altitude_b2b_penalty
 
     # Fundamentals-only picks
-    fund_picks_home = gs > 0
+    fund_picks_home = gs > MODEL_PICK_EDGE_THRESHOLD
 
     # With sharp
     gs_sharp = gs + vg.sharp_ml_edge * w.sharp_ml_weight
-    sharp_picks_home = gs_sharp > 0
+    sharp_picks_home = gs_sharp > MODEL_PICK_EDGE_THRESHOLD
 
     # Flipped picks
     flipped = fund_picks_home != sharp_picks_home
     n_flipped = int(np.sum(flipped))
 
     # Accuracy of flipped picks
-    actual_home_win = vg.actual_spread > 0.5
-    actual_away_win = vg.actual_spread < -0.5
+    actual_home_win = vg.actual_spread > ACTUAL_WIN_THRESHOLD
+    actual_away_win = vg.actual_spread < -ACTUAL_WIN_THRESHOLD
     if n_flipped > 0:
         flipped_correct = (
             (sharp_picks_home[flipped] & actual_home_win[flipped])

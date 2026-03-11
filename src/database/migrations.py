@@ -2,7 +2,7 @@
 
 import logging
 
-from src.database.db import execute_script, execute, fetch_all, fetch_one
+from src.database.db import execute_script, execute, execute_many, fetch_all, fetch_one
 
 _log = logging.getLogger(__name__)
 
@@ -351,6 +351,7 @@ CREATE TABLE IF NOT EXISTS game_referees (
 CREATE TABLE IF NOT EXISTS elo_ratings (
     team_id    INTEGER NOT NULL,
     game_date  TEXT NOT NULL,
+    season     TEXT NOT NULL DEFAULT '',
     elo        REAL NOT NULL DEFAULT 1500.0,
     PRIMARY KEY (team_id, game_date)
 );
@@ -374,6 +375,7 @@ CREATE INDEX IF NOT EXISTS idx_injuries_team ON injuries(team_id);
 CREATE INDEX IF NOT EXISTS idx_injuries_player ON injuries(player_id);
 CREATE INDEX IF NOT EXISTS idx_player_stats_season ON player_stats(season, game_date);
 CREATE INDEX IF NOT EXISTS idx_elo_ratings_date ON elo_ratings(game_date DESC);
+CREATE INDEX IF NOT EXISTS idx_elo_ratings_team_season_date ON elo_ratings(team_id, season, game_date DESC);
 CREATE INDEX IF NOT EXISTS idx_game_referees_date ON game_referees(game_date, home_team_id);
 CREATE INDEX IF NOT EXISTS idx_referees_season ON referees(season);
 """
@@ -385,16 +387,17 @@ def _migrate_player_stats_season():
         execute("ALTER TABLE player_stats ADD COLUMN season TEXT NOT NULL DEFAULT '2025-26'")
         _log.info("Added 'season' column to player_stats")
     except Exception:
-        pass  # Column already exists
+        _log.debug("player_stats.season column already present", exc_info=True)
 
 
 def init_db():
     """Create all tables and indexes."""
     execute_script(SCHEMA_SQL)
-    execute_script(INDEXES_SQL)
     _run_column_migrations()
     _migrate_player_stats_season()
+    _backfill_elo_season()
     _backfill_player_stats_team_id()
+    execute_script(INDEXES_SQL)
 
 
 def _run_column_migrations():
@@ -426,12 +429,61 @@ def _run_column_migrations():
     # New feature column: spread movement
     _add_column_if_missing("game_odds", "spread_movement", "REAL DEFAULT 0.0")
     _add_column_if_missing("player_stats", "team_id", "INTEGER")
+    _add_column_if_missing("elo_ratings", "season", "TEXT DEFAULT ''")
     try:
         execute("CREATE INDEX IF NOT EXISTS idx_player_stats_team_date ON player_stats(team_id, game_date DESC)")
     except Exception:
-        pass
+        _log.debug("idx_player_stats_team_date creation skipped", exc_info=True)
+    try:
+        execute("CREATE INDEX IF NOT EXISTS idx_elo_ratings_team_season_date ON elo_ratings(team_id, season, game_date DESC)")
+    except Exception:
+        _log.debug("idx_elo_ratings_team_season_date creation skipped", exc_info=True)
     _rename_notifications_body_to_message()
     _fix_game_date_formats()
+
+
+def _season_for_game_date(game_date: str) -> str:
+    try:
+        year = int(game_date[:4])
+        month = int(game_date[5:7])
+        if month >= 7:
+            return f"{year}-{str(year + 1)[2:]}"
+        return f"{year - 1}-{str(year)[2:]}"
+    except Exception:
+        return ""
+
+
+def _backfill_elo_season():
+    """Populate elo_ratings.season for legacy rows."""
+    try:
+        rows = fetch_all(
+            "SELECT team_id, game_date FROM elo_ratings WHERE COALESCE(season, '') = ''"
+        )
+    except Exception:
+        _log.debug("elo season backfill query skipped", exc_info=True)
+        return
+
+    if not rows:
+        return
+
+    updates = []
+    for row in rows:
+        season = _season_for_game_date(row.get("game_date", ""))
+        if not season:
+            continue
+        updates.append((season, row["team_id"], row["game_date"]))
+
+    if not updates:
+        return
+
+    try:
+        execute_many(
+            "UPDATE elo_ratings SET season = ? WHERE team_id = ? AND game_date = ?",
+            updates,
+        )
+        _log.info("Backfilled elo_ratings.season for %d rows", len(updates))
+    except Exception as e:
+        _log.debug("elo season backfill skipped: %s", e)
 
 
 def _add_column_if_missing(table: str, column: str, col_type: str):
@@ -441,7 +493,12 @@ def _add_column_if_missing(table: str, column: str, col_type: str):
         if not any(c["name"] == column for c in cols):
             execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
     except Exception:
-        pass  # table may not exist yet
+        _log.debug(
+            "Column migration skipped for %s.%s",
+            table,
+            column,
+            exc_info=True,
+        )  # table may not exist yet
 
 
 def _rename_notifications_body_to_message():
@@ -645,7 +702,7 @@ def _fix_game_date_formats():
                     "ON player_stats(player_id, game_id)")
             _log.info("Phase 3: Created unique index on (player_id, game_id)")
         except Exception:
-            pass  # index may conflict if duplicates still exist
+            _log.debug("Phase 3 unique index creation skipped", exc_info=True)
 
     except Exception as exc:
         _log.warning("_fix_game_date_formats failed: %s", exc)

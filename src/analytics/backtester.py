@@ -23,6 +23,7 @@ from src.analytics.prediction import (
     get_actual_game_results,
 )
 from src.analytics.optimizer import VectorizedGames
+from src.analytics.thresholds import MODEL_PICK_EDGE_THRESHOLD, ACTUAL_WIN_THRESHOLD
 from src.analytics.weight_config import WeightConfig, get_weight_config
 from src.analytics.stats_engine import get_team_abbreviations
 
@@ -44,6 +45,22 @@ _BACKTEST_METRICS_VERSION = 2
 _mem_cache: Optional[Dict[str, Any]] = None
 _mem_cache_hash: Optional[str] = None
 _mem_cache_lock = threading.Lock()
+
+
+def _backtest_source_fingerprint() -> str:
+    """Fingerprint source tables so cache invalidates on corrected data."""
+    from src.database import db
+
+    ps = db.fetch_one(
+        "SELECT COUNT(*) AS c, COALESCE(MAX(game_date), '') AS max_date, "
+        "COALESCE(SUM(points), 0.0) AS points_sum FROM player_stats"
+    ) or {}
+    odds = db.fetch_one(
+        "SELECT COUNT(*) AS c, COALESCE(MAX(game_date), '') AS max_date, "
+        "COALESCE(SUM(COALESCE(spread, 0.0)), 0.0) AS spread_sum FROM game_odds"
+    ) or {}
+    payload = json.dumps({"ps": ps, "odds": odds}, sort_keys=True)
+    return hashlib.md5(payload.encode()).hexdigest()[:16]
 
 
 def _get_competitive_dog_margin() -> float:
@@ -83,6 +100,7 @@ def _get_long_dog_onepos_margin() -> float:
 
 def _cache_hash(
     n_games: int,
+    source_fingerprint: str,
     w: WeightConfig,
     competitive_dog_margin: float,
     long_dog_min_payout: float,
@@ -92,6 +110,7 @@ def _cache_hash(
     payload = json.dumps(
         {
             "n": n_games,
+            "src": source_fingerprint,
             "w": w.to_dict(),
             "competitive_dog_margin": competitive_dog_margin,
             "long_dog_min_payout": long_dog_min_payout,
@@ -126,6 +145,11 @@ def _save_disk_cache(h: str, data: Dict[str, Any]):
     try:
         os.makedirs(_BACKTEST_CACHE_DIR, exist_ok=True)
         path = _disk_cache_path(h)
+        bak_path = f"{path}.bak"
+        if os.path.exists(path):
+            if os.path.exists(bak_path):
+                os.remove(bak_path)
+            os.replace(path, bak_path)
         with open(path, "wb") as f:
             pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
     except Exception as e:
@@ -174,9 +198,9 @@ def _build_per_game_result(
     away_abbr = abbr.get(game.away_team_id, str(game.away_team_id))
 
     actual_spread = game.actual_home_score - game.actual_away_score
-    if actual_spread > 0.5:
+    if actual_spread > ACTUAL_WIN_THRESHOLD:
         actual_winner = "HOME"
-    elif actual_spread < -0.5:
+    elif actual_spread < -ACTUAL_WIN_THRESHOLD:
         actual_winner = "AWAY"
     else:
         actual_winner = "PUSH"
@@ -189,7 +213,7 @@ def _build_per_game_result(
 
     # Upset identification: model disagrees with Vegas favorite
     vegas_fav_home = game.vegas_spread < 0  # negative spread = home favored
-    model_picks_home = pred.game_score > 0
+    model_picks_home = pred.game_score > MODEL_PICK_EDGE_THRESHOLD
     is_upset_pick = model_picks_home != vegas_fav_home
     upset_correct = is_upset_pick and model_correct
     dog_actual_margin = -actual_spread if vegas_fav_home else actual_spread
@@ -349,7 +373,7 @@ def run_backtest(
 
     Returns dict with keys: "fundamentals", "sharp", "comparison".
     Each mode has aggregate metrics + per_game list.
-    Results are cached to disk + memory keyed on game count + weights.
+    Results are cached to disk + memory keyed on source fingerprint + weights.
     """
     global _mem_cache, _mem_cache_hash
 
@@ -365,11 +389,13 @@ def run_backtest(
         return {"fundamentals": {}, "sharp": {}, "comparison": {}}
 
     w = get_weight_config()
+    source_fingerprint = _backtest_source_fingerprint()
     competitive_dog_margin = _get_competitive_dog_margin()
     long_dog_min_payout = _get_long_dog_min_payout()
     long_dog_onepos_margin = _get_long_dog_onepos_margin()
     h = _cache_hash(
         len(games),
+        source_fingerprint,
         w,
         competitive_dog_margin,
         long_dog_min_payout,

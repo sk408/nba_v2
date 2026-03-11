@@ -5,7 +5,7 @@ import json
 import threading
 from typing import Dict, Any, Optional, List
 
-import requests
+from src.data.http_client import get_json, HttpClientError
 
 logger = logging.getLogger(__name__)
 
@@ -39,60 +39,63 @@ def _extract_total_record(competitor: Dict[str, Any]) -> str:
 
 def fetch_espn_scoreboard() -> List[Dict[str, Any]]:
     """Fetch today's ESPN scoreboard with retry on transient errors."""
-    import time as _time
+    def _on_retry(attempt: int, total: int, exc: Exception):
+        logger.warning("ESPN scoreboard retry %d/%d: %s", attempt, total, exc)
 
-    for attempt in range(3):
-        try:
-            resp = requests.get(ESPN_SCOREBOARD_URL, headers=_HEADERS, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            games = []
-            for event in data.get("events", []):
-                comp = event.get("competitions", [{}])[0]
-                competitors = comp.get("competitors", [])
-                home = next((c for c in competitors if c.get("homeAway") == "home"), {})
-                away = next((c for c in competitors if c.get("homeAway") == "away"), {})
-                games.append({
-                    "espn_id": event.get("id", ""),
-                    "name": event.get("name", ""),
-                    "date": event.get("date", ""),
-                    "status": event.get("status", {}).get("type", {}).get("description", ""),
-                    "short_detail": event.get("status", {}).get("type", {}).get("shortDetail", ""),
-                    "period": event.get("status", {}).get("period", 0),
-                    "clock": event.get("status", {}).get("displayClock", ""),
-                    "state": event.get("status", {}).get("type", {}).get("state", ""),
-                    "home_team": normalize_espn_abbr(home.get("team", {}).get("abbreviation", "")),
-                    "away_team": normalize_espn_abbr(away.get("team", {}).get("abbreviation", "")),
-                    "home_team_id": home.get("team", {}).get("id", ""),
-                    "away_team_id": away.get("team", {}).get("id", ""),
-                    "home_record": _extract_total_record(home),
-                    "away_record": _extract_total_record(away),
-                    "home_score": int(home.get("score", 0) or 0),
-                    "away_score": int(away.get("score", 0) or 0),
-                })
-            return games
-        except Exception as e:
-            if attempt < 2:
-                logger.warning(f"ESPN scoreboard attempt {attempt + 1} failed: {e}")
-                _time.sleep(2)
-            else:
-                logger.error(f"ESPN scoreboard error after 3 attempts: {e}")
-    return []
+    try:
+        data = get_json(
+            ESPN_SCOREBOARD_URL,
+            headers=_HEADERS,
+            timeout=10,
+            retries=3,
+            backoff_base=1.0,
+            on_retry=_on_retry,
+        )
+        games = []
+        for event in data.get("events", []):
+            comp = event.get("competitions", [{}])[0]
+            competitors = comp.get("competitors", [])
+            home = next((c for c in competitors if c.get("homeAway") == "home"), {})
+            away = next((c for c in competitors if c.get("homeAway") == "away"), {})
+            games.append({
+                "espn_id": event.get("id", ""),
+                "name": event.get("name", ""),
+                "date": event.get("date", ""),
+                "status": event.get("status", {}).get("type", {}).get("description", ""),
+                "short_detail": event.get("status", {}).get("type", {}).get("shortDetail", ""),
+                "period": event.get("status", {}).get("period", 0),
+                "clock": event.get("status", {}).get("displayClock", ""),
+                "state": event.get("status", {}).get("type", {}).get("state", ""),
+                "home_team": normalize_espn_abbr(home.get("team", {}).get("abbreviation", "")),
+                "away_team": normalize_espn_abbr(away.get("team", {}).get("abbreviation", "")),
+                "home_team_id": home.get("team", {}).get("id", ""),
+                "away_team_id": away.get("team", {}).get("id", ""),
+                "home_record": _extract_total_record(home),
+                "away_record": _extract_total_record(away),
+                "home_score": int(home.get("score", 0) or 0),
+                "away_score": int(away.get("score", 0) or 0),
+            })
+        return games
+    except HttpClientError as e:
+        logger.error("ESPN scoreboard error after retries: %s", e)
+        logger.debug("ESPN scoreboard stacktrace", exc_info=True)
+        return []
 
 
 def fetch_espn_game_summary(game_id: str) -> Dict[str, Any]:
     """Fetch full game summary from ESPN."""
     try:
-        resp = requests.get(
+        return get_json(
             ESPN_SUMMARY_URL,
             params={"event": game_id},
             headers=_HEADERS,
             timeout=10,
+            retries=2,
+            backoff_base=0.8,
         )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        logger.error(f"ESPN summary error for {game_id}: {e}")
+    except HttpClientError as e:
+        logger.error("ESPN summary error for %s: %s", game_id, e)
+        logger.debug("ESPN summary stacktrace", exc_info=True)
         return {}
 
 
@@ -200,19 +203,33 @@ class FastcastWebSocket:
                                         name=f"fastcast-{self.game_id}")
         self._thread.start()
 
-    def stop(self):
-        """Disconnect and stop the background thread."""
+    def stop(self, timeout_sec: float = 3.0):
+        """Disconnect and stop the background thread.
+
+        Returns once the thread exits or timeout is reached.
+        """
         self._running = False
         self._connected = False
         if self._ws:
             try:
                 self._ws.close()
             except Exception:
-                pass
+                logger.debug("Fastcast websocket close failed", exc_info=True)
+        thread = self._thread
+        if thread is not None and thread.is_alive() and threading.current_thread() is not thread:
+            thread.join(max(0.0, float(timeout_sec)))
+            if thread.is_alive():
+                logger.warning("Fastcast thread did not stop within %.1fs", timeout_sec)
+            else:
+                self._thread = None
 
     @property
     def is_connected(self):
         return self._connected
+
+    @property
+    def is_running(self):
+        return self._running
 
     def _run(self):
         """Background thread: connect → subscribe → receive → auto-reconnect."""
@@ -227,12 +244,22 @@ class FastcastWebSocket:
 
         while self._running:
             try:
-                resp = requests.get(FASTCAST_HOST_URL, headers=_HEADERS, timeout=10)
-                info = resp.json()
+                info = get_json(
+                    FASTCAST_HOST_URL,
+                    headers=_HEADERS,
+                    timeout=10,
+                    retries=3,
+                    backoff_base=1.0,
+                )
+                ip = info.get("ip")
+                secure_port = info.get("securePort")
+                token = info.get("token")
+                if not ip or not secure_port or not token:
+                    raise ValueError("Fastcast host payload missing connection fields")
                 ws_url = (
-                    f"wss://{info['ip']}:{info['securePort']}/"
+                    f"wss://{ip}:{secure_port}/"
                     f"FastcastService/pubsub/profiles/12000?"
-                    f"TrafficManager-Token={info['token']}"
+                    f"TrafficManager-Token={token}"
                 )
 
                 self._ws = websocket.WebSocketApp(
@@ -242,15 +269,16 @@ class FastcastWebSocket:
                     on_error=self._on_ws_error,
                     on_close=self._on_close,
                 )
-                self._ws.run_forever(ping_interval=30, ping_timeout=10)
+                # Avoid websocket-client ping-thread shutdown races while tabs switch games.
+                self._ws.run_forever()
 
-            except Exception as e:
+            except (HttpClientError, ValueError) as e:
                 logger.error(f"Fastcast connect error: {e}")
                 if self._on_error:
                     try:
                         self._on_error(str(e))
                     except Exception:
-                        pass
+                        logger.debug("Fastcast on_error callback failed", exc_info=True)
 
             self._connected = False
             if self._running:
@@ -265,7 +293,12 @@ class FastcastWebSocket:
     def _on_open(self, ws):
         logger.info(f"Fastcast connected for game {self.game_id}")
         self._reconnect_attempt = 0
-        ws.send(json.dumps({"op": "C"}))
+        try:
+            ws.send(json.dumps({"op": "C"}))
+        except Exception:
+            # Can happen if caller stops websocket during connect race.
+            logger.debug("Fastcast open handshake send skipped", exc_info=True)
+            self._connected = False
 
     def _on_message(self, ws, raw):
         try:
@@ -277,9 +310,13 @@ class FastcastWebSocket:
 
         if op == "C":
             sid = msg.get("sid", "")
-            ws.send(json.dumps({"op": "S", "sid": sid, "tc": self._channel}))
-            logger.info(f"Fastcast subscribed to {self._channel}")
-            self._connected = True
+            try:
+                ws.send(json.dumps({"op": "S", "sid": sid, "tc": self._channel}))
+                logger.info(f"Fastcast subscribed to {self._channel}")
+                self._connected = True
+            except Exception:
+                logger.debug("Fastcast subscribe send skipped", exc_info=True)
+                self._connected = False
 
         elif "pl" in msg:
             tc = msg.get("tc", "")
@@ -298,10 +335,15 @@ class FastcastWebSocket:
                     try:
                         self._on_data_changed()
                     except Exception:
-                        pass
+                        logger.debug("Fastcast on_data_changed callback failed", exc_info=True)
 
     def _on_ws_error(self, ws, error):
-        logger.warning(f"Fastcast WS error: {error}")
+        text = str(error)
+        if ("NoneType' object has no attribute 'sock'" in text
+                or "Connection is already closed" in text):
+            logger.debug("Fastcast WS close-race: %s", text)
+        else:
+            logger.warning("Fastcast WS error: %s", text)
         self._connected = False
 
     def _on_close(self, ws, code, reason):
@@ -336,15 +378,16 @@ def get_actionnetwork_odds(home_abbr: str, away_abbr: str) -> Dict[str, Any]:
     with _an_odds_lock:
         if not _an_odds_cache or (now - _an_last_fetch) > 10.0:
             try:
-                resp = requests.get(
+                data = get_json(
                     "https://api.actionnetwork.com/web/v1/scoreboard/nba",
                     headers=_HEADERS,
-                    timeout=10
+                    timeout=10,
+                    retries=3,
+                    backoff_base=0.8,
                 )
-                if resp.status_code == 200:
-                    _an_odds_cache = resp.json()
-                    _an_last_fetch = now
-            except Exception as e:
+                _an_odds_cache = data
+                _an_last_fetch = now
+            except HttpClientError as e:
                 logger.warning(f"ActionNetwork fetch failed: {e}")
 
     if not _an_odds_cache:

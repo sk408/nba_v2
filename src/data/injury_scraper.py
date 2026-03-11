@@ -8,15 +8,16 @@ between sources and stored roster data never cause missed matches.
 import json
 import logging
 import re
+import threading
 import unicodedata
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-import requests
 from bs4 import BeautifulSoup
 
 from src.database import db
+from src.data.http_client import get_text, HttpClientError
 
 logger = logging.getLogger(__name__)
 
@@ -27,30 +28,34 @@ MANUAL_INJURIES_PATH = Path("data") / "manual_injuries.json"
 _scrape_cache: Dict[str, Any] = {}
 _scrape_cache_ts: Dict[str, float] = {}
 _SCRAPE_TTL = 3600  # 60 minutes
+_scrape_cache_lock = threading.Lock()
 
 
 def _get_cached_scrape(source: str) -> Optional[List[Dict[str, Any]]]:
     """Return cached scrape result if still fresh."""
     import time
-    if source in _scrape_cache:
-        age = time.time() - _scrape_cache_ts.get(source, 0)
-        if age < _SCRAPE_TTL:
-            logger.info("Using cached %s injuries (%.0fs old)", source, age)
-            return _scrape_cache[source]
+    with _scrape_cache_lock:
+        if source in _scrape_cache:
+            age = time.time() - _scrape_cache_ts.get(source, 0)
+            if age < _SCRAPE_TTL:
+                logger.info("Using cached %s injuries (%.0fs old)", source, age)
+                return _scrape_cache[source]
     return None
 
 
 def _set_cached_scrape(source: str, data: List[Dict[str, Any]]):
     """Store scrape result in TTL cache."""
     import time
-    _scrape_cache[source] = data
-    _scrape_cache_ts[source] = time.time()
+    with _scrape_cache_lock:
+        _scrape_cache[source] = data
+        _scrape_cache_ts[source] = time.time()
 
 
 def invalidate_injury_scrape_cache():
     """Clear all cached scrape results."""
-    _scrape_cache.clear()
-    _scrape_cache_ts.clear()
+    with _scrape_cache_lock:
+        _scrape_cache.clear()
+        _scrape_cache_ts.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -133,9 +138,14 @@ def scrape_espn_injuries() -> List[Dict[str, Any]]:
 
     url = "https://www.espn.com/nba/injuries"
     try:
-        resp = requests.get(url, headers={"User-Agent": _UA}, timeout=10)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        html = get_text(
+            url,
+            headers={"User-Agent": _UA},
+            timeout=10,
+            retries=3,
+            backoff_base=0.8,
+        )
+        soup = BeautifulSoup(html, "html.parser")
         injuries = []
         # Parse ESPN injury tables
         tables = soup.find_all("div", class_="ResponsiveTable")
@@ -191,8 +201,9 @@ def scrape_espn_injuries() -> List[Dict[str, Any]]:
                 })
         _set_cached_scrape("ESPN", injuries)
         return injuries
-    except Exception as e:
+    except HttpClientError as e:
         logger.warning(f"ESPN injury scrape failed: {e}")
+        logger.debug("ESPN scrape stacktrace", exc_info=True)
         return []
 
 
@@ -252,9 +263,14 @@ def scrape_cbs_injuries() -> List[Dict[str, Any]]:
 
     url = "https://www.cbssports.com/nba/injuries/"
     try:
-        resp = requests.get(url, headers={"User-Agent": _UA}, timeout=10)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        html = get_text(
+            url,
+            headers={"User-Agent": _UA},
+            timeout=10,
+            retries=3,
+            backoff_base=0.8,
+        )
+        soup = BeautifulSoup(html, "html.parser")
         injuries = []
         tables = soup.find_all("table", class_="TableBase-table")
         for table in tables:
@@ -304,8 +320,9 @@ def scrape_cbs_injuries() -> List[Dict[str, Any]]:
                 })
         _set_cached_scrape("CBS", injuries)
         return injuries
-    except Exception as e:
+    except HttpClientError as e:
         logger.warning(f"CBS injury scrape failed: {e}")
+        logger.debug("CBS scrape stacktrace", exc_info=True)
         return []
 
 
@@ -334,9 +351,14 @@ def scrape_rotowire_injuries() -> List[Dict[str, Any]]:
 
     url = "https://www.rotowire.com/basketball/injury-report.php"
     try:
-        resp = requests.get(url, headers={"User-Agent": _UA}, timeout=10)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+        html = get_text(
+            url,
+            headers={"User-Agent": _UA},
+            timeout=10,
+            retries=3,
+            backoff_base=0.8,
+        )
+        soup = BeautifulSoup(html, "html.parser")
         injuries = []
 
         # Try multiple possible table selectors (site layout changes often)
@@ -364,8 +386,9 @@ def scrape_rotowire_injuries() -> List[Dict[str, Any]]:
                     })
         _set_cached_scrape("RotoWire", injuries)
         return injuries
-    except Exception as e:
+    except HttpClientError as e:
         logger.warning(f"RotoWire injury scrape failed: {e}")
+        logger.debug("RotoWire scrape stacktrace", exc_info=True)
         return []
 
 

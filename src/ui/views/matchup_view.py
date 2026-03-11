@@ -8,6 +8,7 @@ from Vegas lines, sharp money overlay for display.
 import logging
 from datetime import datetime, timedelta
 from dataclasses import asdict
+import time
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 class _PredictWorker(QObject):
     """Background prediction for the selected game."""
-    finished = Signal(dict)
+    finished = Signal(object)
     error = Signal(str)
 
     def __init__(self, home_id: int, away_id: int, game_date: str,
@@ -62,7 +63,7 @@ class _PredictWorker(QObject):
 
 class _GameScanWorker(QObject):
     """Background scan of all games -- caches predictions for both modes."""
-    finished = Signal(dict)  # {idx: {"fundamentals": pred_dict, "sharp": pred_dict}}
+    finished = Signal(object)  # {idx: {"fundamentals": pred_dict, "sharp": pred_dict}}
 
     def __init__(self, games: list):
         super().__init__()
@@ -263,6 +264,7 @@ class MatchupView(QWidget):
         self._worker = None
         self._scan_thread = None
         self._scan_worker = None
+        self._game_lookup = {}      # combo key -> schedule row dict
         self._prediction_cache = {}   # (home_id, away_id): {"fundamentals": dict, "sharp": dict}
         self._include_sharp = False   # current mode toggle state
 
@@ -550,7 +552,7 @@ class MatchupView(QWidget):
                         "game_time": "",
                     })
             except Exception:
-                pass
+                logger.debug("ESPN fallback schedule unavailable", exc_info=True)
 
         self._filter_games_for_date()
         # Start background scan for today's games
@@ -567,6 +569,7 @@ class MatchupView(QWidget):
                 (abbr.upper(),))
             return row["team_id"] if row else 0
         except Exception:
+            logger.debug("team_id resolve failed for %s", abbr, exc_info=True)
             return 0
 
     def _on_date_changed(self, idx: int):
@@ -581,8 +584,10 @@ class MatchupView(QWidget):
 
         self._game_combo.blockSignals(True)
         self._game_combo.clear()
-        self._game_combo.addItem("\u2014 Select a game \u2014", None)
+        self._game_lookup.clear()
+        self._game_combo.addItem("\u2014 Select a game \u2014", "")
 
+        game_idx = 0
         for g in self._all_schedule:
             gd = g.get("game_date", "")
             if gd != selected_date:
@@ -593,9 +598,23 @@ class MatchupView(QWidget):
             label = f"{away} @ {home}"
             if time_str:
                 label = f"{time_str}  {label}"
-            self._game_combo.addItem(label, g)
+            key = f"g{game_idx}"
+            game_idx += 1
+            self._game_lookup[key] = g
+            self._game_combo.addItem(label, key)
 
         self._game_combo.blockSignals(False)
+
+    def _game_data_for_index(self, idx: int):
+        """Resolve combo row to schedule dict without passing dicts via Qt."""
+        key = self._game_combo.itemData(idx)
+        if not key:
+            return None
+        return self._game_lookup.get(str(key))
+
+    def _current_game_data(self):
+        """Return schedule dict for current combo selection."""
+        return self._game_data_for_index(self._game_combo.currentIndex())
 
     # ──────────────────────────────────────────────────────────
     # Background game scan
@@ -606,7 +625,7 @@ class MatchupView(QWidget):
         today = datetime.now().strftime("%Y-%m-%d")
         games_to_scan = []
         for i in range(1, self._game_combo.count()):
-            data = self._game_combo.itemData(i)
+            data = self._game_data_for_index(i)
             if not data or not isinstance(data, dict):
                 continue
             gd = data.get("game_date", "")
@@ -626,7 +645,7 @@ class MatchupView(QWidget):
                 if self._scan_thread.isRunning():
                     return
             except RuntimeError:
-                pass
+                logger.debug("Scan thread check hit deleted QObject", exc_info=True)
 
         self._scan_worker = _GameScanWorker(games_to_scan)
         self._scan_thread = QThread()
@@ -681,7 +700,7 @@ class MatchupView(QWidget):
 
     def _on_game_picked(self, idx: int):
         """When a game is selected from dropdown, auto-predict."""
-        data = self._game_combo.itemData(idx)
+        data = self._game_data_for_index(idx)
         if not data or not isinstance(data, dict):
             return
         self._update_team_header(data)
@@ -701,7 +720,7 @@ class MatchupView(QWidget):
         self._mode_btn.style().polish(self._mode_btn)
 
         # Re-display from cache if we have data for the current game
-        data = self._game_combo.currentData()
+        data = self._current_game_data()
         if data and isinstance(data, dict):
             home_id = data.get("home_team_id")
             away_id = data.get("away_team_id")
@@ -718,7 +737,7 @@ class MatchupView(QWidget):
 
     def _on_predict(self):
         """Run prediction for the selected game."""
-        data = self._game_combo.currentData()
+        data = self._current_game_data()
         if not data or not isinstance(data, dict):
             return
 
@@ -769,6 +788,26 @@ class MatchupView(QWidget):
         self._worker_thread = None
         self._worker = None
 
+    def request_stop(self, timeout_ms: int = 5000) -> bool:
+        """Request graceful shutdown of running worker threads."""
+        ok = True
+        deadline = time.monotonic() + (max(0, int(timeout_ms)) / 1000.0)
+        for name in ("_worker_thread", "_scan_thread"):
+            thread = getattr(self, name, None)
+            if thread is None:
+                continue
+            try:
+                if not thread.isRunning():
+                    continue
+            except RuntimeError:
+                continue
+            thread.quit()
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            if not thread.wait(remaining_ms):
+                ok = False
+                logger.warning("Matchup %s did not stop in time", name)
+        return ok
+
     def _on_error(self, msg: str):
         self._predict_btn.setEnabled(True)
         self._predict_btn.setText("PREDICT")
@@ -812,7 +851,7 @@ class MatchupView(QWidget):
             home_name = names.get(home_id, home_abbr) if home_id else home_abbr
             away_name = names.get(away_id, away_abbr) if away_id else away_abbr
         except Exception:
-            pass
+            logger.debug("team-name lookup unavailable", exc_info=True)
 
         self._home_name_lbl.setText(home_name)
         self._away_name_lbl.setText(away_name)

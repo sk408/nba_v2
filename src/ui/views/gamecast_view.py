@@ -52,6 +52,16 @@ _headshot_lock = threading.Lock()
 _CACHE_TTL_LIVE = 8
 _CACHE_TTL_PRE = 55
 _CACHE_TTL_FINAL = 86400
+_GAME_CACHE_MAX = 120
+_HEADSHOT_PIXMAP_CACHE_MAX = 800
+_HEADSHOT_BYTES_CACHE_MAX = 800
+_PREDICTION_CACHE_MAX = 200
+
+
+def _bounded_put(cache: dict, key, value, max_size: int) -> None:
+    cache[key] = value
+    while len(cache) > max_size:
+        cache.pop(next(iter(cache)), None)
 
 
 class _GameCache:
@@ -62,6 +72,7 @@ class _GameCache:
         self._data: Dict[str, dict] = {}
         self._ts: Dict[str, float] = {}
         self._state: Dict[str, str] = {}
+        self._max_entries = _GAME_CACHE_MAX
 
     def get(self, game_id: str) -> Optional[dict]:
         with self._lock:
@@ -69,6 +80,9 @@ class _GameCache:
                 return None
             age = time.time() - self._ts.get(game_id, 0)
             if age > self._ttl_for(game_id):
+                self._data.pop(game_id, None)
+                self._ts.pop(game_id, None)
+                self._state.pop(game_id, None)
                 return None
             return self._data[game_id]
 
@@ -78,6 +92,11 @@ class _GameCache:
             self._ts[game_id] = time.time()
             if state:
                 self._state[game_id] = state
+            while len(self._data) > self._max_entries:
+                oldest = min(self._ts.items(), key=lambda kv: kv[1])[0]
+                self._data.pop(oldest, None)
+                self._ts.pop(oldest, None)
+                self._state.pop(oldest, None)
 
     def is_final(self, game_id: str) -> bool:
         with self._lock:
@@ -146,7 +165,12 @@ def _fetch_and_parse(game_id: str) -> dict:
     try:
         odds = get_actionnetwork_odds(home_abbr, away_abbr)
     except Exception:
-        pass
+        logger.debug(
+            "ActionNetwork odds lookup failed for %s vs %s",
+            home_abbr,
+            away_abbr,
+            exc_info=True,
+        )
 
     if not odds or not odds.get("spread"):
         pickcenter = summary.get("pickcenter", [])
@@ -179,7 +203,7 @@ def _fetch_and_parse(game_id: str) -> dict:
 
 class _GameFetchWorker(QObject):
     """Fetches one game's data on a background thread."""
-    finished = Signal(str, dict)
+    finished = Signal(str, object)
     error = Signal(str, str)
 
     def __init__(self, game_id: str):
@@ -198,7 +222,7 @@ class _GameFetchWorker(QObject):
 
 class _ScoreboardWorker(QObject):
     """Fetches ESPN scoreboard on background thread."""
-    finished = Signal(list)
+    finished = Signal(object)
     error = Signal(str)
 
     def run(self):
@@ -235,7 +259,7 @@ class _PreloadRunnable(QRunnable):
 
 class _PredictionWorker(QObject):
     """Runs model prediction on a background thread."""
-    finished = Signal(dict)
+    finished = Signal(object)
     error = Signal(str)
 
     def __init__(self, home_team_id: int, away_team_id: int, game_date: str):
@@ -693,8 +717,11 @@ class GamecastView(QWidget):
     # ──────────────────────── WEBSOCKET ────────────────────────
 
     def _start_websocket(self, game_id: str):
-        if (self._fastcast_ws and self._fastcast_ws.game_id == game_id
-                and self._fastcast_ws.is_connected):
+        if (
+            self._fastcast_ws
+            and self._fastcast_ws.game_id == game_id
+            and (self._fastcast_ws.is_connected or self._fastcast_ws.is_running)
+        ):
             return
         self._stop_websocket()
         try:
@@ -759,6 +786,38 @@ class GamecastView(QWidget):
 
         self._active_threads.append((thread, worker))
         thread.start()
+
+    def request_stop(self, timeout_ms: int = 5000) -> bool:
+        """Stop timers/websocket/workers and wait for thread teardown."""
+        self.live_timer.stop()
+        self._scoreboard_timer.stop()
+        self._ws_debounce.stop()
+        self._stop_websocket()
+
+        for thread, worker in list(self._active_threads):
+            if hasattr(worker, "stop"):
+                try:
+                    worker.stop()
+                except Exception:
+                    logger.debug("Worker stop() failed in gamecast shutdown", exc_info=True)
+            try:
+                thread.quit()
+            except Exception:
+                logger.debug("Thread quit() failed in gamecast shutdown", exc_info=True)
+
+        deadline = time.time() + (max(0, timeout_ms) / 1000.0)
+        all_stopped = True
+        for thread, _worker in list(self._active_threads):
+            remaining_ms = int(max(0.0, (deadline - time.time()) * 1000.0))
+            if remaining_ms <= 0 or not thread.wait(remaining_ms):
+                all_stopped = False
+
+        if not all_stopped:
+            logger.warning(
+                "Gamecast shutdown timed out with %d active worker(s)",
+                len(self._active_threads),
+            )
+        return all_stopped
 
     # ──────────────────────── DATA -> UI ────────────────────────
 
@@ -979,7 +1038,7 @@ class GamecastView(QWidget):
                         if abs(_parse_sec(p_clock) - _parse_sec(clock_str)) > 15:
                             is_recent = False
                     except Exception:
-                        pass
+                        logger.debug("Timeout clock parse failed", exc_info=True)
                 elif p_period != period:
                     is_recent = False
                 if is_recent:
@@ -1092,7 +1151,7 @@ class GamecastView(QWidget):
                     away_poss = poss
                     away_poss_scored = scored
             except Exception:
-                pass
+                logger.debug("Possession stats parse failed for %s", side, exc_info=True)
 
         self.info_panel.update_flow_stats(
             f"{home_drives_scored}/{home_drives}",
@@ -1289,7 +1348,12 @@ class GamecastView(QWidget):
         home_id = result.get("home_team_id") or self._home_team_id
         away_id = result.get("away_team_id") or self._away_team_id
         if home_id and away_id:
-            self._prediction_cache[(home_id, away_id)] = result
+            _bounded_put(
+                self._prediction_cache,
+                (home_id, away_id),
+                result,
+                _PREDICTION_CACHE_MAX,
+            )
         self.info_panel.update_prediction(
             result, self._home_abbr, self._away_abbr,
         )
@@ -1321,7 +1385,12 @@ class GamecastView(QWidget):
             from src.ui.widgets.image_utils import _make_circle_pixmap
             pixmap = _make_circle_pixmap(pixmap)
             with _headshot_lock:
-                _espn_headshot_cache[cache_key] = pixmap
+                _bounded_put(
+                    _espn_headshot_cache,
+                    cache_key,
+                    pixmap,
+                    _HEADSHOT_PIXMAP_CACHE_MAX,
+                )
             return pixmap
         except Exception:
             return None
@@ -1354,10 +1423,15 @@ class GamecastView(QWidget):
                     resp = _req.get(self.url, timeout=5)
                     if resp.status_code == 200 and resp.content:
                         with _headshot_lock:
-                            _espn_headshot_data[self.url] = resp.content
+                            _bounded_put(
+                                _espn_headshot_data,
+                                self.url,
+                                resp.content,
+                                _HEADSHOT_BYTES_CACHE_MAX,
+                            )
                         success = True
                 except Exception:
-                    pass
+                    logger.debug("Headshot fetch failed for %s", self.url, exc_info=True)
                 finally:
                     with _headshot_lock:
                         self.view._pending_headshots.discard(self.url)
@@ -1499,7 +1573,11 @@ class GamecastView(QWidget):
                                 local_pid, 28, circle=True
                             )
                     except Exception:
-                        pass
+                        logger.debug(
+                            "Local player photo lookup failed for %s",
+                            name,
+                            exc_info=True,
+                        )
 
                     # Tier 1: pixmap cache
                     if not pixmap and headshot_url:
@@ -1526,9 +1604,12 @@ class GamecastView(QWidget):
                                 )
                                 pixmap = _make_circle_pixmap(pix)
                                 with _headshot_lock:
-                                    _espn_headshot_cache[
-                                        (headshot_url, 28)
-                                    ] = pixmap
+                                    _bounded_put(
+                                        _espn_headshot_cache,
+                                        (headshot_url, 28),
+                                        pixmap,
+                                        _HEADSHOT_PIXMAP_CACHE_MAX,
+                                    )
 
                     if pixmap:
                         photo_item.setData(
@@ -1538,7 +1619,11 @@ class GamecastView(QWidget):
                         self._queue_headshot_fetch(headshot_url, 28)
                         self._needs_headshot_refresh = True
                 except Exception:
-                    pass
+                    logger.debug(
+                        "Boxscore row photo render failed for %s",
+                        name_display,
+                        exc_info=True,
+                    )
             table.setItem(r, 0, photo_item)
 
             # Column 1: Name

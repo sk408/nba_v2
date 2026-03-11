@@ -38,6 +38,17 @@ _team_cache_lock = threading.Lock()
 _hca_cache: Dict[tuple, float] = {}
 _hca_cache_lock = threading.Lock()
 
+_SPLITS_CACHE_MAX = 25000
+_STREAK_CACHE_MAX = 50000
+_FATIGUE_CACHE_MAX = 15000
+_HCA_CACHE_MAX = 2000
+
+
+def _bounded_put(cache: Dict[tuple, Any], key: tuple, value: Any, max_size: int) -> None:
+    cache[key] = value
+    while len(cache) > max_size:
+        cache.pop(next(iter(cache)), None)
+
 
 def invalidate_stats_caches():
     """Clear all stats engine caches. Call after data sync or optimizer run."""
@@ -158,14 +169,14 @@ def player_splits(player_id: int, opponent_team_id: int, is_home: int,
         )
         if not rows:
             with _splits_cache_lock:
-                _splits_cache[cache_key] = _empty
+                _bounded_put(_splits_cache, cache_key, _empty, _SPLITS_CACHE_MAX)
             return _empty
         import pandas as pd
         ps = pd.DataFrame([dict(r) for r in rows])
 
     if ps.empty:
         with _splits_cache_lock:
-            _splits_cache[cache_key] = _empty
+            _bounded_put(_splits_cache, cache_key, _empty, _SPLITS_CACHE_MAX)
         return _empty
 
     # as_of_date filter (prevent lookahead)
@@ -173,7 +184,7 @@ def player_splits(player_id: int, opponent_team_id: int, is_home: int,
         ps = ps[ps["game_date"] < as_of_date]
     if ps.empty:
         with _splits_cache_lock:
-            _splits_cache[cache_key] = _empty
+            _bounded_put(_splits_cache, cache_key, _empty, _SPLITS_CACHE_MAX)
         return _empty
 
     ps = ps.sort_values("game_date", ascending=False)
@@ -234,7 +245,7 @@ def player_splits(player_id: int, opponent_team_id: int, is_home: int,
 
     # Store in cache
     with _splits_cache_lock:
-        _splits_cache[cache_key] = result
+        _bounded_put(_splits_cache, cache_key, result, _SPLITS_CACHE_MAX)
     return result
 
 
@@ -257,7 +268,7 @@ def get_games_missed_streak(player_id: int, as_of_date: Optional[str] = None) ->
     )
     if not rows:
         with _streak_cache_lock:
-            _streak_cache[streak_key] = 0
+            _bounded_put(_streak_cache, streak_key, 0, _STREAK_CACHE_MAX)
         return 0
 
     last_played = db.fetch_one(
@@ -268,7 +279,7 @@ def get_games_missed_streak(player_id: int, as_of_date: Optional[str] = None) ->
     if not last_played or not last_played["d"]:
         result = len(rows)
         with _streak_cache_lock:
-            _streak_cache[streak_key] = result
+            _bounded_put(_streak_cache, streak_key, result, _STREAK_CACHE_MAX)
         return result
 
     # Count missed games after last played
@@ -282,7 +293,7 @@ def get_games_missed_streak(player_id: int, as_of_date: Optional[str] = None) ->
             break
 
     with _streak_cache_lock:
-        _streak_cache[streak_key] = count
+        _bounded_put(_streak_cache, streak_key, count, _STREAK_CACHE_MAX)
     return count
 
 
@@ -413,7 +424,7 @@ def get_home_court_advantage(team_id: int, season: Optional[str] = None) -> floa
     )
     if not row or not row["home_gp"] or not row["road_gp"]:
         with _hca_cache_lock:
-            _hca_cache[cache_key] = _HOME_COURT_FALLBACK
+            _bounded_put(_hca_cache, cache_key, _HOME_COURT_FALLBACK, _HCA_CACHE_MAX)
         return _HOME_COURT_FALLBACK
 
     home_ppg = row["home_pts"]   # already per-game
@@ -421,7 +432,7 @@ def get_home_court_advantage(team_id: int, season: Optional[str] = None) -> floa
     hca = home_ppg - road_ppg
     result = max(_HOME_COURT_CLAMP[0], min(_HOME_COURT_CLAMP[1], hca))
     with _hca_cache_lock:
-        _hca_cache[cache_key] = result
+        _bounded_put(_hca_cache, cache_key, result, _HCA_CACHE_MAX)
     return result
 
 
@@ -487,10 +498,10 @@ def compute_fatigue(team_id: int, game_date: str, w=None) -> Dict[str, Any]:
 
         # Store schedule facts in cache
         with _fatigue_cache_lock:
-            _fatigue_cache[fatigue_key] = {
+            _bounded_put(_fatigue_cache, fatigue_key, {
                 "rest_days": rest_days, "b2b": is_b2b, "is_same_day": is_same_day,
                 "three_in_four": is_3in4, "four_in_six": is_4in6,
-            }
+            }, _FATIGUE_CACHE_MAX)
 
     # Apply weight-dependent penalties on top of cached schedule
     b2b_pen = w.fatigue_b2b if w else 2.0

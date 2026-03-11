@@ -303,6 +303,11 @@ def save_weight_config(w: WeightConfig):
             (k, v)
         )
     _cached_global = w
+    try:
+        from src.analytics.cache_registry import invalidate_for_event
+        invalidate_for_event("post_weight_save")
+    except Exception:
+        logger.debug("post_weight_save invalidation failed", exc_info=True)
 
 
 def invalidate_weight_cache():
@@ -320,6 +325,11 @@ def clear_all_weights():
     # Invalidate freshness so the pipeline re-runs weight-related steps
     for step in ("weight_optimize", "team_refine", "residual_cal"):
         db.execute("DELETE FROM sync_meta WHERE step_name = ?", (step,))
+    try:
+        from src.analytics.cache_registry import invalidate_for_event
+        invalidate_for_event("post_weight_save")
+    except Exception:
+        logger.debug("post_weight_save invalidation failed", exc_info=True)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -390,5 +400,6 @@ def list_snapshots() -> List[Dict]:
                     "metrics": data.get("metrics", {}),
                 })
             except Exception:
+                logger.debug("snapshot parse failed for %s", f, exc_info=True)
                 continue
     return snaps

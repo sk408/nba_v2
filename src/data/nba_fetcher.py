@@ -1,12 +1,12 @@
 """NBA API wrappers – teams, rosters, game logs, metrics."""
 
-import time
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from src.config import get_season, get_season_year
 from src.database import db
+from src.data.http_client import get_json, retry_call, HttpClientError
 
 logger = logging.getLogger(__name__)
 
@@ -74,16 +74,35 @@ def _row_to_game_log(row, player_id: int) -> dict:
 
 def _safe_get(func, *args, retries=3, **kwargs):
     """Call an nba_api function with rate limiting, retries, and error handling."""
-    for attempt in range(retries):
-        time.sleep(_API_SLEEP * (2 ** attempt))
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            if attempt < retries - 1:
-                logger.warning(f"NBA API retry {attempt + 1}/{retries} for {func.__name__}: {e}")
-            else:
-                logger.error(f"NBA API error in {func.__name__} after {retries} attempts: {e}")
-    return None
+    def _on_retry(attempt: int, total: int, exc: BaseException):
+        logger.warning(
+            "NBA API retry %d/%d for %s: %s",
+            attempt,
+            total,
+            getattr(func, "__name__", "callable"),
+            exc,
+        )
+
+    try:
+        return retry_call(
+            func,
+            *args,
+            retries=retries,
+            backoff_base=_API_SLEEP,
+            backoff_max=8.0,
+            jitter_ratio=0.2,
+            on_retry=_on_retry,
+            **kwargs,
+        )
+    except Exception as e:
+        logger.error(
+            "NBA API error in %s after %d attempts: %s",
+            getattr(func, "__name__", "callable"),
+            retries,
+            e,
+        )
+        logger.debug("NBA API call stacktrace", exc_info=True)
+        return None
 
 
 def fetch_teams() -> List[Dict[str, Any]]:
@@ -356,13 +375,16 @@ def fetch_player_estimated_metrics() -> List[Dict[str, Any]]:
 
 def fetch_nba_cdn_schedule() -> List[Dict[str, Any]]:
     """Fetch future schedule from NBA CDN."""
-    import requests
     from datetime import datetime, timezone
     url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
     try:
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
+        data = get_json(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+            retries=3,
+            backoff_base=0.8,
+        )
         games = []
         today = datetime.now().strftime("%Y-%m-%d")
         for game_date_obj in data.get("leagueSchedule", {}).get("gameDates", []):
@@ -377,7 +399,7 @@ def fetch_nba_cdn_schedule() -> List[Dict[str, Any]]:
                             utc_dt = datetime.fromisoformat(utc_str.replace("Z", "+00:00"))
                             local_dt = utc_dt.astimezone()
                             local_time_str = local_dt.strftime("%I:%M %p").lstrip("0")
-                        except Exception as e:
+                        except ValueError as e:
                             logger.warning("Time parse failed for %s: %s", utc_str, e)
                             local_time_str = ""
                     games.append({
@@ -392,7 +414,7 @@ def fetch_nba_cdn_schedule() -> List[Dict[str, Any]]:
                         "status_text": game.get("gameStatusText", ""),
                     })
         return games
-    except Exception as e:
+    except HttpClientError as e:
         logger.error(f"Error fetching NBA CDN schedule: {e}")
         return []
 

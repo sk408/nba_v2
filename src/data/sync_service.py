@@ -65,45 +65,10 @@ def clear_sync_cache():
     """
     db.execute("DELETE FROM sync_meta")
     db.execute("DELETE FROM player_sync_cache")
-    # Invalidate compute caches. Keep each call isolated so one failure
-    # never prevents other invalidators from running.
-    try:
-        from src.analytics.prediction import invalidate_precompute_cache
-        invalidate_precompute_cache()
-    except Exception as e:
-        logger.debug("Failed to invalidate precompute cache: %s", e)
+    from src.analytics.cache_registry import invalidate_for_event
+    invalidate_for_event("post_sync")
 
-    try:
-        from src.analytics.prediction import invalidate_results_cache
-        invalidate_results_cache()
-    except Exception as e:
-        logger.debug("Failed to invalidate results cache: %s", e)
-
-    try:
-        from src.analytics.backtester import invalidate_backtest_cache
-        invalidate_backtest_cache()
-    except Exception as e:
-        logger.debug("Failed to invalidate backtest cache: %s", e)
-
-    try:
-        from src.analytics.stats_engine import invalidate_stats_caches
-        invalidate_stats_caches()
-    except Exception as e:
-        logger.debug("Failed to invalidate stats caches: %s", e)
-
-    try:
-        from src.analytics.weight_config import invalidate_weight_cache
-        invalidate_weight_cache()
-    except Exception as e:
-        logger.debug("Failed to invalidate weight cache: %s", e)
-
-    try:
-        from src.data.gamecast import invalidate_actionnetwork_cache
-        invalidate_actionnetwork_cache()
-    except Exception as e:
-        logger.debug("Failed to invalidate Action Network cache: %s", e)
-
-    logger.info("Cleared sync freshness caches (precompute cache preserved)")
+    logger.info("Cleared sync freshness and compute caches")
 
 
 def nuke_synced_data(callback: Optional[Callable] = None):
@@ -166,42 +131,12 @@ def nuke_synced_data(callback: Optional[Callable] = None):
         os.remove(csv)
         emit(f"  Deleted: {csv}")
 
-    # 3. Invalidate all in-memory caches (independent try blocks).
-    try:
-        from src.analytics.prediction import invalidate_precompute_cache
-        invalidate_precompute_cache()
-    except Exception as e:
-        emit(f"  Cache invalidation warning (precompute): {e}")
-
-    try:
-        from src.analytics.prediction import invalidate_results_cache
-        invalidate_results_cache()
-    except Exception as e:
-        emit(f"  Cache invalidation warning (results): {e}")
-
-    try:
-        from src.analytics.backtester import invalidate_backtest_cache
-        invalidate_backtest_cache()
-    except Exception as e:
-        emit(f"  Cache invalidation warning (backtest): {e}")
-
-    try:
-        from src.analytics.stats_engine import invalidate_stats_caches
-        invalidate_stats_caches()
-    except Exception as e:
-        emit(f"  Cache invalidation warning (stats): {e}")
-
-    try:
-        from src.analytics.weight_config import invalidate_weight_cache
-        invalidate_weight_cache()
-    except Exception as e:
-        emit(f"  Cache invalidation warning (weights): {e}")
-
-    try:
-        from src.data.gamecast import invalidate_actionnetwork_cache
-        invalidate_actionnetwork_cache()
-    except Exception as e:
-        emit(f"  Cache invalidation warning (actionnetwork): {e}")
+    # 3. Invalidate all in-memory caches through central registry.
+    from src.analytics.cache_registry import invalidate_for_event
+    result = invalidate_for_event("post_nuke")
+    for row in result.get("results", []):
+        if not row.get("ok", False):
+            emit(f"  Cache invalidation warning ({row.get('cache')}): {row.get('error')}")
 
     emit("Nuke complete! All synced data cleared. Run Force Full Sync to re-fetch.")
 
@@ -794,6 +729,12 @@ def full_sync(callback: Optional[Callable] = None, force: bool = False) -> Dict[
             if callback:
                 callback(f"ERROR in {label}: {e}")
             failures[label] = str(e)
+
+    try:
+        from src.analytics.cache_registry import invalidate_for_event
+        invalidate_for_event("post_sync", callback=callback)
+    except Exception as e:
+        logger.debug("Post-sync cache invalidation failed: %s", e)
 
     if callback:
         if failures:

@@ -52,18 +52,12 @@ def compute_all_elo(season: str = "2025-26") -> None:
     logger.info("Computing Elo for %d games in season %s", len(games), season)
 
     # ── 2. Clear existing ratings for the season ─────────────────
-    # Determine the date range so we only delete this season's rows.
-    first_date = games[0]["game_date"]
-    last_date = games[-1]["game_date"]
-    db.execute(
-        "DELETE FROM elo_ratings WHERE game_date >= ? AND game_date <= ?",
-        (first_date, last_date),
-    )
+    db.execute("DELETE FROM elo_ratings WHERE season = ?", (season,))
 
     # ── 3. Walk through games chronologically ────────────────────
     # In-memory dict tracks the latest Elo for each team.
     current_elo: dict[int, float] = {}
-    rows_to_insert: List[Tuple[int, str, float]] = []
+    rows_to_insert: List[Tuple[int, str, str, float]] = []
 
     for g in games:
         home_id = g["home_team_id"]
@@ -89,12 +83,12 @@ def compute_all_elo(season: str = "2025-26") -> None:
         current_elo[home_id] = new_elo_home
         current_elo[away_id] = new_elo_away
 
-        rows_to_insert.append((home_id, game_date, new_elo_home))
-        rows_to_insert.append((away_id, game_date, new_elo_away))
+        rows_to_insert.append((home_id, game_date, season, new_elo_home))
+        rows_to_insert.append((away_id, game_date, season, new_elo_away))
 
     # ── 4. Batch insert ──────────────────────────────────────────
     db.execute_many(
-        "INSERT OR REPLACE INTO elo_ratings (team_id, game_date, elo) VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO elo_ratings (team_id, game_date, season, elo) VALUES (?, ?, ?, ?)",
         rows_to_insert,
     )
     logger.info(
@@ -111,10 +105,24 @@ def get_team_elo(team_id: int, game_date: str, season: str = "2025-26") -> float
         """
         SELECT elo
         FROM elo_ratings
+        WHERE team_id = ? AND season = ? AND game_date < ?
+        ORDER BY game_date DESC
+        LIMIT 1
+        """,
+        (team_id, season, game_date),
+    )
+    if row:
+        return row["elo"]
+
+    # Backward compatibility for legacy rows that predate season column.
+    legacy = db.fetch_one(
+        """
+        SELECT elo
+        FROM elo_ratings
         WHERE team_id = ? AND game_date < ?
         ORDER BY game_date DESC
         LIMIT 1
         """,
         (team_id, game_date),
     )
-    return row["elo"] if row else INIT_ELO
+    return legacy["elo"] if legacy else INIT_ELO

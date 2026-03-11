@@ -177,7 +177,7 @@ class _ABColumnCard(QFrame):
 
 class _BacktestWorker(QObject):
     """Background worker to run full backtest."""
-    finished = Signal(dict)
+    finished = Signal(object)
     error = Signal(str)
     progress = Signal(str)
 
@@ -513,6 +513,22 @@ class AccuracyView(QWidget):
             self._worker.deleteLater()
         self._worker_thread = None
         self._worker = None
+
+    def request_stop(self, timeout_ms: int = 5000) -> bool:
+        """Request graceful worker shutdown and wait for completion."""
+        thread = self._worker_thread
+        if thread is None:
+            return True
+        try:
+            if not thread.isRunning():
+                return True
+        except RuntimeError:
+            return True
+        thread.quit()
+        stopped = bool(thread.wait(max(0, int(timeout_ms))))
+        if not stopped:
+            logger.warning("Accuracy backtest thread did not stop in %dms", timeout_ms)
+        return stopped
 
     # ──────────────────────────────────────────────────────────
     # Display results

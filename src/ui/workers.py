@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class BaseWorker(QObject):
     """Base background worker with progress & stop support."""
     progress = Signal(str)
-    result = Signal(dict)
+    result = Signal(object)
     finished = Signal()
 
     def __init__(self):

@@ -46,7 +46,7 @@ def should_bootstrap_for_reloader(debug: bool) -> bool:
     return os.environ.get("WERKZEUG_RUN_MAIN") == "true"
 
 
-def bootstrap(status_callback=None):
+def bootstrap(status_callback=None, enable_daily_automation: bool = False):
     """Run shared initialisation sequence.
 
     Parameters
@@ -54,6 +54,8 @@ def bootstrap(status_callback=None):
     status_callback : callable, optional
         Called with a status string at each init stage (useful for splash
         screens).
+    enable_daily_automation : bool
+        When True, starts desktop-only daily pipeline/git automation.
 
     Returns
     -------
@@ -97,6 +99,16 @@ def bootstrap(status_callback=None):
     except Exception as e:
         _logger.warning("Injury monitor failed to start: %s", e)
 
+    if enable_daily_automation:
+        _status("Starting daily automation...", 0.8)
+        try:
+            from src.automation.daily_automation import start_daily_automation
+
+            start_daily_automation()
+            _logger.info("Daily automation started (scheduled pipeline + git)")
+        except Exception as e:
+            _logger.warning("Daily automation failed to start: %s", e)
+
     atexit.register(shutdown)
     return _monitor
 
@@ -104,6 +116,12 @@ def bootstrap(status_callback=None):
 def shutdown():
     """Stop background services gracefully."""
     global _monitor
+    try:
+        from src.automation.daily_automation import stop_daily_automation
+
+        stop_daily_automation()
+    except Exception:
+        _logger.debug("Failed stopping daily automation", exc_info=True)
     if _monitor is not None:
         _logger.info("Stopping injury monitor...")
         _monitor.stop()

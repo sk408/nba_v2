@@ -67,6 +67,7 @@ _disk_conns: List[sqlite3.Connection] = []  # track all disk connections for cle
 _disk_conns_lock = threading.Lock()
 _mem_conn: Optional[sqlite3.Connection] = None   # single shared memory db
 _init_lock = threading.Lock()             # one-shot init guard
+_write_epoch = 0                          # increments on successful writes
 
 DB_BUSY_TIMEOUT = 30000  # 30 seconds
 
@@ -119,6 +120,41 @@ def _get_mem_conn() -> sqlite3.Connection:
     return _mem_conn
 
 
+def _bump_write_epoch_unlocked() -> None:
+    """Mark thread-local snapshots stale (caller holds write lock)."""
+    global _write_epoch
+    _write_epoch += 1
+
+
+def _refresh_thread_local_snapshot() -> None:
+    """Refresh current thread's local snapshot if global data changed."""
+    local = getattr(_thread_local_db, "conn", None)
+    if local is None:
+        return
+
+    local_epoch = getattr(_thread_local_db, "epoch", -1)
+    if local_epoch == _write_epoch:
+        return
+
+    # Replace stale snapshot with a fresh backup from shared memory DB.
+    mem = _get_mem_conn()
+    new_conn = sqlite3.connect(":memory:", check_same_thread=False)
+    new_conn.execute("PRAGMA foreign_keys=ON")
+    new_conn.row_factory = sqlite3.Row
+    _rwlock.read_acquire()
+    try:
+        mem.backup(new_conn)
+    finally:
+        _rwlock.read_release()
+
+    try:
+        local.close()
+    except Exception:
+        logger.debug("Failed closing stale thread-local snapshot", exc_info=True)
+    _thread_local_db.conn = new_conn
+    _thread_local_db.epoch = _write_epoch
+
+
 # ---------------------------------------------------------------------------
 # Public: backward-compatible API (used by every module via `db.*`)
 # ---------------------------------------------------------------------------
@@ -151,11 +187,13 @@ def execute(sql: str, params: tuple = ()) -> sqlite3.Cursor:
         try:
             cursor = mem.execute(sql, params)
             mem.commit()
+            _bump_write_epoch_unlocked()
             return cursor
         except Exception:
             # Memory is out of sync — full reload
             mem.rollback()
             _reload_memory_unlocked()
+            _bump_write_epoch_unlocked()
             return mem.execute("SELECT 0")  # return a valid cursor
     finally:
         _rwlock.write_release()
@@ -184,9 +222,11 @@ def execute_returning_id(sql: str, params: tuple = ()) -> int:
             mem.commit()
             if row_id <= 0:
                 row_id = int(mem_cursor.lastrowid or 0)
+            _bump_write_epoch_unlocked()
         except Exception:
             mem.rollback()
             _reload_memory_unlocked()
+            _bump_write_epoch_unlocked()
 
         return row_id
     finally:
@@ -209,9 +249,11 @@ def execute_many(sql: str, params_list: List[tuple]) -> None:
         try:
             mem.executemany(sql, params_list)
             mem.commit()
+            _bump_write_epoch_unlocked()
         except Exception:
             mem.rollback()
             _reload_memory_unlocked()
+            _bump_write_epoch_unlocked()
     finally:
         _rwlock.write_release()
 
@@ -235,9 +277,11 @@ def execute_script(sql: str) -> None:
         mem = _get_mem_conn()
         try:
             mem.executescript(sql)
+            _bump_write_epoch_unlocked()
         except Exception:
             mem.rollback()
             _reload_memory_unlocked()
+            _bump_write_epoch_unlocked()
     finally:
         _rwlock.write_release()
 
@@ -250,6 +294,8 @@ def fetch_one(sql: str, params: tuple = ()) -> Optional[dict]:
     """
     local = getattr(_thread_local_db, "conn", None)
     if local is not None:
+        _refresh_thread_local_snapshot()
+        local = getattr(_thread_local_db, "conn", None)
         row = local.execute(sql, params).fetchone()
         return dict(row) if row else None
 
@@ -270,6 +316,8 @@ def fetch_all(sql: str, params: tuple = ()) -> List[dict]:
     """
     local = getattr(_thread_local_db, "conn", None)
     if local is not None:
+        _refresh_thread_local_snapshot()
+        local = getattr(_thread_local_db, "conn", None)
         return [dict(r) for r in local.execute(sql, params).fetchall()]
 
     _rwlock.read_acquire()
@@ -298,8 +346,8 @@ class thread_local_db:
             result = db.fetch_one("SELECT ...")
 
     The copy is created via sqlite3.backup() from the shared in-memory DB,
-    and is closed + discarded on exit.  Write operations still go through
-    the shared path (disk + memory) and are NOT reflected in the copy.
+    and is closed + discarded on exit.  If other threads write while this
+    context is active, reads transparently refresh the local snapshot.
     """
 
     def __enter__(self):
@@ -313,16 +361,18 @@ class thread_local_db:
         finally:
             _rwlock.read_release()
         _thread_local_db.conn = conn
+        _thread_local_db.epoch = _write_epoch
         return self
 
     def __exit__(self, *exc):
         conn = getattr(_thread_local_db, "conn", None)
         _thread_local_db.conn = None
+        _thread_local_db.epoch = -1
         if conn is not None:
             try:
                 conn.close()
             except Exception:
-                pass
+                logger.debug("Failed closing thread-local snapshot on context exit", exc_info=True)
         return False
 
 
@@ -344,6 +394,7 @@ def ensure_thread_local_db():
     finally:
         _rwlock.read_release()
     _thread_local_db.conn = conn
+    _thread_local_db.epoch = _write_epoch
 
 
 # ---------------------------------------------------------------------------
@@ -387,7 +438,8 @@ def _reload_memory_unlocked() -> None:
         try:
             old_conn.close()
         except Exception:
-            pass
+            logger.debug("Failed closing previous in-memory DB connection", exc_info=True)
+    _bump_write_epoch_unlocked()
     logger.info("In-memory database reloaded from disk")
 
 
@@ -413,7 +465,7 @@ def close_all():
             try:
                 conn.close()
             except Exception:
-                pass
+                logger.debug("Failed closing tracked disk connection", exc_info=True)
         _disk_conns.clear()
     _disk_local.conn = None
     _rwlock.write_acquire()
@@ -422,7 +474,7 @@ def close_all():
             try:
                 _mem_conn.close()
             except Exception:
-                pass
+                logger.debug("Failed closing shared in-memory DB connection", exc_info=True)
             _mem_conn = None
     finally:
         _rwlock.write_release()
@@ -454,7 +506,7 @@ def delete_database():
                 try:
                     conn.close()
                 except Exception:
-                    pass
+                    logger.debug("Failed closing disk connection before DB delete", exc_info=True)
             _disk_conns.clear()
         _disk_local.conn = None
 
@@ -462,7 +514,7 @@ def delete_database():
             try:
                 _mem_conn.close()
             except Exception:
-                pass
+                logger.debug("Failed closing in-memory DB before delete", exc_info=True)
             _mem_conn = None
     finally:
         _rwlock.write_release()

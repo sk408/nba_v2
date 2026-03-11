@@ -21,7 +21,7 @@ def main():
 
     # Bootstrap (splash.set_status accepts msg + optional progress float)
     splash.set_status("Initializing...", 0.0)
-    bootstrap(status_callback=splash.set_status)
+    bootstrap(status_callback=splash.set_status, enable_daily_automation=True)
 
     # Main window (imported after bootstrap so DB etc. are ready)
     from src.ui.main_window import MainWindow

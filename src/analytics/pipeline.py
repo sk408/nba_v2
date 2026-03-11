@@ -68,6 +68,71 @@ def _save_pipeline_state(state: Dict):
         json.dump(state, f, indent=2, cls=NumpyEncoder)
 
 
+_SAVE_GATE_DETAIL_EXPORT_KEYS = (
+    "weight_delta",
+    "min_weight_delta",
+    "weight_change_ok",
+    "loss_improved",
+    "core_guards_ok",
+    "winner_guard",
+    "favorites_guard",
+    "compression_ok",
+    "edge_ok",
+    "shrunk_upset_lift",
+    "roi_lift",
+    "candidate_ml_roi_lb95",
+    "use_roi_gate",
+    "use_hybrid_loss_gate",
+    "use_long_dog_tiebreak_gate",
+)
+
+
+def _to_json_scalar(value: Any) -> Any:
+    """Convert numpy/object scalars to JSON-safe Python scalars."""
+    try:
+        if hasattr(value, "item"):
+            value = value.item()
+    except Exception:
+        logger.debug("Failed scalar conversion for save-gate export", exc_info=True)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return None
+
+
+def _short_reason(reason: Any, max_len: int = 220) -> str:
+    """Trim long save-gate reasons to keep state files readable."""
+    text = str(reason or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max(0, max_len - 3)].rstrip() + "..."
+
+
+def _extract_save_gate_state(step_result: Any) -> Optional[Dict[str, Any]]:
+    """Return compact save-gate metadata from optimizer-style step results."""
+    if not isinstance(step_result, dict):
+        return None
+    reason = step_result.get("save_gate_reason")
+    details = step_result.get("save_gate_details")
+    if reason is None and not isinstance(details, dict):
+        return None
+
+    snapshot: Dict[str, Any] = {}
+    if reason is not None:
+        snapshot["reason"] = _short_reason(reason)
+    if "improved" in step_result:
+        snapshot["saved"] = bool(step_result.get("improved"))
+
+    if isinstance(details, dict):
+        for key in _SAVE_GATE_DETAIL_EXPORT_KEYS:
+            if key not in details:
+                continue
+            val = _to_json_scalar(details.get(key))
+            if val is not None:
+                snapshot[key] = val
+
+    return snapshot or None
+
+
 # ──────────────────────────────────────────────────────────────
 # Cancellation
 # ──────────────────────────────────────────────────────────────
@@ -340,11 +405,21 @@ def run_pipeline(
 
                 # Store result (strip bulky per_game lists from state file)
                 results[step_name] = step_result
-                state[f"step_{step_name}"] = {
+                step_state: Dict[str, Any] = {
                     "status": "completed",
                     "elapsed_seconds": round(step_elapsed, 3),
                     "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
+                save_gate_state = _extract_save_gate_state(step_result)
+                if save_gate_state is not None:
+                    step_state["save_gate"] = save_gate_state
+                    reason = str(save_gate_state.get("reason", "")).strip()
+                    saved = bool(save_gate_state.get("saved", False))
+                    if saved:
+                        emit(f"  [{step_name}] save gate: pass")
+                    elif reason:
+                        emit(f"  [{step_name}] save gate: {_short_reason(reason, 180)}")
+                state[f"step_{step_name}"] = step_state
 
                 emit(f"  {step_name} completed in {_fmt_step_seconds(step_elapsed)}")
 
@@ -465,6 +540,30 @@ def run_overnight(
     # Track best backtest across all passes
     best_bt = results.get("backtest", {})
     pass_num = 1
+    save_gate_passes: List[Dict[str, Any]] = []
+    pass1_summary = {
+        "pass": 1,
+        "mode": "full_pipeline",
+        "fundamentals": _extract_save_gate_state(results.get("optimize_fundamentals")),
+        "sharp": _extract_save_gate_state(results.get("optimize_sharp")),
+    }
+    pass1_summary["saved_any"] = bool(
+        (pass1_summary["fundamentals"] or {}).get("saved", False)
+        or (pass1_summary["sharp"] or {}).get("saved", False)
+    )
+    save_gate_passes.append(pass1_summary)
+    for model_name, gate in (
+        ("fundamentals", pass1_summary.get("fundamentals")),
+        ("sharp", pass1_summary.get("sharp")),
+    ):
+        if not isinstance(gate, dict):
+            continue
+        if bool(gate.get("saved", False)):
+            emit(f"  Pass 1 {model_name} save gate: pass")
+            continue
+        reason = str(gate.get("reason", "")).strip()
+        if reason:
+            emit(f"  Pass 1 {model_name} save gate: {_short_reason(reason, 180)}")
 
     # Emit Pass 1 backtest results so the TUI can display them
     if best_bt:
@@ -515,6 +614,14 @@ def run_overnight(
             pass_saved_any = pass_saved_any or fund_saved
             improved = "IMPROVED" if fund_saved else "no change"
             emit(f"  Fundamentals: {improved}")
+            fund_gate = _extract_save_gate_state(fund_result)
+            if isinstance(fund_gate, dict):
+                if fund_saved:
+                    emit("  Fundamentals save gate: pass")
+                else:
+                    reason = str(fund_gate.get("reason", "")).strip()
+                    if reason:
+                        emit(f"  Fundamentals save gate: {_short_reason(reason, 180)}")
 
             # Optimize sharp
             emit(f"[Loop {pass_num}] Optimizing sharp (3000 trials)...")
@@ -528,6 +635,24 @@ def run_overnight(
             pass_saved_any = pass_saved_any or sharp_saved
             improved = "IMPROVED" if sharp_saved else "no change"
             emit(f"  Sharp: {improved}")
+            sharp_gate = _extract_save_gate_state(sharp_result)
+            if isinstance(sharp_gate, dict):
+                if sharp_saved:
+                    emit("  Sharp save gate: pass")
+                else:
+                    reason = str(sharp_gate.get("reason", "")).strip()
+                    if reason:
+                        emit(f"  Sharp save gate: {_short_reason(reason, 180)}")
+
+            save_gate_passes.append(
+                {
+                    "pass": pass_num,
+                    "mode": "loop",
+                    "saved_any": pass_saved_any,
+                    "fundamentals": fund_gate,
+                    "sharp": sharp_gate,
+                }
+            )
 
             # Backtest
             emit(f"[Loop {pass_num}] Backtest...")
@@ -597,8 +722,23 @@ def run_overnight(
              f"ML ROI={f_met.get('ml_roi', 0):+.1f}%")
     emit(f"{'=' * 60}")
 
+    try:
+        state = _load_pipeline_state()
+        state["overnight_last_run"] = {
+            "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "passes": pass_num,
+            "elapsed_seconds": round(total_elapsed, 1),
+            "consecutive_no_save_passes": consecutive_no_save_passes,
+            "save_gate_passes": save_gate_passes[-30:],
+        }
+        _save_pipeline_state(state)
+    except Exception as e:
+        logger.debug("Failed to persist overnight save-gate summary: %s", e)
+
     return {
         "passes": pass_num,
         "elapsed_seconds": round(total_elapsed, 1),
         "backtest": best_bt,
+        "save_gate_passes": save_gate_passes,
+        "consecutive_no_save_passes": consecutive_no_save_passes,
     }

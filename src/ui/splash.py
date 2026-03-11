@@ -308,7 +308,7 @@ class SplashScreen(QSplashScreen):
                 if cached.get("date") == today_str and cached.get("team_ids"):
                     return set(cached["team_ids"])
         except Exception:
-            pass
+            logger.debug("Splash scoreboard cache read failed", exc_info=True)
 
         team_ids: Set[int] = set()
         try:
@@ -333,7 +333,7 @@ class SplashScreen(QSplashScreen):
                         "team_ids": list(team_ids),
                     }))
                 except Exception:
-                    pass
+                    logger.debug("Splash scoreboard cache write failed", exc_info=True)
         except Exception as e:
             logger.debug(f"Could not fetch today's games for splash: {e}")
 

@@ -50,7 +50,7 @@ class NotificationBell(QPushButton):
             self._count = get_unread_count()
             self.update()
         except Exception:
-            pass
+            logger.debug("Notification unread-count poll failed", exc_info=True)
 
     def _toggle_panel(self):
         if self._panel.isVisible():

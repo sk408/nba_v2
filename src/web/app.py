@@ -80,6 +80,11 @@ def _apply_security_headers(response):
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    elif request.path.startswith("/static/"):
+        # Static bundles are immutable between deploys in this local app.
+        response.headers["Cache-Control"] = "public, max-age=3600"
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; "
@@ -549,6 +554,17 @@ def api_sync_status():
     })
 
 
+@app.route("/api/cache/status")
+def api_cache_status():
+    """Cache invalidation/debug state."""
+    try:
+        from src.analytics.cache_registry import get_cache_registry_state
+        return jsonify(get_cache_registry_state())
+    except Exception as e:
+        logger.error("Cache status error: %s", e, exc_info=True)
+        return _json_error("Unable to load cache status right now.", 500)
+
+
 def _update_sync_status(msg: str):
     global _sync_status
     _sync_status = msg
@@ -674,6 +690,7 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
         try:
             from src.analytics.team_context import get_team_display_context
         except Exception:
+            logger.debug("team_context import unavailable for gamecast parse", exc_info=True)
             get_team_display_context = None
 
         abbr_to_id = {}
@@ -686,6 +703,7 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
                 for k, v in (abbr_map or {}).items()
             }
         except Exception:
+            logger.debug("team abbreviation map unavailable for gamecast parse", exc_info=True)
             abbr_to_id = {}
 
         status = comp.get("status", {})
@@ -714,6 +732,12 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
                         include_starters_out=True,
                     )
                 except Exception:
+                    logger.debug(
+                        "team_context fetch failed for team_id=%s date=%s",
+                        team_id_int,
+                        game_date_for_context,
+                        exc_info=True,
+                    )
                     ctx = {}
             record = _extract_total_record(c) or ctx.get("record", "")
             result["header"][side] = {
@@ -860,7 +884,12 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
             if an_odds:
                 result["odds"] = an_odds
         except Exception:
-            pass
+            logger.debug(
+                "ActionNetwork odds parse failed for %s vs %s",
+                home_abbr,
+                away_abbr,
+                exc_info=True,
+            )
     if not result["odds"]:
         pickcenter = summary.get("pickcenter", [])
         if pickcenter:
@@ -974,6 +1003,7 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
                 away_poss = possessions
                 away_poss_scored = scored_possessions
         except Exception:
+            logger.debug("Flow possession parse failed for side=%s", side, exc_info=True)
             continue
 
     result["flow_stats"] = {

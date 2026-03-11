@@ -30,3 +30,17 @@ def test_predict_requires_json_content_type_even_with_csrf():
             headers={"X-CSRF-Token": "token-123"},
         )
     assert resp.status_code == 415
+
+
+def test_api_responses_are_not_cacheable():
+    with app.test_client() as client:
+        resp = client.get("/api/sync/status")
+    assert resp.status_code == 200
+    assert resp.headers.get("Cache-Control") == "no-store"
+
+
+def test_static_assets_have_cache_header():
+    with app.test_client() as client:
+        resp = client.get("/static/style.css")
+    assert resp.status_code == 200
+    assert resp.headers.get("Cache-Control") == "public, max-age=3600"

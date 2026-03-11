@@ -1,17 +1,20 @@
 """JSON-backed application settings at data/app_settings.json."""
 
 import json
+import logging
 import os
 import threading
 from pathlib import Path
 from typing import Any, Dict
+
+logger = logging.getLogger(__name__)
 
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except Exception:
     # Optional dependency for local env overrides.
-    pass
+    logger.debug("python-dotenv load skipped", exc_info=True)
 
 _SETTINGS_PATH = Path("data") / "app_settings.json"
 _settings_lock = threading.Lock()
@@ -23,6 +26,11 @@ _DEFAULTS: Dict[str, Any] = {
     "historical_seasons": ["2019-20", "2020-21", "2021-22", "2022-23", "2023-24", "2024-25"],
     "theme": "dark",
     "auto_sync_interval_minutes": 60,
+    "daily_automation_enabled": True,
+    "daily_automation_hour": 9,
+    "daily_automation_minute": 0,
+    "daily_automation_git_enabled": True,
+    "daily_automation_commit_message": "daily",
     "notification_webhook_url": "",
     "notification_ntfy_topic": "",
     "enable_toast_notifications": True,
@@ -31,6 +39,8 @@ _DEFAULTS: Dict[str, Any] = {
     "oled_mode": False,
     "sync_freshness_hours": 4,
     "optimizer_log_interval": 300,
+    "optimizer_deterministic": False,
+    "optimizer_deterministic_seed": 42,
     "prediction_mode": "fundamentals",  # "fundamentals" or "fundamentals_sharp"
     "upset_bonus_mult": 0.5,  # optimizer upset reward multiplier
     "upset_bonus_mult_max": 5.0,  # hard cap for upset bonus tuning
