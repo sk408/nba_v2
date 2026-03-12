@@ -62,3 +62,44 @@ def test_retry_call_retries_then_succeeds(monkeypatch):
     result = http_client.retry_call(_flaky, retries=3, backoff_base=0.0)
     assert result == "ok"
     assert attempts["n"] == 3
+
+
+def test_get_json_uses_env_ca_bundle(monkeypatch):
+    from src.data import http_client
+
+    monkeypatch.setenv("NBA_HTTP_CA_BUNDLE", "/tmp/custom-ca.pem")
+    captured = {}
+
+    def _fake_request(**kwargs):
+        captured["verify"] = kwargs.get("verify")
+        return _FakeResponse(status_code=200, payload={"ok": True}, text='{"ok": true}')
+
+    monkeypatch.setattr(http_client.requests, "request", _fake_request)
+
+    data = http_client.get_json("https://example.test/api")
+    assert data["ok"] is True
+    assert captured["verify"] == "/tmp/custom-ca.pem"
+
+
+def test_get_json_ssl_fallback_to_insecure_when_enabled(monkeypatch):
+    from src.data import http_client
+
+    monkeypatch.setenv("NBA_HTTP_ALLOW_INSECURE_SSL", "1")
+    monkeypatch.setattr(http_client, "_CERTIFI_CA_BUNDLE", "/tmp/certifi.pem")
+    monkeypatch.setattr(http_client.time, "sleep", lambda *_args, **_kwargs: None)
+
+    verifies = []
+
+    def _fake_request(**kwargs):
+        verifies.append(kwargs.get("verify"))
+        if len(verifies) == 1:
+            raise http_client.requests.exceptions.SSLError(
+                "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
+            )
+        return _FakeResponse(status_code=200, payload={"ok": True}, text='{"ok": true}')
+
+    monkeypatch.setattr(http_client.requests, "request", _fake_request)
+
+    data = http_client.get_json("https://example.test/api", retries=1)
+    assert data["ok"] is True
+    assert verifies == ["/tmp/certifi.pem", False]
