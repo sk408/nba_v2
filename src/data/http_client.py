@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import random
 import time
 from typing import Any, Callable, Iterable, Optional, Tuple, Type
 
 import requests
+
+logger = logging.getLogger(__name__)
+
+_TRUTHY_ENV = {"1", "true", "yes", "on"}
+_CA_BUNDLE_ENV = "NBA_HTTP_CA_BUNDLE"
+_ALLOW_INSECURE_SSL_ENV = "NBA_HTTP_ALLOW_INSECURE_SSL"
+
+try:
+    import certifi
+
+    _CERTIFI_CA_BUNDLE = certifi.where()
+except Exception:
+    _CERTIFI_CA_BUNDLE = None
 
 
 class HttpClientError(RuntimeError):
@@ -26,6 +41,39 @@ class HttpDecodeError(HttpClientError):
 
 
 _DEFAULT_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _is_truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUTHY_ENV
+
+
+def _resolve_verify(verify: Optional[Any]) -> Any:
+    """Resolve TLS verify setting with secure defaults."""
+    if verify is not None:
+        return verify
+
+    ca_bundle = os.environ.get(_CA_BUNDLE_ENV, "").strip()
+    if ca_bundle:
+        return ca_bundle
+
+    if _CERTIFI_CA_BUNDLE:
+        return _CERTIFI_CA_BUNDLE
+
+    return True
+
+
+def _is_certificate_verify_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return any(
+        token in text
+        for token in (
+            "certificate verify failed",
+            "self-signed certificate",
+            "self signed certificate",
+            "unable to get local issuer certificate",
+            "hostname mismatch",
+        )
+    )
 
 
 def _backoff_sleep(
@@ -59,13 +107,18 @@ def request_with_retry(
     retry_statuses: Optional[Iterable[int]] = None,
     on_retry: Optional[Callable[[int, int, Exception], None]] = None,
     session: Optional[requests.Session] = None,
+    verify: Optional[Any] = None,
 ) -> requests.Response:
     """Perform an HTTP request with retry/backoff and typed failures."""
     retry_codes = set(retry_statuses or _DEFAULT_RETRY_STATUSES)
     requester = session.request if session is not None else requests.request
     attempts = max(1, int(retries))
+    resolved_verify = _resolve_verify(verify)
+    allow_insecure_ssl = _is_truthy_env(_ALLOW_INSECURE_SSL_ENV)
+    used_insecure_fallback = False
 
-    for attempt in range(1, attempts + 1):
+    attempt = 1
+    while attempt <= attempts:
         try:
             resp = requester(
                 method=method,
@@ -75,8 +128,30 @@ def request_with_retry(
                 data=data,
                 json=json_payload,
                 timeout=timeout,
+                verify=resolved_verify,
             )
         except requests.RequestException as exc:
+            if (
+                allow_insecure_ssl
+                and not used_insecure_fallback
+                and isinstance(exc, requests.exceptions.SSLError)
+                and _is_certificate_verify_error(exc)
+                and resolved_verify is not False
+            ):
+                used_insecure_fallback = True
+                resolved_verify = False
+                logger.warning(
+                    "TLS verify failed for %s %s; retrying once with verify=False "
+                    "because %s is enabled.",
+                    method,
+                    url,
+                    _ALLOW_INSECURE_SSL_ENV,
+                )
+                if attempt >= attempts:
+                    attempts += 1
+                attempt += 1
+                continue
+
             wrapped = HttpRequestError(f"HTTP request failed for {method} {url}: {exc}")
             if attempt >= attempts:
                 raise wrapped from exc
@@ -88,6 +163,7 @@ def request_with_retry(
                 max_sleep=backoff_max,
                 jitter_ratio=jitter_ratio,
             )
+            attempt += 1
             continue
 
         if resp.status_code in retry_codes and attempt < attempts:
@@ -102,6 +178,7 @@ def request_with_retry(
                 max_sleep=backoff_max,
                 jitter_ratio=jitter_ratio,
             )
+            attempt += 1
             continue
 
         if resp.status_code >= 400:
@@ -128,6 +205,7 @@ def get_json(
     retry_statuses: Optional[Iterable[int]] = None,
     on_retry: Optional[Callable[[int, int, Exception], None]] = None,
     session: Optional[requests.Session] = None,
+    verify: Optional[Any] = None,
 ) -> Any:
     """GET JSON with retry/backoff and typed decode errors."""
     resp = request_with_retry(
@@ -143,6 +221,7 @@ def get_json(
         retry_statuses=retry_statuses,
         on_retry=on_retry,
         session=session,
+        verify=verify,
     )
     try:
         return resp.json()
@@ -163,6 +242,7 @@ def get_text(
     retry_statuses: Optional[Iterable[int]] = None,
     on_retry: Optional[Callable[[int, int, Exception], None]] = None,
     session: Optional[requests.Session] = None,
+    verify: Optional[Any] = None,
 ) -> str:
     """GET text with retry/backoff."""
     resp = request_with_retry(
@@ -178,6 +258,7 @@ def get_text(
         retry_statuses=retry_statuses,
         on_retry=on_retry,
         session=session,
+        verify=verify,
     )
     return resp.text
 
