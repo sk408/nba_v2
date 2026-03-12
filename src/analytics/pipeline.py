@@ -540,6 +540,8 @@ def run_overnight(
     # Track best backtest across all passes
     best_bt = results.get("backtest", {})
     pass_num = 1
+    attempted_passes = 1
+    completed_passes = 1
     save_gate_passes: List[Dict[str, Any]] = []
     pass1_summary = {
         "pass": 1,
@@ -585,9 +587,6 @@ def run_overnight(
 
     # Pass 2+: optimization loops
     while time_left() > 0 and not is_cancelled():
-        pass_num += 1
-        loop_start = time.time()
-
         # Estimate if we have time for another loop
         avg_loop = (
             sum(loop_times) / len(loop_times) if loop_times else pass1_elapsed * 0.6
@@ -595,6 +594,10 @@ def run_overnight(
         if time_left() < avg_loop * 0.5:
             emit(f"\n~{fmt_elapsed(time_left())} remaining, not enough for another pass.")
             break
+
+        pass_num = attempted_passes + 1
+        attempted_passes = pass_num
+        loop_start = time.time()
 
         emit(f"\n--- Pass {pass_num}: Optimization Loop "
              f"({fmt_elapsed(time_left())} remaining) ---")
@@ -654,6 +657,13 @@ def run_overnight(
                 }
             )
 
+            if time_left() <= 0 and not is_cancelled():
+                emit(
+                    f"  Time budget reached before backtest in pass {pass_num}; "
+                    "ending run without counting this pass."
+                )
+                break
+
             # Backtest
             emit(f"[Loop {pass_num}] Backtest...")
             bt = run_backtest_and_compare(
@@ -686,6 +696,8 @@ def run_overnight(
             emit(f"  Pass {pass_num} took {fmt_elapsed(loop_elapsed)} | "
                  f"avg {fmt_elapsed(sum(loop_times) / len(loop_times))}/pass")
 
+            completed_passes += 1
+
             if pass_saved_any:
                 consecutive_no_save_passes = 0
             else:
@@ -707,7 +719,15 @@ def run_overnight(
 
     total_elapsed = time.time() - overall_start
     emit(f"\n{'=' * 60}")
-    emit(f"Overnight complete: {pass_num} passes in {fmt_elapsed(total_elapsed)}")
+    emit(
+        f"Overnight complete: {completed_passes} fully evaluated passes "
+        f"in {fmt_elapsed(total_elapsed)}"
+    )
+    if attempted_passes > completed_passes:
+        emit(
+            f"Attempted passes: {attempted_passes} "
+            f"(partial/unscored: {attempted_passes - completed_passes})"
+        )
     if best_bt:
         f_met = best_bt.get("fundamentals", {})
         emit(f"Best: Winner={f_met.get('winner_pct', 0):.1f}%, "
@@ -726,7 +746,8 @@ def run_overnight(
         state = _load_pipeline_state()
         state["overnight_last_run"] = {
             "completed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "passes": pass_num,
+            "passes": completed_passes,
+            "attempted_passes": attempted_passes,
             "elapsed_seconds": round(total_elapsed, 1),
             "consecutive_no_save_passes": consecutive_no_save_passes,
             "save_gate_passes": save_gate_passes[-30:],
@@ -736,7 +757,8 @@ def run_overnight(
         logger.debug("Failed to persist overnight save-gate summary: %s", e)
 
     return {
-        "passes": pass_num,
+        "passes": completed_passes,
+        "attempted_passes": attempted_passes,
         "elapsed_seconds": round(total_elapsed, 1),
         "backtest": best_bt,
         "save_gate_passes": save_gate_passes,

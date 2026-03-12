@@ -32,6 +32,12 @@ def test_predict_requires_json_content_type_even_with_csrf():
     assert resp.status_code == 415
 
 
+def test_odds_today_sync_requires_csrf_token():
+    with app.test_client() as client:
+        resp = client.post("/api/sync/odds-today")
+    assert resp.status_code == 403
+
+
 def test_api_responses_are_not_cacheable():
     with app.test_client() as client:
         resp = client.get("/api/sync/status")

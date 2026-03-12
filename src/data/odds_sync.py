@@ -1,4 +1,5 @@
 import logging
+import time
 from datetime import datetime
 from typing import Optional, Callable
 from src.database import db
@@ -6,8 +7,31 @@ from src.data.http_client import get_json, HttpClientError
 
 logger = logging.getLogger(__name__)
 
+_ACTIONNETWORK_BLOCK_COOLDOWN_SEC = 5 * 60
+_actionnetwork_blocked_until = 0.0
+_actionnetwork_last_block_log = 0.0
+
+
+def _is_actionnetwork_403(exc: Exception) -> bool:
+    text = str(exc)
+    return "HTTP 403" in text and "api.actionnetwork.com" in text
+
 def fetch_action_odds(date_str: str) -> list:
     """Fetch games and odds from Action Network for a specific date (YYYYMMDD)."""
+    global _actionnetwork_blocked_until, _actionnetwork_last_block_log
+
+    now = time.time()
+    if now < _actionnetwork_blocked_until:
+        if now - _actionnetwork_last_block_log >= 60:
+            remaining = int(max(0.0, _actionnetwork_blocked_until - now))
+            logger.info(
+                "ActionNetwork cooldown active (%ss remaining); skipping odds fetch for %s.",
+                remaining,
+                date_str,
+            )
+            _actionnetwork_last_block_log = now
+        return []
+
     url = f"https://api.actionnetwork.com/web/v1/scoreboard/nba?date={date_str}"
     try:
         # Action Network API often blocks default requests User-Agent
@@ -22,10 +46,20 @@ def fetch_action_odds(date_str: str) -> list:
             retries=3,
             backoff_base=0.8,
         )
+        _actionnetwork_blocked_until = 0.0
         return data.get("games", [])
     except HttpClientError as e:
-        logger.error(f"Error fetching Action Network odds for {date_str}: {e}")
-        logger.debug("ActionNetwork fetch stacktrace", exc_info=True)
+        if _is_actionnetwork_403(e):
+            _actionnetwork_blocked_until = now + _ACTIONNETWORK_BLOCK_COOLDOWN_SEC
+            _actionnetwork_last_block_log = now
+            logger.warning(
+                "ActionNetwork returned 403 for %s (likely VPN/IP block); cooling down for %d minutes.",
+                date_str,
+                _ACTIONNETWORK_BLOCK_COOLDOWN_SEC // 60,
+            )
+        else:
+            logger.error("Error fetching Action Network odds for %s: %s", date_str, e)
+            logger.debug("ActionNetwork fetch stacktrace", exc_info=True)
         return []
 
 from src.utils.team_mapper import normalize_action_abbr as _map_action_abbrev

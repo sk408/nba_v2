@@ -353,29 +353,49 @@ class FastcastWebSocket:
 _an_odds_cache = {}
 _an_last_fetch = 0.0
 _an_odds_lock = threading.Lock()
+_an_blocked_until = 0.0
+_an_last_block_log = 0.0
+_AN_BLOCK_COOLDOWN_SEC = 5 * 60
+
+
+def _is_actionnetwork_blocked_error(exc: Exception) -> bool:
+    text = str(exc)
+    return "HTTP 403" in text and "api.actionnetwork.com" in text
 
 
 def invalidate_actionnetwork_cache() -> None:
     """Clear cached Action Network scoreboard payload."""
-    global _an_odds_cache, _an_last_fetch
+    global _an_odds_cache, _an_last_fetch, _an_blocked_until, _an_last_block_log
     with _an_odds_lock:
         _an_odds_cache = {}
         _an_last_fetch = 0.0
+        _an_blocked_until = 0.0
+        _an_last_block_log = 0.0
 
 
 def get_actionnetwork_odds(home_abbr: str, away_abbr: str) -> Dict[str, Any]:
     """Fetch live odds from Action Network API.
     Matches based on team abbreviations.
-    Caches the full scoreboard request for 15 seconds to prevent spam.
+    Caches the full scoreboard request for 10 seconds to prevent spam.
     """
     import time
-    global _an_odds_cache, _an_last_fetch
+    global _an_odds_cache, _an_last_fetch, _an_blocked_until, _an_last_block_log
 
     home_query = normalize_action_abbr(home_abbr)
     away_query = normalize_action_abbr(away_abbr)
 
     now = time.time()
     with _an_odds_lock:
+        if now < _an_blocked_until:
+            if now - _an_last_block_log >= 60:
+                remaining = int(max(0.0, _an_blocked_until - now))
+                logger.info(
+                    "ActionNetwork cooldown active (%ss remaining); using fallback odds.",
+                    remaining,
+                )
+                _an_last_block_log = now
+            return {}
+
         if not _an_odds_cache or (now - _an_last_fetch) > 10.0:
             try:
                 data = get_json(
@@ -387,8 +407,18 @@ def get_actionnetwork_odds(home_abbr: str, away_abbr: str) -> Dict[str, Any]:
                 )
                 _an_odds_cache = data
                 _an_last_fetch = now
+                _an_blocked_until = 0.0
             except HttpClientError as e:
-                logger.warning(f"ActionNetwork fetch failed: {e}")
+                if _is_actionnetwork_blocked_error(e):
+                    _an_blocked_until = now + _AN_BLOCK_COOLDOWN_SEC
+                    _an_last_block_log = now
+                    logger.warning(
+                        "ActionNetwork returned 403 (likely VPN/IP block); "
+                        "cooling down for %d minutes.",
+                        _AN_BLOCK_COOLDOWN_SEC // 60,
+                    )
+                else:
+                    logger.warning("ActionNetwork fetch failed: %s", e)
 
     if not _an_odds_cache:
         return {}

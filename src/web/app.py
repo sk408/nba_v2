@@ -7,6 +7,7 @@ Routes:
   /gamecast                  Live gamecast view (ESPN integration)
   /api/predict  (POST)       JSON prediction endpoint
   /api/sync     (POST)       Trigger data sync (background thread)
+  /api/sync/odds-today (POST) Trigger odds-only sync for today's games
   /api/gamecast/games        Today's games (ESPN scoreboard)
   /api/gamecast/<game_id>    Full game data (summary, boxscore, plays, odds)
 """
@@ -43,7 +44,12 @@ _MATCHUP_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _SYNC_RATE_LIMIT_SECONDS = max(1, int(os.environ.get("NBA_SYNC_RATE_LIMIT_SECONDS", "5")))
 _SHUTDOWN_ENABLED = os.environ.get("NBA_WEB_SHUTDOWN_ENABLED", "0") == "1"
 _SHUTDOWN_TOKEN = os.environ.get("NBA_SHUTDOWN_TOKEN", "").strip()
-_CSRF_PROTECTED_ENDPOINTS = {"api_predict", "api_sync", "api_shutdown"}
+_CSRF_PROTECTED_ENDPOINTS = {
+    "api_predict",
+    "api_sync",
+    "api_sync_odds_today",
+    "api_shutdown",
+}
 
 
 def _ensure_csrf_token() -> str:
@@ -172,6 +178,73 @@ def _get_todays_games() -> List[Dict[str, Any]]:
             })
 
     return predictions
+
+
+def _count_missing_odds_for_today(game_date: str) -> Optional[int]:
+    """Best-effort count of today's scoreboard matchups still missing odds."""
+    try:
+        from src.data.gamecast import fetch_espn_scoreboard
+        from src.analytics.stats_engine import get_team_abbreviations
+        from src.database import db
+    except Exception:
+        logger.debug("Missing-odds check imports unavailable", exc_info=True)
+        return None
+
+    try:
+        scoreboard_games = fetch_espn_scoreboard()
+    except Exception:
+        logger.debug("Could not load scoreboard for missing-odds check", exc_info=True)
+        return None
+
+    id_to_abbr = get_team_abbreviations() or {}
+    abbr_to_id = {}
+    for team_id, abbr in id_to_abbr.items():
+        if abbr is None:
+            continue
+        try:
+            abbr_to_id[str(abbr).upper()] = int(team_id)
+        except (TypeError, ValueError):
+            continue
+
+    matchups = []
+    seen = set()
+    for game in scoreboard_games:
+        home_abbr = str(game.get("home_team", "")).upper().strip()
+        away_abbr = str(game.get("away_team", "")).upper().strip()
+        home_id = abbr_to_id.get(home_abbr)
+        away_id = abbr_to_id.get(away_abbr)
+        if not home_id or not away_id:
+            continue
+        key = (home_id, away_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        matchups.append(key)
+
+    if not matchups:
+        return 0
+
+    missing_count = 0
+    for home_id, away_id in matchups:
+        odds_row = db.fetch_one(
+            """
+            SELECT spread, over_under, home_moneyline, away_moneyline
+            FROM game_odds
+            WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?
+            """,
+            (game_date, home_id, away_id),
+        )
+        if not odds_row:
+            missing_count += 1
+            continue
+        has_any_odds = any(
+            odds_row.get(field) is not None
+            for field in ("spread", "over_under", "home_moneyline", "away_moneyline")
+        )
+        if not has_any_odds:
+            missing_count += 1
+
+    return missing_count
 
 
 def _format_starters_out(starters_out: List[Dict[str, Any]]) -> List[str]:
@@ -543,6 +616,88 @@ def api_sync():
     thread.start()
 
     return jsonify({"status": "started", "message": "Sync started in background"})
+
+
+@app.route("/api/sync/odds-today", methods=["POST"])
+def api_sync_odds_today():
+    """Trigger odds-only sync for today's games (background thread)."""
+    global _sync_running, _sync_status, _last_sync_request_at
+
+    now = time.time()
+    with _sync_lock:
+        since_last = now - _last_sync_request_at
+        if since_last < _SYNC_RATE_LIMIT_SECONDS:
+            wait_sec = int(max(1, _SYNC_RATE_LIMIT_SECONDS - since_last))
+            return jsonify({
+                "status": "rate_limited",
+                "message": f"Please wait {wait_sec}s before starting another sync.",
+            }), 429
+        if _sync_running:
+            return jsonify({"status": "already_running", "message": _sync_status})
+        _sync_running = True
+        _sync_status = "Starting odds-only sync..."
+        _last_sync_request_at = now
+
+    def _run_odds_sync():
+        global _sync_running, _sync_status
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        try:
+            from src.data.odds_sync import sync_odds_for_date
+
+            missing_before = _count_missing_odds_for_today(today)
+            if missing_before is not None:
+                _sync_status = (
+                    f"Odds-only sync running for {today} "
+                    f"({missing_before} missing matchup(s) detected)..."
+                )
+            else:
+                _sync_status = f"Odds-only sync running for {today}..."
+
+            saved_count = sync_odds_for_date(
+                today,
+                callback=lambda msg: _update_sync_status(msg),
+            )
+            missing_after = _count_missing_odds_for_today(today)
+
+            if missing_before is not None and missing_after is not None:
+                filled = max(0, missing_before - missing_after)
+                if filled > 0:
+                    _sync_status = (
+                        f"Odds sync complete. Filled {filled} missing matchup(s) for {today}."
+                    )
+                elif missing_after == 0:
+                    _sync_status = (
+                        f"Odds sync complete. Today's matchups already have odds for {today}."
+                    )
+                elif saved_count > 0:
+                    _sync_status = (
+                        f"Odds sync complete. Updated {saved_count} game(s); "
+                        f"{missing_after} matchup(s) still missing."
+                    )
+                else:
+                    _sync_status = (
+                        f"Odds sync complete. No new odds returned for {today}; "
+                        f"{missing_after} matchup(s) still missing."
+                    )
+            elif saved_count > 0:
+                _sync_status = f"Odds sync complete. Updated {saved_count} game(s) for {today}."
+            else:
+                _sync_status = f"Odds sync complete. No new odds returned for {today}."
+        except Exception as e:
+            logger.error("Background odds-only sync error: %s", e, exc_info=True)
+            _sync_status = "Odds sync failed. See server logs."
+        finally:
+            with _sync_lock:
+                _sync_running = False
+
+    thread = threading.Thread(target=_run_odds_sync, name="web-odds-sync", daemon=True)
+    thread.start()
+
+    return jsonify({
+        "status": "started",
+        "message": "Odds-only sync for today started in background",
+    })
 
 
 @app.route("/api/sync/status")

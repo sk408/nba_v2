@@ -2599,6 +2599,23 @@ a:hover {
     transition: color 0.25s ease;
 }
 
+.bnav-action {
+    border: none;
+    background: transparent;
+    font-family: inherit;
+    color: inherit;
+    cursor: pointer;
+}
+
+.bnav-action:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.bnav-action.is-syncing svg {
+    animation: bnav-spin 1s linear infinite;
+}
+
 /* Tap press-down */
 .bnav-item:active {
     transform: scale(0.88);
@@ -2657,6 +2674,11 @@ a:hover {
 @keyframes bnav-glow {
     0%, 100% { box-shadow: 0 2px 12px rgba(0, 229, 255, 0.5), 0 0 20px rgba(0, 229, 255, 0.2); }
     50%      { box-shadow: 0 2px 16px rgba(0, 229, 255, 0.7), 0 0 28px rgba(0, 229, 255, 0.3); }
+}
+
+@keyframes bnav-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
 }
 
 

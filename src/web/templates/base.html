@@ -100,6 +100,62 @@
                 btn.disabled = false;
             }
         }
+
+        function setOddsMobileButton(label, busy = false) {
+            const btn = document.getElementById('odds-sync-mobile-btn');
+            if (!btn) return;
+            const labelEl = btn.querySelector('.bnav-action-label');
+            if (labelEl) {
+                labelEl.textContent = label;
+            }
+            btn.disabled = busy;
+            btn.classList.toggle('is-syncing', busy);
+        }
+
+        async function triggerOddsSyncToday() {
+            const btn = document.getElementById('odds-sync-mobile-btn');
+            if (!btn || btn.disabled) return;
+
+            setOddsMobileButton('Syncing', true);
+
+            try {
+                const resp = await fetch('/api/sync/odds-today', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': CSRF_TOKEN },
+                });
+                const data = await resp.json();
+
+                if (data.status === 'rate_limited') {
+                    setOddsMobileButton('Wait', false);
+                    return;
+                }
+
+                if (data.status === 'already_running') {
+                    setOddsMobileButton('Running', true);
+                }
+
+                pollOddsSyncToday();
+            } catch (e) {
+                setOddsMobileButton('Failed', false);
+            }
+        }
+
+        async function pollOddsSyncToday() {
+            try {
+                const resp = await fetch('/api/sync/status');
+                const data = await resp.json();
+                if (data.running) {
+                    setTimeout(pollOddsSyncToday, 2500);
+                } else {
+                    setOddsMobileButton('Odds', false);
+                    if (data.status && data.status.includes('complete')) {
+                        location.reload();
+                    }
+                }
+            } catch (e) {
+                setOddsMobileButton('Odds', false);
+            }
+        }
     </script>
     <script>
         async function shutdownServer() {
@@ -149,6 +205,22 @@
             </svg>
             <span>Gamecast</span>
         </a>
+        <button
+            type="button"
+            id="odds-sync-mobile-btn"
+            class="bnav-item bnav-action"
+            onclick="triggerOddsSyncToday()"
+            title="Fetch today's missing odds"
+            aria-label="Sync today's missing odds"
+        >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="23 4 23 10 17 10"/>
+                <polyline points="1 20 1 14 7 14"/>
+                <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10"/>
+                <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14"/>
+            </svg>
+            <span class="bnav-action-label">Odds</span>
+        </button>
         <a href="/accuracy" class="bnav-item {% if request.path == '/accuracy' %}active{% endif %}">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10"/>
