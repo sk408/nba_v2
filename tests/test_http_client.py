@@ -103,3 +103,31 @@ def test_get_json_ssl_fallback_to_insecure_when_enabled(monkeypatch):
     data = http_client.get_json("https://example.test/api", retries=1)
     assert data["ok"] is True
     assert verifies == ["/tmp/certifi.pem", False]
+
+
+def test_get_json_actionnetwork_auto_ssl_fallback(monkeypatch):
+    from src.data import http_client
+
+    monkeypatch.delenv("NBA_HTTP_ALLOW_INSECURE_SSL", raising=False)
+    monkeypatch.setattr(http_client, "_CERTIFI_CA_BUNDLE", "/tmp/certifi.pem")
+    monkeypatch.setattr(http_client.time, "sleep", lambda *_args, **_kwargs: None)
+
+    verifies = []
+
+    def _fake_request(**kwargs):
+        verifies.append(kwargs.get("verify"))
+        if len(verifies) == 1:
+            raise http_client.requests.exceptions.ProxyError(
+                "HTTPSConnectionPool(host='api.actionnetwork.com', port=443): "
+                "Max retries exceeded with url: /web/v1/scoreboard/nba "
+                "(Caused by SSLError(SSLCertVerificationError(1, "
+                "'[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+                "self-signed certificate in certificate chain (_ssl.c:1010)')))"
+            )
+        return _FakeResponse(status_code=200, payload={"ok": True}, text='{"ok": true}')
+
+    monkeypatch.setattr(http_client.requests, "request", _fake_request)
+
+    data = http_client.get_json("https://api.actionnetwork.com/web/v1/scoreboard/nba", retries=1)
+    assert data["ok"] is True
+    assert verifies == ["/tmp/certifi.pem", False]

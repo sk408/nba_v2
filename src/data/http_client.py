@@ -6,6 +6,7 @@ import logging
 import os
 import random
 import time
+from urllib.parse import urlparse
 from typing import Any, Callable, Iterable, Optional, Tuple, Type
 
 import requests
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 _TRUTHY_ENV = {"1", "true", "yes", "on"}
 _CA_BUNDLE_ENV = "NBA_HTTP_CA_BUNDLE"
 _ALLOW_INSECURE_SSL_ENV = "NBA_HTTP_ALLOW_INSECURE_SSL"
+_INSECURE_SSL_HOSTS_ENV = "NBA_HTTP_INSECURE_SSL_HOSTS"
+_AUTO_INSECURE_SSL_HOSTS = frozenset({"api.actionnetwork.com"})
 
 try:
     import certifi
@@ -76,6 +79,29 @@ def _is_certificate_verify_error(exc: BaseException) -> bool:
     )
 
 
+def _host_allows_auto_insecure_ssl(url: str) -> bool:
+    """Allow scoped insecure retry for known non-sensitive hosts."""
+    try:
+        host = (urlparse(url).hostname or "").lower().strip()
+    except Exception:
+        return False
+    if not host:
+        return False
+
+    if host in _AUTO_INSECURE_SSL_HOSTS:
+        return True
+
+    raw = os.environ.get(_INSECURE_SSL_HOSTS_ENV, "")
+    if not raw:
+        return False
+    configured_hosts = {
+        item.strip().lower()
+        for item in raw.split(",")
+        if item.strip()
+    }
+    return host in configured_hosts
+
+
 def _backoff_sleep(
     attempt: int,
     *,
@@ -115,6 +141,7 @@ def request_with_retry(
     attempts = max(1, int(retries))
     resolved_verify = _resolve_verify(verify)
     allow_insecure_ssl = _is_truthy_env(_ALLOW_INSECURE_SSL_ENV)
+    host_allows_auto_insecure = _host_allows_auto_insecure_ssl(url)
     used_insecure_fallback = False
 
     attempt = 1
@@ -132,9 +159,8 @@ def request_with_retry(
             )
         except requests.RequestException as exc:
             if (
-                allow_insecure_ssl
+                (allow_insecure_ssl or host_allows_auto_insecure)
                 and not used_insecure_fallback
-                and isinstance(exc, requests.exceptions.SSLError)
                 and _is_certificate_verify_error(exc)
                 and resolved_verify is not False
             ):
@@ -142,10 +168,14 @@ def request_with_retry(
                 resolved_verify = False
                 logger.warning(
                     "TLS verify failed for %s %s; retrying once with verify=False "
-                    "because %s is enabled.",
+                    "because %s.",
                     method,
                     url,
-                    _ALLOW_INSECURE_SSL_ENV,
+                    (
+                        f"{_ALLOW_INSECURE_SSL_ENV} is enabled"
+                        if allow_insecure_ssl
+                        else "host is allowlisted for scoped insecure retry"
+                    ),
                 )
                 if attempt >= attempts:
                     attempts += 1
