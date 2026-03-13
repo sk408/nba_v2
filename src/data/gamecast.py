@@ -37,14 +37,25 @@ def _extract_total_record(competitor: Dict[str, Any]) -> str:
     return ""
 
 
-def fetch_espn_scoreboard() -> List[Dict[str, Any]]:
-    """Fetch today's ESPN scoreboard with retry on transient errors."""
+def fetch_espn_scoreboard(date: str | None = None) -> List[Dict[str, Any]]:
+    """Fetch ESPN scoreboard for a given date (YYYY-MM-DD) with retry.
+
+    When *date* is ``None`` the NBA's Eastern-Time "today" is used so the
+    dashboard always shows today's upcoming/live games instead of
+    yesterday's completed slate.
+    """
+    if date is None:
+        from src.utils.timezone_utils import nba_today
+        date = nba_today()
+
+    url = f"{ESPN_SCOREBOARD_URL}?dates={date.replace('-', '')}"
+
     def _on_retry(attempt: int, total: int, exc: Exception):
         logger.warning("ESPN scoreboard retry %d/%d: %s", attempt, total, exc)
 
     try:
         data = get_json(
-            ESPN_SCOREBOARD_URL,
+            url,
             headers=_HEADERS,
             timeout=10,
             retries=3,
