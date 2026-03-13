@@ -4,8 +4,15 @@ __pycache__/
 data/cache/
 data/backtest_cache/
 data/snapshots/
-
+data/nba_analytics.db
+data/app_settings.json
 data/optuna_studies.db
+data/optuna_studies.db-journal
+data/overnight.log
+data/pipeline_state.json
+data/deploy_status.json
+data/deploy.log
+data/score_calibration.json
 .worktrees/
 DEPLOYMENT.md
 deploy/
