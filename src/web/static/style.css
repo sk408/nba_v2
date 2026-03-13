@@ -203,6 +203,17 @@ a:hover {
     color: #dc2626;
 }
 
+.btn-deploy {
+    border-color: #22c55e;
+    color: #22c55e;
+}
+
+.btn-deploy:hover {
+    background: rgba(34, 197, 94, 0.1);
+    border-color: #16a34a;
+    color: #16a34a;
+}
+
 .btn-primary {
     background: var(--accent-cyan);
     color: var(--bg-primary);

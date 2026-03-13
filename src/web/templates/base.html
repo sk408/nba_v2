@@ -27,6 +27,11 @@
                 <button id="sync-btn" class="btn btn-sm btn-outline" onclick="triggerSync()">
                     <span id="sync-icon" class="sync-icon">&#8635;</span><span class="btn-label"> Sync</span>
                 </button>
+                {% if deploy_enabled %}
+                <button id="deploy-btn" class="btn btn-sm btn-outline btn-deploy" onclick="triggerDeploy()" title="Pull latest code and restart">
+                    <span id="deploy-icon">&#8593;</span><span class="btn-label"> Deploy</span>
+                </button>
+                {% endif %}
                 {% if shutdown_enabled %}
                 <button id="shutdown-btn" class="btn btn-sm btn-outline btn-danger" onclick="shutdownServer()" title="Stop server and injury monitor">
                     &#9724;<span class="btn-label"> Shutdown</span>
@@ -180,6 +185,71 @@
             document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:Inter,sans-serif;color:#64748b;"><h2>Server stopped.</h2></div>';
         }
     </script>
+    <script>
+        async function triggerDeploy() {
+            if (!confirm('Pull latest code from git and restart the server?')) return;
+
+            const btn = document.getElementById('deploy-btn');
+            const mobileBtn = document.getElementById('deploy-mobile-btn');
+            function setDeployUI(label, disabled) {
+                if (btn) { btn.innerHTML = '<span id="deploy-icon">&#8593;</span><span class="btn-label"> ' + label + '</span>'; btn.disabled = disabled; }
+                if (mobileBtn) { const l = mobileBtn.querySelector('.bnav-action-label'); if (l) l.textContent = label; mobileBtn.disabled = disabled; }
+            }
+            setDeployUI('Deploying...', true);
+
+            try {
+                const resp = await fetch('/api/deploy', {
+                    method: 'POST',
+                    headers: { 'X-CSRF-Token': CSRF_TOKEN, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const data = await resp.json();
+                if (data.status === 'already_running') {
+                    setDeployUI('Running...', true);
+                } else if (resp.ok) {
+                    setDeployUI('Deploying...', true);
+                } else {
+                    setDeployUI('Deploy', false);
+                    alert(data.error || 'Deploy failed');
+                    return;
+                }
+                pollDeploy();
+            } catch (e) {
+                setDeployUI('Deploy', false);
+                alert('Deploy request failed: ' + e.message);
+            }
+        }
+
+        async function pollDeploy() {
+            const btn = document.getElementById('deploy-btn');
+            const mobileBtn = document.getElementById('deploy-mobile-btn');
+            function setDeployUI(label, disabled) {
+                if (btn) { btn.innerHTML = '<span id="deploy-icon">&#8593;</span><span class="btn-label"> ' + label + '</span>'; btn.disabled = disabled; }
+                if (mobileBtn) { const l = mobileBtn.querySelector('.bnav-action-label'); if (l) l.textContent = label; mobileBtn.disabled = disabled; }
+            }
+
+            try {
+                const resp = await fetch('/api/deploy/status');
+                const data = await resp.json();
+                if (data.status === 'running') {
+                    setDeployUI(data.message || 'Deploying...', true);
+                    setTimeout(pollDeploy, 2000);
+                } else if (data.status === 'done') {
+                    setDeployUI('Done!', false);
+                    setTimeout(() => location.reload(), 1500);
+                } else if (data.status === 'error') {
+                    setDeployUI('Failed', false);
+                    alert('Deploy failed: ' + (data.message || 'unknown error'));
+                } else {
+                    // idle or unknown - server probably restarted, try again
+                    setTimeout(pollDeploy, 3000);
+                }
+            } catch (e) {
+                // Server is restarting - wait and retry
+                setTimeout(pollDeploy, 3000);
+            }
+        }
+    </script>
     <!-- ─── Mobile Bottom Navigation ─── -->
     <nav class="bottom-nav">
         <a href="/" class="bnav-item {% if request.path == '/' %}active{% endif %}">
@@ -229,6 +299,24 @@
             </svg>
             <span>Accuracy</span>
         </a>
+        {% if deploy_enabled %}
+        <button
+            type="button"
+            id="deploy-mobile-btn"
+            class="bnav-item bnav-action"
+            onclick="triggerDeploy()"
+            title="Pull latest code and restart"
+            aria-label="Deploy update"
+        >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="17 1 21 5 17 9"/>
+                <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                <polyline points="7 23 3 19 7 15"/>
+                <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+            </svg>
+            <span class="bnav-action-label">Deploy</span>
+        </button>
+        {% endif %}
     </nav>
 
     {% block scripts %}{% endblock %}

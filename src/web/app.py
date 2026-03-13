@@ -12,12 +12,14 @@ Routes:
   /api/gamecast/<game_id>    Full game data (summary, boxscore, plays, odds)
 """
 
+import json
 import logging
 import hmac
 import os
 import re
 import secrets
 import signal
+import subprocess
 import threading
 import time
 from dataclasses import asdict
@@ -46,11 +48,15 @@ _MATCHUP_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _SYNC_RATE_LIMIT_SECONDS = max(1, int(os.environ.get("NBA_SYNC_RATE_LIMIT_SECONDS", "5")))
 _SHUTDOWN_ENABLED = os.environ.get("NBA_WEB_SHUTDOWN_ENABLED", "0") == "1"
 _SHUTDOWN_TOKEN = os.environ.get("NBA_SHUTDOWN_TOKEN", "").strip()
+_DEPLOY_ENABLED = os.environ.get("NBA_DEPLOY_ENABLED", "0") == "1"
+_DEPLOY_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "deploy.sh")
+_DEPLOY_STATUS_FILE = os.path.join("data", "deploy_status.json")
 _CSRF_PROTECTED_ENDPOINTS = {
     "api_predict",
     "api_sync",
     "api_sync_odds_today",
     "api_shutdown",
+    "api_deploy",
 }
 
 
@@ -67,6 +73,7 @@ def _inject_template_globals():
     return {
         "csrf_token": _ensure_csrf_token(),
         "shutdown_enabled": _SHUTDOWN_ENABLED,
+        "deploy_enabled": _DEPLOY_ENABLED,
     }
 
 
@@ -1233,6 +1240,44 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
         logger.debug("Model prediction unavailable: %s", e)
 
     return result
+
+
+@app.route("/api/deploy", methods=["POST"])
+def api_deploy():
+    """Trigger a git-pull deploy via deploy.sh (runs detached)."""
+    if not _DEPLOY_ENABLED:
+        return _json_error("Deploy endpoint is disabled.", 403)
+
+    # Check if a deploy is already running
+    try:
+        with open(_DEPLOY_STATUS_FILE) as f:
+            status = json.load(f)
+        if status.get("status") == "running" and time.time() - status.get("ts", 0) < 120:
+            return jsonify({"status": "already_running", "message": status.get("message", "")})
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    branch = (request.json or {}).get("branch", "")
+    if branch and not re.match(r"^[A-Za-z0-9._/-]+$", branch):
+        return _json_error("Invalid branch name.", 400)
+
+    cmd = ["bash", _DEPLOY_SCRIPT]
+    if branch:
+        cmd.append(branch)
+
+    logger.info("Deploy triggered via web UI (branch=%s)", branch or "current")
+    subprocess.Popen(cmd, start_new_session=True)
+    return jsonify({"status": "started"})
+
+
+@app.route("/api/deploy/status")
+def api_deploy_status():
+    """Return current deploy status from the status file."""
+    try:
+        with open(_DEPLOY_STATUS_FILE) as f:
+            return jsonify(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return jsonify({"status": "idle"})
 
 
 @app.route("/api/shutdown", methods=["POST"])
