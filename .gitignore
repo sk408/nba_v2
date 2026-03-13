@@ -7,3 +7,5 @@ data/snapshots/
 
 data/optuna_studies.db
 .worktrees/
+DEPLOYMENT.md
+deploy/

@@ -36,6 +36,7 @@ _DEFAULTS: Dict[str, Any] = {
     "enable_toast_notifications": True,
     "log_level": "INFO",
     "worker_threads": max(1, (os.cpu_count() or 4) - 2),
+    "timezone": "US/Pacific",
     "oled_mode": False,
     "sync_freshness_hours": 4,
     "optimizer_log_interval": 300,
@@ -192,6 +193,12 @@ def set_value(key: str, value: Any):
             upset_bonus_max = float(_DEFAULTS["upset_bonus_mult_max"])
         upset_bonus_max = max(0.0, upset_bonus_max)
         value = min(max(0.0, upset_bonus), upset_bonus_max)
+    elif key == "timezone":
+        from zoneinfo import ZoneInfo
+        try:
+            ZoneInfo(str(value))
+        except (KeyError, Exception):
+            value = _DEFAULTS["timezone"]
     elif key == "score_calibration_bins":
         try:
             value = int(value)

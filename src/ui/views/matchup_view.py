@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from dataclasses import asdict
 import time
 
+from src.utils.timezone_utils import nba_today, nba_now
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -520,7 +522,7 @@ class MatchupView(QWidget):
         """Fill date combo with today +14 days."""
         self._date_combo.blockSignals(True)
         self._date_combo.clear()
-        today = datetime.now()
+        today = nba_now()
         for i in range(15):
             d = today + timedelta(days=i)
             label = d.strftime("%a %m/%d")
@@ -541,7 +543,7 @@ class MatchupView(QWidget):
             try:
                 from src.data.gamecast import fetch_espn_scoreboard
                 espn_games = fetch_espn_scoreboard()
-                today_str = datetime.now().strftime("%Y-%m-%d")
+                today_str = nba_today()
                 for g in espn_games:
                     self._all_schedule.append({
                         "game_date": today_str,
@@ -622,7 +624,7 @@ class MatchupView(QWidget):
 
     def _start_game_scan(self):
         """Scan today's games in background to cache predictions."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = nba_today()
         games_to_scan = []
         for i in range(1, self._game_combo.count()):
             data = self._game_data_for_index(i)
@@ -743,7 +745,7 @@ class MatchupView(QWidget):
 
         home_id = data.get("home_team_id")
         away_id = data.get("away_team_id")
-        game_date = data.get("game_date", datetime.now().strftime("%Y-%m-%d"))
+        game_date = data.get("game_date", nba_today())
 
         if not home_id or not away_id:
             return
@@ -893,7 +895,7 @@ class MatchupView(QWidget):
         """Update record/streak/rest labels and projected starters out."""
         home_id = game_data.get("home_team_id") or 0
         away_id = game_data.get("away_team_id") or 0
-        game_date = game_data.get("game_date", datetime.now().strftime("%Y-%m-%d"))
+        game_date = game_data.get("game_date", nba_today())
 
         home_ctx = {}
         away_ctx = {}

@@ -678,7 +678,8 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
     # Sharp money (ML only)
     ml_pub = 0
     ml_mon = 0
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    from src.utils.timezone_utils import nba_today
+    today_str = nba_today()
     if game_date >= today_str:
         # Live fetch from Action Network
         try:

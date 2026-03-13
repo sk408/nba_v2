@@ -38,7 +38,8 @@ def _coerce_game_date(game_date: Optional[str]) -> str:
             return candidate
         except ValueError:
             pass
-    return datetime.now().strftime("%Y-%m-%d")
+    from src.utils.timezone_utils import nba_today
+    return nba_today()
 
 
 def _season_for_game_date(game_date: str) -> str:

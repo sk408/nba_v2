@@ -252,7 +252,8 @@ def player_splits(player_id: int, opponent_team_id: int, is_home: int,
 def get_games_missed_streak(player_id: int, as_of_date: Optional[str] = None) -> int:
     """Count consecutive games missed before as_of_date (or now)."""
     if as_of_date is None:
-        as_of_date = datetime.now().strftime("%Y-%m-%d")
+        from src.utils.timezone_utils import nba_today
+        as_of_date = nba_today()
 
     # In-memory cache lookup
     streak_key = (player_id, as_of_date)

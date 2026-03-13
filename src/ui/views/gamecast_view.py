@@ -16,6 +16,8 @@ import time
 from datetime import datetime
 from typing import Dict, Optional
 
+from src.utils.timezone_utils import nba_today, et_to_display
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -535,13 +537,12 @@ class GamecastView(QWidget):
                     time_str = short_detail.replace(" ET", "").strip()
                     et_time = datetime.strptime(time_str, "%I:%M %p")
                     et_tz = ZoneInfo("America/New_York")
-                    local_tz = datetime.now().astimezone().tzinfo
-                    now = datetime.now()
+                    now = datetime.now(tz=et_tz)
                     et_dt = now.replace(
                         hour=et_time.hour, minute=et_time.minute,
                         second=0, microsecond=0, tzinfo=et_tz,
                     )
-                    local_dt = et_dt.astimezone(local_tz)
+                    local_dt = et_to_display(et_dt)
                     display_detail = local_dt.strftime("%I:%M %p").lstrip("0")
                 except Exception:
                     display_detail = short_detail
@@ -900,7 +901,7 @@ class GamecastView(QWidget):
         clock_str = status_detail.get("displayClock", "0:00")
         game_date = str(comp.get("date", "") or "")[:10]
         if not game_date:
-            game_date = datetime.now().strftime("%Y-%m-%d")
+            game_date = nba_today()
 
         home_record = self._extract_total_record(home_comp)
         away_record = self._extract_total_record(away_comp)
@@ -1337,7 +1338,7 @@ class GamecastView(QWidget):
             return
 
         # Launch background prediction
-        game_date = datetime.now().strftime("%Y-%m-%d")
+        game_date = nba_today()
         worker = _PredictionWorker(home_team_id, away_team_id, game_date)
         worker.finished.connect(self._on_prediction_done)
         worker.error.connect(self._on_prediction_error)

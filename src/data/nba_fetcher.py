@@ -7,6 +7,7 @@ from datetime import datetime
 from src.config import get_season, get_season_year
 from src.database import db
 from src.data.http_client import get_json, retry_call, HttpClientError
+from src.utils.timezone_utils import nba_today, to_display_tz
 
 logger = logging.getLogger(__name__)
 
@@ -386,7 +387,7 @@ def fetch_nba_cdn_schedule() -> List[Dict[str, Any]]:
             backoff_base=0.8,
         )
         games = []
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = nba_today()
         for game_date_obj in data.get("leagueSchedule", {}).get("gameDates", []):
             for game in game_date_obj.get("games", []):
                 gd = str(game.get("gameDateEst", ""))[:10]
@@ -397,7 +398,7 @@ def fetch_nba_cdn_schedule() -> List[Dict[str, Any]]:
                     if utc_str:
                         try:
                             utc_dt = datetime.fromisoformat(utc_str.replace("Z", "+00:00"))
-                            local_dt = utc_dt.astimezone()
+                            local_dt = to_display_tz(utc_dt)
                             local_time_str = local_dt.strftime("%I:%M %p").lstrip("0")
                         except ValueError as e:
                             logger.warning("Time parse failed for %s: %s", utc_str, e)

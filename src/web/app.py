@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional
 
 from flask import Flask, render_template, jsonify, request, session, abort
 
+from src.utils.timezone_utils import nba_today
+
 logger = logging.getLogger(__name__)
 
 app = Flask(
@@ -134,7 +136,7 @@ def _get_todays_games() -> List[Dict[str, Any]]:
     from src.analytics.prediction import predict_matchup
     from src.analytics.stats_engine import get_team_abbreviations, get_team_names
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = nba_today()
     abbr_map = get_team_abbreviations()
     name_map = get_team_names()
 
@@ -330,7 +332,7 @@ def _run_prediction(home_id: int, away_id: int, game_date: str,
 @app.route("/")
 def dashboard():
     """Dashboard: today's games with model picks, confidence, upset flags."""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = nba_today()
     try:
         predictions = _get_todays_games()
     except Exception as e:
@@ -369,7 +371,7 @@ def dashboard():
 @app.route("/matchup")
 def matchup_picker():
     """Game picker for matchup predictions — always shows ESPN games."""
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = nba_today()
     games = []
 
     try:
@@ -640,7 +642,7 @@ def api_sync_odds_today():
 
     def _run_odds_sync():
         global _sync_running, _sync_status
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = nba_today()
 
         try:
             from src.data.odds_sync import sync_odds_for_date
@@ -834,7 +836,7 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
     # ── Header ──
     header = summary.get("header", {})
     competitions = header.get("competitions", [{}])
-    game_date_for_context = datetime.now().strftime("%Y-%m-%d")
+    game_date_for_context = nba_today()
     if competitions:
         comp = competitions[0]
         raw_comp_date = str(comp.get("date", "") or "")
@@ -1224,7 +1226,7 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
         h_id = abbr_to_id.get(home_abbr)
         a_id = abbr_to_id.get(away_abbr)
         if h_id and a_id:
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = nba_today()
             result["model_prediction"] = _run_prediction(
                 int(h_id), int(a_id), today)
     except Exception as e:

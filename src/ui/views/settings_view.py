@@ -9,7 +9,7 @@ import logging
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QGridLayout, QScrollArea, QSlider, QSpinBox, QDoubleSpinBox,
-    QCheckBox,
+    QCheckBox, QComboBox,
     QRadioButton, QButtonGroup, QGroupBox, QSizePolicy,
     QMessageBox, QTextEdit, QTableWidget, QTableWidgetItem,
     QHeaderView,
@@ -124,6 +124,9 @@ class SettingsView(QWidget):
 
         # ---- Section 5: Theme ----
         self._build_theme_section(layout)
+
+        # ---- Section 5b: Timezone ----
+        self._build_timezone_section(layout)
 
         # ---- Section 6: Coordinate Descent ----
         self._build_cd_section(layout)
@@ -588,6 +591,51 @@ class SettingsView(QWidget):
 
         apply_card_shadow(group)
         parent_layout.addWidget(group)
+
+    def _build_timezone_section(self, parent_layout: QVBoxLayout):
+        """Build timezone selector dropdown."""
+        from src.utils.timezone_utils import TIMEZONE_CHOICES
+        from src import config
+
+        group = QGroupBox("Timezone")
+        gl = QVBoxLayout(group)
+        gl.setSpacing(8)
+
+        desc = QLabel(
+            "Select your local timezone. Game dates use Eastern Time "
+            "internally; display times are converted to your choice."
+        )
+        desc.setProperty("class", "text-secondary")
+        desc.setWordWrap(True)
+        gl.addWidget(desc)
+
+        self._tz_combo = QComboBox()
+        self._tz_combo.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 13px; padding: 4px;"
+        )
+        current_tz = config.get("timezone", "US/Pacific")
+        for label, iana_key in TIMEZONE_CHOICES:
+            self._tz_combo.addItem(label, iana_key)
+            if iana_key == current_tz:
+                self._tz_combo.setCurrentIndex(self._tz_combo.count() - 1)
+
+        self._tz_combo.currentIndexChanged.connect(self._on_timezone_changed)
+
+        row = QHBoxLayout()
+        row.addWidget(self._tz_combo)
+        row.addStretch()
+        gl.addLayout(row)
+
+        apply_card_shadow(group)
+        parent_layout.addWidget(group)
+
+    def _on_timezone_changed(self, index: int):
+        """Persist timezone selection."""
+        from src import config
+        iana_key = self._tz_combo.itemData(index)
+        if iana_key:
+            config.set_value("timezone", iana_key)
+            logger.info("Timezone changed to %s", iana_key)
 
     def _build_cd_section(self, parent_layout: QVBoxLayout):
         """Build coordinate descent refinement section."""
