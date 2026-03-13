@@ -20,6 +20,7 @@
             </a>
             <div class="nav-links">
                 <a href="/" class="nav-link {% if request.path == '/' %}active{% endif %}">Dashboard</a>
+                <a href="/matchup" class="nav-link {% if '/matchup' in request.path %}active{% endif %}">Matchup</a>
                 <a href="/gamecast" class="nav-link {% if request.path.startswith('/gamecast') %}active{% endif %}">Gamecast</a>
                 <a href="/accuracy" class="nav-link {% if request.path == '/accuracy' %}active{% endif %}">Accuracy</a>
             </div>
