@@ -1,13 +1,11 @@
 """Gunicorn configuration for NBA Fundamentals V2."""
 
 bind = "127.0.0.1:5050"
-workers = 1
-threads = 4
+workers = 2
+worker_class = "sync"
 timeout = 120
 accesslog = "-"
 errorlog = "-"
-# Do NOT use preload_app — bootstrap starts background threads
-# (injury monitor) that cause deadlocks when the master forks workers.
 preload_app = False
 
 
