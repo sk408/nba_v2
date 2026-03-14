@@ -283,6 +283,52 @@ a:hover {
 
 
 /* ══════════════════════════════════════════════════
+   Date Strip (Matchup Picker)
+   ══════════════════════════════════════════════════ */
+
+.date-strip {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 0 4px 16px 4px;
+    scrollbar-width: none;
+}
+
+.date-strip::-webkit-scrollbar {
+    display: none;
+}
+
+.date-chip {
+    flex-shrink: 0;
+    padding: 8px 18px;
+    border-radius: 999px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: var(--font-body);
+    font-size: 0.875rem;
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+
+.date-chip:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+}
+
+.date-chip.active {
+    background: rgba(0, 229, 255, 0.12);
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+    font-weight: 600;
+}
+
+
+/* ══════════════════════════════════════════════════
    Game Cards Grid (Dashboard)
    ══════════════════════════════════════════════════ */
 

@@ -4,13 +4,21 @@
 {% block content %}
 <div class="page-header">
     <h1 class="page-title">Matchup Predictions</h1>
-    <span class="page-subtitle">{{ today }} &mdash; Select a game</span>
+    <span class="page-subtitle">{{ selected_date }} &mdash; Select a game</span>
+</div>
+
+<div class="date-strip">
+    {% for d in dates %}
+    <a href="/matchup?date={{ d.value }}" class="date-chip{% if d.is_active %} active{% endif %}">
+        {{ d.label }}
+    </a>
+    {% endfor %}
 </div>
 
 {% if games %}
 <div class="game-grid">
     {% for g in games %}
-    <a href="/matchup/{{ g.home_abbr }}/{{ g.away_abbr }}/{{ today }}" class="game-card">
+    <a href="/matchup/{{ g.home_abbr }}/{{ g.away_abbr }}/{{ selected_date }}" class="game-card">
         {% if g.start_utc %}
         <div class="card-top-row">
             <span class="card-time" data-utc="{{ g.start_utc }}"></span>
@@ -37,8 +45,8 @@
 {% else %}
 <div class="empty-state">
     <div class="empty-icon">&#127936;</div>
-    <h2>No Games Today</h2>
-    <p>Check back on a game day for matchup predictions.</p>
+    <h2>No Games Scheduled</h2>
+    <p>No games on this date. Try another day.</p>
 </div>
 {% endif %}
 {% endblock %}

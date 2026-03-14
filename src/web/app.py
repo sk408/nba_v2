@@ -23,7 +23,7 @@ import subprocess
 import threading
 import time
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from flask import Flask, render_template, jsonify, request, session, abort
@@ -406,13 +406,33 @@ def dashboard():
 
 @app.route("/matchup")
 def matchup_picker():
-    """Game picker for matchup predictions — always shows ESPN games."""
+    """Game picker for matchup predictions — shows games for selected date."""
     today = nba_today()
+    selected_date = request.args.get("date", today)
+    if not _MATCHUP_DATE_RE.match(selected_date):
+        selected_date = today
+
+    # Build 7-day date strip (today + 6 days)
+    today_dt = datetime.strptime(today, "%Y-%m-%d")
+    dates = []
+    for i in range(7):
+        d = today_dt + timedelta(days=i)
+        val = d.strftime("%Y-%m-%d")
+        dates.append({
+            "label": d.strftime("%a %-m/%d") if os.name != "nt" else d.strftime("%a %#m/%d"),
+            "value": val,
+            "is_active": val == selected_date,
+        })
+
+    # Merge ESPN scoreboard + NBA CDN schedule for selected date
     games = []
+    seen = set()
 
     try:
         from src.data.gamecast import fetch_espn_scoreboard
-        for g in fetch_espn_scoreboard():
+        for g in fetch_espn_scoreboard(selected_date):
+            key = f"{g['away_team']}@{g['home_team']}"
+            seen.add(key)
             games.append({
                 "home_abbr": g["home_team"],
                 "away_abbr": g["away_team"],
@@ -422,11 +442,38 @@ def matchup_picker():
                 "state": g.get("state"),
                 "start_utc": g.get("date", ""),
             })
-        games.sort(key=lambda g: g.get("start_utc", ""))
     except Exception as e:
-        logger.error("Matchup picker error: %s", e, exc_info=True)
+        logger.error("Matchup picker ESPN error: %s", e, exc_info=True)
 
-    return render_template("matchup_picker.html", games=games, today=today)
+    try:
+        from src.data.nba_fetcher import fetch_nba_cdn_schedule
+        for g in fetch_nba_cdn_schedule():
+            if g["game_date"] != selected_date:
+                continue
+            key = f"{g['away_team']}@{g['home_team']}"
+            if key in seen:
+                continue
+            games.append({
+                "home_abbr": g["home_team"],
+                "away_abbr": g["away_team"],
+                "home_score": None,
+                "away_score": None,
+                "status": g.get("status_text") or g.get("game_time") or "",
+                "state": "pre",
+                "start_utc": g.get("game_time_utc", ""),
+            })
+    except Exception as e:
+        logger.error("Matchup picker CDN error: %s", e, exc_info=True)
+
+    games.sort(key=lambda g: g.get("start_utc", ""))
+
+    return render_template(
+        "matchup_picker.html",
+        games=games,
+        today=today,
+        selected_date=selected_date,
+        dates=dates,
+    )
 
 
 @app.route("/matchup/<home_abbr>/<away_abbr>/<date>")
