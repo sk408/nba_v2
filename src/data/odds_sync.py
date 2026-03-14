@@ -64,6 +64,195 @@ def fetch_action_odds(date_str: str) -> list:
 
 from src.utils.team_mapper import normalize_action_abbr as _map_action_abbrev
 
+_SBD_API_URL = "https://www.sportsbettingdime.com/wp-json/adpt/v1/nba-odds"
+_SBD_BOOKS = "sr:book:17324,sr:book:18149,sr:book:18186"
+
+
+def sync_betting_splits(game_date: str, callback: Optional[Callable] = None) -> int:
+    """Fetch betting splits (bet% / money%) from SportsBettingDime and update game_odds.
+
+    Only fills in NULL split columns — never overwrites existing ActionNetwork data.
+    Uses standard NBA abbreviations (no mapping needed).
+    """
+    from src.analytics.stats_engine import get_team_abbreviations
+
+    try:
+        data = get_json(
+            _SBD_API_URL,
+            params={"books": _SBD_BOOKS, "format": "us", "date": game_date},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+            },
+            timeout=15,
+            retries=2,
+            backoff_base=1.0,
+        )
+    except HttpClientError as e:
+        logger.warning("SportsBettingDime splits fetch failed for %s: %s", game_date, e)
+        return 0
+
+    games = data.get("data", [])
+    if not games:
+        return 0
+
+    id_to_abbr = get_team_abbreviations()
+    abbr_to_id = {v: k for k, v in id_to_abbr.items()}
+    now = datetime.now().isoformat()
+    updated = 0
+
+    for game in games:
+        splits = game.get("bettingSplits")
+        if not splits:
+            continue
+
+        comp = game.get("competitors", {})
+        home_abbr = comp.get("home", {}).get("abbreviation", "")
+        away_abbr = comp.get("away", {}).get("abbreviation", "")
+        home_id = abbr_to_id.get(home_abbr)
+        away_id = abbr_to_id.get(away_abbr)
+        if not home_id or not away_id:
+            continue
+
+        sp = splits.get("spread", {})
+        ml = splits.get("moneyline", {})
+
+        spread_home_public = (sp.get("home") or {}).get("betsPercentage")
+        spread_away_public = (sp.get("away") or {}).get("betsPercentage")
+        spread_home_money = (sp.get("home") or {}).get("stakePercentage")
+        spread_away_money = (sp.get("away") or {}).get("stakePercentage")
+        ml_home_public = (ml.get("home") or {}).get("betsPercentage")
+        ml_away_public = (ml.get("away") or {}).get("betsPercentage")
+        ml_home_money = (ml.get("home") or {}).get("stakePercentage")
+        ml_away_money = (ml.get("away") or {}).get("stakePercentage")
+
+        if spread_home_public is None and ml_home_public is None:
+            continue
+
+        try:
+            cur = db.execute("""
+                UPDATE game_odds SET
+                    spread_home_public = COALESCE(spread_home_public, ?),
+                    spread_away_public = COALESCE(spread_away_public, ?),
+                    spread_home_money  = COALESCE(spread_home_money,  ?),
+                    spread_away_money  = COALESCE(spread_away_money,  ?),
+                    ml_home_public     = COALESCE(ml_home_public,     ?),
+                    ml_away_public     = COALESCE(ml_away_public,     ?),
+                    ml_home_money      = COALESCE(ml_home_money,      ?),
+                    ml_away_money      = COALESCE(ml_away_money,      ?)
+                WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?
+                  AND (spread_home_public IS NULL OR ml_home_public IS NULL)
+            """, (spread_home_public, spread_away_public,
+                  spread_home_money, spread_away_money,
+                  ml_home_public, ml_away_public,
+                  ml_home_money, ml_away_money,
+                  game_date, home_id, away_id))
+            if cur.rowcount > 0:
+                updated += 1
+        except Exception as e:
+            logger.warning("SBD splits update failed for %s vs %s: %s", home_abbr, away_abbr, e)
+
+    if updated > 0:
+        logger.info("SportsBettingDime: filled betting splits for %d games on %s", updated, game_date)
+        if callback:
+            callback(f"SBD: filled betting splits for {updated} games on {game_date}")
+
+    return updated
+
+
+def _sync_espn_odds_fallback(game_date: str, callback: Optional[Callable] = None) -> int:
+    """Fetch odds from ESPN game summaries as a fallback when ActionNetwork is blocked.
+
+    ESPN provides spread, moneylines, and over/under but NOT sharp money
+    (public/money bet percentages).  Those columns are left NULL.
+    """
+    import time
+    from src.data.gamecast import fetch_espn_scoreboard, fetch_espn_game_summary
+    from src.analytics.stats_engine import get_team_abbreviations
+    from src.utils.team_mapper import normalize_espn_abbr
+
+    scoreboard = fetch_espn_scoreboard(game_date)
+    if not scoreboard:
+        return 0
+
+    id_to_abbr = get_team_abbreviations()
+    abbr_to_id = {v: k for k, v in id_to_abbr.items()}
+    now = datetime.now().isoformat()
+    saved = 0
+
+    for game in scoreboard:
+        espn_id = game.get("espn_id")
+        if not espn_id:
+            continue
+
+        home_abbr = normalize_espn_abbr(game.get("home_team", ""))
+        away_abbr = normalize_espn_abbr(game.get("away_team", ""))
+        home_id = abbr_to_id.get(home_abbr)
+        away_id = abbr_to_id.get(away_abbr)
+        if not home_id or not away_id:
+            continue
+
+        try:
+            summary = fetch_espn_game_summary(espn_id)
+            pickcenter = summary.get("pickcenter", [])
+            if not pickcenter:
+                continue
+            pc = pickcenter[0]
+
+            # Home spread (signed, from the home team's perspective)
+            ps = pc.get("pointSpread", {})
+            home_line_str = (ps.get("home") or {}).get("close", {}).get("line", "")
+            if home_line_str:
+                spread = float(home_line_str)
+            else:
+                spread_mag = pc.get("spread")
+                if spread_mag is not None:
+                    home_fav = (pc.get("homeTeamOdds") or {}).get("favorite", False)
+                    spread = -float(spread_mag) if home_fav else float(spread_mag)
+                else:
+                    spread = None
+
+            ou = pc.get("overUnder")
+            home_ml = (pc.get("homeTeamOdds") or {}).get("moneyLine")
+            away_ml = (pc.get("awayTeamOdds") or {}).get("moneyLine")
+
+            if spread is None and ou is None:
+                continue
+
+            # Opening spread for spread_movement tracking
+            open_line_str = (ps.get("home") or {}).get("open", {}).get("line", "")
+            opening_spread = float(open_line_str) if open_line_str else None
+
+            db.execute("""
+                INSERT INTO game_odds (
+                    game_date, home_team_id, away_team_id, spread, over_under,
+                    home_moneyline, away_moneyline, opening_spread,
+                    fetched_at, provider
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'espn')
+                ON CONFLICT(game_date, home_team_id, away_team_id) DO UPDATE SET
+                    spread=COALESCE(excluded.spread, spread),
+                    over_under=COALESCE(excluded.over_under, over_under),
+                    home_moneyline=COALESCE(excluded.home_moneyline, home_moneyline),
+                    away_moneyline=COALESCE(excluded.away_moneyline, away_moneyline),
+                    opening_spread=COALESCE(excluded.opening_spread, opening_spread),
+                    fetched_at=excluded.fetched_at,
+                    provider=CASE WHEN provider='actionnetwork' THEN provider ELSE excluded.provider END
+            """, (game_date, home_id, away_id, spread, ou, home_ml, away_ml,
+                  opening_spread, now))
+            saved += 1
+        except Exception as e:
+            logger.warning("ESPN odds fallback failed for game %s: %s", espn_id, e)
+
+        time.sleep(0.3)
+
+    if saved > 0:
+        logger.info("ESPN fallback: saved odds for %d games on %s", saved, game_date)
+        if callback:
+            callback(f"ESPN fallback: saved odds for {saved} games on {game_date}")
+    return saved
+
+
 def sync_odds_for_date(
     game_date: str,
     callback: Optional[Callable] = None,
@@ -73,7 +262,17 @@ def sync_odds_for_date(
     action_date = game_date.replace("-", "")
     games = fetch_action_odds(action_date)
     if not games:
-        return 0
+        # ActionNetwork returned nothing (403 block or no data) → try ESPN
+        saved = _sync_espn_odds_fallback(game_date, callback=callback)
+        # Supplement with SBD betting splits (fills NULL split columns)
+        sync_betting_splits(game_date, callback=callback)
+        if saved > 0 and invalidate_cache:
+            try:
+                from src.analytics.cache_registry import invalidate_for_event
+                invalidate_for_event("post_odds_sync")
+            except Exception as e:
+                logger.debug("ESPN fallback cache invalidation failed: %s", e)
+        return saved
 
     # Get team mapping (cached singleton)
     from src.analytics.stats_engine import get_team_abbreviations
@@ -181,6 +380,9 @@ def sync_odds_for_date(
             invalidate_for_event("post_odds_sync")
         except Exception as e:
             logger.debug("Odds cache invalidation failed: %s", e)
+
+    # Supplement with SBD betting splits (fills NULL split columns)
+    sync_betting_splits(game_date, callback=callback)
 
     if callback:
         if saved_count > 0:
