@@ -613,6 +613,88 @@ a:hover {
     text-align: center;
 }
 
+/* ── Live / Final Score Banner ── */
+
+.live-score-banner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 16px 24px;
+    margin-bottom: 24px;
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    text-align: center;
+}
+
+.live-score-banner--live {
+    border-color: var(--accent-green);
+    box-shadow: 0 0 12px rgba(0, 230, 118, 0.15);
+}
+
+.live-score-banner--final {
+    border-color: var(--text-muted);
+}
+
+.live-score-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent-green);
+    animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.live-status-text {
+    font-family: var(--font-heading);
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--accent-green);
+}
+
+.live-status-text.final {
+    color: var(--text-muted);
+}
+
+.live-score-line {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+}
+
+.live-score-team {
+    font-family: var(--font-heading);
+    font-size: 1.1rem;
+    font-weight: 600;
+    letter-spacing: 1px;
+    color: var(--text-secondary);
+}
+
+.live-score-pts {
+    font-family: var(--font-heading);
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.live-score-sep {
+    font-size: 1.5rem;
+    color: var(--text-muted);
+}
+
 .starters-out-label {
     font-size: 0.62rem;
     color: var(--text-muted);

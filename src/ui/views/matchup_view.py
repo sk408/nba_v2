@@ -403,6 +403,16 @@ class MatchupView(QWidget):
 
         layout.addWidget(team_header)
 
+        # ── Live / Final score label ──
+        self._live_score_lbl = QLabel()
+        self._live_score_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._live_score_lbl.setStyleSheet(
+            "font-family: 'Oswald'; font-size: 16px; font-weight: 700; "
+            "padding: 8px 0; color: #94a3b8;"
+        )
+        self._live_score_lbl.hide()
+        layout.addWidget(self._live_score_lbl)
+
         # ── Availability panel (projected starters out) ──
         out_panel = QFrame()
         out_panel.setProperty("class", "broadcast-card")
@@ -552,9 +562,37 @@ class MatchupView(QWidget):
                         "home_team_id": self._resolve_team_id(g.get("home_team", "")),
                         "away_team_id": self._resolve_team_id(g.get("away_team", "")),
                         "game_time": "",
+                        "state": g.get("state", "pre"),
+                        "short_detail": g.get("short_detail", ""),
+                        "home_score": g.get("home_score", 0),
+                        "away_score": g.get("away_score", 0),
                     })
             except Exception:
                 logger.debug("ESPN fallback schedule unavailable", exc_info=True)
+
+        # Overlay ESPN live scores onto today's CDN schedule entries
+        if self._all_schedule:
+            today_str = nba_today()
+            today_entries = [e for e in self._all_schedule
+                             if e.get("game_date") == today_str
+                             and "state" not in e]
+            if today_entries:
+                try:
+                    from src.data.gamecast import fetch_espn_scoreboard
+                    espn_lookup = {}
+                    for g in fetch_espn_scoreboard(today_str):
+                        key = f"{g.get('away_team', '')}@{g.get('home_team', '')}"
+                        espn_lookup[key] = g
+                    for entry in today_entries:
+                        key = f"{entry.get('away_team', '')}@{entry.get('home_team', '')}"
+                        eg = espn_lookup.get(key)
+                        if eg:
+                            entry["state"] = eg.get("state", "pre")
+                            entry["short_detail"] = eg.get("short_detail", "")
+                            entry["home_score"] = eg.get("home_score", 0)
+                            entry["away_score"] = eg.get("away_score", 0)
+                except Exception:
+                    logger.debug("ESPN score overlay failed", exc_info=True)
 
         self._filter_games_for_date()
         # Start background scan for today's games
@@ -890,6 +928,32 @@ class MatchupView(QWidget):
             )
 
         self._update_team_context(game_data)
+
+        # Live / final score display
+        state = game_data.get("state", "pre")
+        if state and state != "pre":
+            away_s = game_data.get("away_score", 0)
+            home_s = game_data.get("home_score", 0)
+            detail = game_data.get("short_detail", "")
+            if state == "in":
+                self._live_score_lbl.setText(
+                    f"LIVE  {detail}  |  {away_abbr} {away_s} \u2013 {home_abbr} {home_s}"
+                )
+                self._live_score_lbl.setStyleSheet(
+                    "font-family: 'Oswald'; font-size: 16px; font-weight: 700; "
+                    "padding: 8px 0; color: #00e676;"
+                )
+            else:
+                self._live_score_lbl.setText(
+                    f"FINAL  |  {away_abbr} {away_s} \u2013 {home_abbr} {home_s}"
+                )
+                self._live_score_lbl.setStyleSheet(
+                    "font-family: 'Oswald'; font-size: 16px; font-weight: 700; "
+                    "padding: 8px 0; color: #94a3b8;"
+                )
+            self._live_score_lbl.show()
+        else:
+            self._live_score_lbl.hide()
 
     def _update_team_context(self, game_data: dict):
         """Update record/streak/rest labels and projected starters out."""

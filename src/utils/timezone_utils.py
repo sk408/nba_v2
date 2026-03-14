@@ -5,7 +5,7 @@ ensure that "today" comparisons always use the ET date, and that
 user-facing times are converted to the configured display timezone.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from src import config
@@ -24,12 +24,17 @@ TIMEZONE_CHOICES = [
 
 
 def nba_today() -> str:
-    """Today's date in Eastern Time as YYYY-MM-DD.
+    """Return the current NBA "game date" as YYYY-MM-DD.
+
+    The NBA day doesn't roll over at midnight — late games on the West Coast
+    can run past 1 AM ET.  We keep showing the current slate until 6 AM ET
+    so the dashboard / gamecast never flip to tomorrow's empty card while
+    tonight's games are still finishing.
 
     Use this instead of ``datetime.now().strftime("%Y-%m-%d")`` whenever
     comparing against the DB ``game_date`` column.
     """
-    return datetime.now(tz=_ET).strftime("%Y-%m-%d")
+    return (datetime.now(tz=_ET) - timedelta(hours=6)).strftime("%Y-%m-%d")
 
 
 def nba_now() -> datetime:

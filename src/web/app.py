@@ -317,6 +317,35 @@ def _attach_team_context(
     return pred_dict
 
 
+def _fetch_live_score(home_abbr: str, away_abbr: str, game_date: str) -> Optional[Dict[str, Any]]:
+    """Return live/final score data from ESPN if game is in progress or completed.
+
+    Only fetches for today's date (ESPN scoreboard won't have historical data).
+    Returns None for pre-game or if no matching game found.
+    """
+    today = nba_today()
+    if game_date != today:
+        return None
+    try:
+        from src.data.gamecast import fetch_espn_scoreboard
+        for g in fetch_espn_scoreboard(game_date):
+            if (g.get("home_team", "").upper() == home_abbr.upper()
+                    and g.get("away_team", "").upper() == away_abbr.upper()):
+                if g.get("state", "pre") == "pre":
+                    return None
+                return {
+                    "state": g["state"],
+                    "short_detail": g.get("short_detail", ""),
+                    "home_score": g.get("home_score", 0),
+                    "away_score": g.get("away_score", 0),
+                    "home_abbr": home_abbr.upper(),
+                    "away_abbr": away_abbr.upper(),
+                }
+    except Exception as e:
+        logger.debug("Live score fetch failed: %s", e)
+    return None
+
+
 def _run_prediction(home_id: int, away_id: int, game_date: str,
                     include_sharp: bool = False,
                     team_context: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
@@ -452,6 +481,8 @@ def matchup_by_abbr(home_abbr, away_abbr, date):
     else:
         sorted_adj = []
 
+    live_score = _fetch_live_score(home_abbr.upper(), away_abbr.upper(), date)
+
     return render_template(
         "matchup.html",
         fund=fund_pred,
@@ -461,6 +492,7 @@ def matchup_by_abbr(home_abbr, away_abbr, date):
         home_id=home_id,
         away_id=away_id,
         error=error,
+        live_score=live_score,
     )
 
 
@@ -504,6 +536,15 @@ def matchup_detail(home_id, away_id, date):
     else:
         sorted_adj = []
 
+    # Live score — resolve abbreviations from prediction result
+    live_score = None
+    if fund_pred:
+        live_score = _fetch_live_score(
+            fund_pred.get("home_team", ""),
+            fund_pred.get("away_team", ""),
+            date,
+        )
+
     return render_template(
         "matchup.html",
         fund=fund_pred,
@@ -513,6 +554,7 @@ def matchup_detail(home_id, away_id, date):
         home_id=home_id,
         away_id=away_id,
         error=error,
+        live_score=live_score,
     )
 
 

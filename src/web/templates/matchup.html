@@ -54,6 +54,27 @@
     </div>
 </div>
 
+{# ── Live / Final Score Banner ── #}
+{% if live_score %}
+<div class="live-score-banner {% if live_score.state == 'in' %}live-score-banner--live{% else %}live-score-banner--final{% endif %}">
+    <div class="live-score-status">
+        {% if live_score.state == 'in' %}
+        <span class="live-dot"></span>
+        <span class="live-status-text">{{ live_score.short_detail }}</span>
+        {% else %}
+        <span class="live-status-text final">FINAL</span>
+        {% endif %}
+    </div>
+    <div class="live-score-line">
+        <span class="live-score-team">{{ live_score.away_abbr }}</span>
+        <span class="live-score-pts">{{ live_score.away_score }}</span>
+        <span class="live-score-sep">&ndash;</span>
+        <span class="live-score-pts">{{ live_score.home_score }}</span>
+        <span class="live-score-team">{{ live_score.home_abbr }}</span>
+    </div>
+</div>
+{% endif %}
+
 {# ── Pick + Confidence Hero ── #}
 <div class="hero-section {% if fund.is_dog_pick %}dog-hero{% endif %}">
     {% if fund.is_dog_pick %}
