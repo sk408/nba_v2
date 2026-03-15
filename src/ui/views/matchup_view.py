@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from dataclasses import asdict
 import time
 
-from src.utils.timezone_utils import nba_today, nba_now
+from src.utils.timezone_utils import nba_today
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -27,6 +27,10 @@ from PySide6.QtGui import QColor
 from src.ui.widgets.image_utils import get_team_logo, make_placeholder_logo
 from src.ui.widgets.nba_colors import get_team_colors, ensure_visible
 from src.ui.theme import apply_card_shadow
+from src.ui.views.matchup_cache import (
+    prediction_cache_key,
+    should_use_cached_prediction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +92,7 @@ class _GameScanWorker(QObject):
                         "sharp": asdict(pred_sharp),
                         "home_id": home_id,
                         "away_id": away_id,
+                        "game_date": game_date,
                     }
                 except Exception as e:
                     logger.debug("Game scan skip idx %s: %s", idx, e)
@@ -267,7 +272,7 @@ class MatchupView(QWidget):
         self._scan_thread = None
         self._scan_worker = None
         self._game_lookup = {}      # combo key -> schedule row dict
-        self._prediction_cache = {}   # (home_id, away_id): {"fundamentals": dict, "sharp": dict}
+        self._prediction_cache = {}   # (home_id, away_id, game_date): {"fundamentals": dict, "sharp": dict}
         self._include_sharp = False   # current mode toggle state
 
         main_layout = QVBoxLayout(self)
@@ -532,7 +537,7 @@ class MatchupView(QWidget):
         """Fill date combo with today +14 days."""
         self._date_combo.blockSignals(True)
         self._date_combo.clear()
-        today = nba_now()
+        today = datetime.strptime(nba_today(), "%Y-%m-%d")
         for i in range(15):
             d = today + timedelta(days=i)
             label = d.strftime("%a %m/%d")
@@ -615,6 +620,7 @@ class MatchupView(QWidget):
     def _on_date_changed(self, idx: int):
         """Repopulate game combo for selected date."""
         self._filter_games_for_date()
+        self._start_game_scan()
 
     def _filter_games_for_date(self):
         """Filter schedule for the selected date and populate game combo."""
@@ -656,20 +662,245 @@ class MatchupView(QWidget):
         """Return schedule dict for current combo selection."""
         return self._game_data_for_index(self._game_combo.currentIndex())
 
+    @staticmethod
+    def _to_pct_int(value) -> int:
+        """Best-effort percent -> int conversion for sharp display."""
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _fetch_dated_sharp_from_actionnetwork(
+        cls,
+        game_date: str,
+        home_abbr: str,
+        away_abbr: str,
+    ) -> tuple[int, int]:
+        """Display-only fallback: fetch ML sharp % from date-scoped AN feed."""
+        if not game_date or not home_abbr or not away_abbr:
+            return 0, 0
+        try:
+            from src.data.odds_sync import fetch_action_odds
+            from src.utils.team_mapper import normalize_action_abbr
+
+            action_date = str(game_date).replace("-", "")
+            games_cache = getattr(cls, "_dated_an_games_cache", {})
+            if action_date in games_cache:
+                games = games_cache[action_date]
+            else:
+                games = fetch_action_odds(action_date)
+                games_cache[action_date] = games
+                cls._dated_an_games_cache = games_cache
+            home_q = normalize_action_abbr(home_abbr)
+            away_q = normalize_action_abbr(away_abbr)
+
+            for g in games:
+                teams = g.get("teams", [])
+                if len(teams) < 2:
+                    continue
+
+                t1 = normalize_action_abbr(teams[0].get("abbr", ""))
+                t2 = normalize_action_abbr(teams[1].get("abbr", ""))
+                if {t1, t2} != {home_q, away_q}:
+                    continue
+
+                odds_list = g.get("odds", []) or []
+                game_odds = next(
+                    (o for o in odds_list if o.get("type") == "game" and o.get("book_id") == 15),
+                    None,
+                )
+                if not game_odds:
+                    game_odds = next((o for o in odds_list if o.get("type") == "game"), None)
+                if not game_odds:
+                    continue
+
+                pub = cls._to_pct_int(game_odds.get("ml_home_public"))
+                mon = cls._to_pct_int(game_odds.get("ml_home_money"))
+                if pub <= 0 and mon <= 0:
+                    continue
+
+                # Determine AN game's home abbreviation, then orient to selected home.
+                home_action_id = g.get("home_team_id")
+                team1_id = teams[0].get("id")
+                team2_id = teams[1].get("id")
+                if team1_id == home_action_id:
+                    an_home_abbr = t1
+                elif team2_id == home_action_id:
+                    an_home_abbr = t2
+                else:
+                    an_home_abbr = t1
+
+                if an_home_abbr != home_q:
+                    pub = max(0, min(100, 100 - pub))
+                    mon = max(0, min(100, 100 - mon))
+                return pub, mon
+        except Exception:
+            logger.debug("Sharp display AN date-scoped fallback failed", exc_info=True)
+        return 0, 0
+
+    def _prepare_prediction_for_cache(self, pred: dict) -> dict:
+        """Store prediction with resolved sharp values for stable cache reuse."""
+        out = dict(pred or {})
+        if not out:
+            return out
+
+        ml_pub, ml_mon, sharp_agrees = self._resolve_sharp_display_values(out)
+        out["ml_sharp_home_public"] = ml_pub
+        out["ml_sharp_home_money"] = ml_mon
+        out["sharp_resolved"] = True
+        if sharp_agrees is not None:
+            out["sharp_agrees"] = sharp_agrees
+        return out
+
+    def _resolve_sharp_display_values(self, result: dict):
+        """Resolve sharp panel values from result, then display-only DB fallback."""
+        result = result or {}
+        ml_pub = self._to_pct_int(result.get("ml_sharp_home_public"))
+        ml_mon = self._to_pct_int(result.get("ml_sharp_home_money"))
+        sharp_agrees = result.get("sharp_agrees")
+        source = "prediction_payload"
+
+        logger.info(
+            "Sharp panel input: %s@%s date=%s home_id=%s away_id=%s payload_ml=(%s,%s) agrees=%s",
+            result.get("away_team"),
+            result.get("home_team"),
+            result.get("game_date"),
+            result.get("home_team_id"),
+            result.get("away_team_id"),
+            result.get("ml_sharp_home_public"),
+            result.get("ml_sharp_home_money"),
+            sharp_agrees,
+        )
+
+        if ml_pub <= 0 and ml_mon <= 0:
+            game_data = self._current_game_data() or {}
+            game_date = str(
+                result.get("game_date")
+                or game_data.get("game_date")
+                or ""
+            )
+            home_id = result.get("home_team_id") or game_data.get("home_team_id")
+            away_id = result.get("away_team_id") or game_data.get("away_team_id")
+            home_abbr = str(result.get("home_team") or game_data.get("home_team") or "")
+            away_abbr = str(result.get("away_team") or game_data.get("away_team") or "")
+
+            if game_date and home_id and away_id:
+                try:
+                    from src.database import db
+
+                    logger.info(
+                        "Sharp panel DB fallback: date=%s home_id=%s away_id=%s",
+                        game_date,
+                        home_id,
+                        away_id,
+                    )
+                    row = db.fetch_one(
+                        "SELECT ml_home_public, ml_home_money "
+                        "FROM game_odds "
+                        "WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?",
+                        (game_date, home_id, away_id),
+                    ) or {}
+                    logger.info("Sharp panel DB direct row: %s", row)
+                    ml_pub = self._to_pct_int(row.get("ml_home_public"))
+                    ml_mon = self._to_pct_int(row.get("ml_home_money"))
+                    if ml_pub > 0 or ml_mon > 0:
+                        source = "db_direct"
+
+                    # Safety: if odds were stored with flipped team orientation,
+                    # invert percentages so display still reflects selected home team.
+                    if ml_pub <= 0 and ml_mon <= 0:
+                        flipped = db.fetch_one(
+                            "SELECT ml_home_public, ml_home_money "
+                            "FROM game_odds "
+                            "WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?",
+                            (game_date, away_id, home_id),
+                        ) or {}
+                        logger.info("Sharp panel DB flipped row: %s", flipped)
+                        flip_pub = self._to_pct_int(flipped.get("ml_home_public"))
+                        flip_mon = self._to_pct_int(flipped.get("ml_home_money"))
+                        if flip_pub > 0 or flip_mon > 0:
+                            ml_pub = max(0, min(100, 100 - flip_pub))
+                            ml_mon = max(0, min(100, 100 - flip_mon))
+                            source = "db_flipped"
+                except Exception:
+                    logger.debug("Sharp display DB fallback failed", exc_info=True)
+
+            if ml_pub <= 0 and ml_mon <= 0 and game_date and home_abbr and away_abbr:
+                logger.info(
+                    "Sharp panel AN date-scoped fallback: date=%s home=%s away=%s",
+                    game_date,
+                    home_abbr,
+                    away_abbr,
+                )
+                an_pub, an_mon = self._fetch_dated_sharp_from_actionnetwork(
+                    game_date=game_date,
+                    home_abbr=home_abbr,
+                    away_abbr=away_abbr,
+                )
+                logger.info(
+                    "Sharp panel AN date-scoped values: pub=%s mon=%s",
+                    an_pub,
+                    an_mon,
+                )
+                if an_pub > 0 or an_mon > 0:
+                    ml_pub, ml_mon = an_pub, an_mon
+                    source = "actionnetwork_dated"
+
+        if sharp_agrees is None and (ml_pub > 0 or ml_mon > 0):
+            pick = str(result.get("pick", "")).upper()
+            if pick in ("HOME", "AWAY"):
+                sharp_favors_home = ml_mon > ml_pub
+                model_favors_home = pick == "HOME"
+                sharp_agrees = sharp_favors_home == model_favors_home
+
+        if ml_pub <= 0 and ml_mon <= 0:
+            logger.warning(
+                "Sharp panel resolved NO DATA: %s@%s date=%s home_id=%s away_id=%s source=%s",
+                result.get("away_team"),
+                result.get("home_team"),
+                result.get("game_date"),
+                result.get("home_team_id"),
+                result.get("away_team_id"),
+                source,
+            )
+        else:
+            logger.info(
+                "Sharp panel resolved: %s@%s date=%s ml=(%s,%s) agrees=%s source=%s",
+                result.get("away_team"),
+                result.get("home_team"),
+                result.get("game_date"),
+                ml_pub,
+                ml_mon,
+                sharp_agrees,
+                source,
+            )
+
+        return ml_pub, ml_mon, sharp_agrees
+
+    def invalidate_prediction_cache(self, reason: str = ""):
+        """Clear matchup prediction cache (e.g., after odds sync)."""
+        cleared = len(self._prediction_cache)
+        self._prediction_cache.clear()
+        if reason:
+            logger.info("Matchup cache cleared (%s, %d entries)", reason, cleared)
+        else:
+            logger.info("Matchup cache cleared (%d entries)", cleared)
+
     # ──────────────────────────────────────────────────────────
     # Background game scan
     # ──────────────────────────────────────────────────────────
 
     def _start_game_scan(self):
-        """Scan today's games in background to cache predictions."""
-        today = nba_today()
+        """Scan selected date's games in background to cache predictions."""
+        selected_date = self._date_combo.currentData() or nba_today()
         games_to_scan = []
         for i in range(1, self._game_combo.count()):
             data = self._game_data_for_index(i)
             if not data or not isinstance(data, dict):
                 continue
             gd = data.get("game_date", "")
-            if gd != today:
+            if gd != selected_date:
                 continue
             home_id = data.get("home_team_id")
             away_id = data.get("away_team_id")
@@ -701,16 +932,19 @@ class MatchupView(QWidget):
         """Cache all scanned predictions and tag dog picks in dropdown."""
         self._game_combo.blockSignals(True)
         for idx, info in results.items():
+            fund = self._prepare_prediction_for_cache(info.get("fundamentals", {}))
+            sharp = self._prepare_prediction_for_cache(info.get("sharp", {}))
             hid = info.get("home_id")
             aid = info.get("away_id")
-            if hid and aid:
-                self._prediction_cache[(hid, aid)] = {
-                    "fundamentals": info.get("fundamentals", {}),
-                    "sharp": info.get("sharp", {}),
+            gd = info.get("game_date", "")
+            if hid and aid and gd:
+                cache_key = prediction_cache_key(hid, aid, gd)
+                self._prediction_cache[cache_key] = {
+                    "fundamentals": fund,
+                    "sharp": sharp,
                 }
 
             # Tag dog picks in dropdown
-            fund = info.get("fundamentals", {})
             is_dog = fund.get("is_dog_pick", False)
             if is_dog:
                 old_text = self._game_combo.itemText(idx)
@@ -764,13 +998,15 @@ class MatchupView(QWidget):
         if data and isinstance(data, dict):
             home_id = data.get("home_team_id")
             away_id = data.get("away_team_id")
+            game_date = data.get("game_date", nba_today())
             if home_id and away_id:
-                cached = self._prediction_cache.get((home_id, away_id))
+                cache_key = prediction_cache_key(home_id, away_id, game_date)
+                cached = self._prediction_cache.get(cache_key)
                 if cached:
                     mode_key = "sharp" if self._include_sharp else "fundamentals"
                     pred = cached.get(mode_key)
-                    if pred:
-                        self._display_result(pred)
+                    if should_use_cached_prediction(pred, game_date):
+                        self._display_result(dict(pred or {}))
                         return
         # If no cache, run fresh prediction
         self._on_predict()
@@ -787,14 +1023,24 @@ class MatchupView(QWidget):
 
         if not home_id or not away_id:
             return
+        logger.info(
+            "Matchup predict start: %s@%s date=%s home_id=%s away_id=%s include_sharp=%s",
+            data.get("away_team"),
+            data.get("home_team"),
+            game_date,
+            home_id,
+            away_id,
+            self._include_sharp,
+        )
 
         # Check cache first
-        cached = self._prediction_cache.get((home_id, away_id))
+        cache_key = prediction_cache_key(home_id, away_id, game_date)
+        cached = self._prediction_cache.get(cache_key)
         if cached:
             mode_key = "sharp" if self._include_sharp else "fundamentals"
             pred = cached.get(mode_key)
-            if pred:
-                self._display_result(pred)
+            if should_use_cached_prediction(pred, game_date):
+                self._display_result(dict(pred or {}))
                 return
 
         # Busy guard
@@ -859,17 +1105,28 @@ class MatchupView(QWidget):
         """Handle prediction result from worker thread."""
         self._predict_btn.setEnabled(True)
         self._predict_btn.setText("PREDICT")
+        result_for_cache = self._prepare_prediction_for_cache(result)
+        logger.info(
+            "Matchup predict result: %s@%s date=%s payload_ml=(%s,%s) agrees=%s",
+            result_for_cache.get("away_team"),
+            result_for_cache.get("home_team"),
+            result_for_cache.get("game_date"),
+            result_for_cache.get("ml_sharp_home_public"),
+            result_for_cache.get("ml_sharp_home_money"),
+            result_for_cache.get("sharp_agrees"),
+        )
 
         # Cache the result
-        home_id = result.get("home_team_id")
-        away_id = result.get("away_team_id")
+        home_id = result_for_cache.get("home_team_id")
+        away_id = result_for_cache.get("away_team_id")
+        game_date = result_for_cache.get("game_date", nba_today())
         if home_id and away_id:
             mode_key = "sharp" if self._include_sharp else "fundamentals"
             cache_entry = self._prediction_cache.setdefault(
-                (home_id, away_id), {})
-            cache_entry[mode_key] = result
+                prediction_cache_key(home_id, away_id, game_date), {})
+            cache_entry[mode_key] = result_for_cache
 
-        self._display_result(result)
+        self._display_result(result_for_cache)
 
     # ──────────────────────────────────────────────────────────
     # Display
@@ -1086,9 +1343,7 @@ class MatchupView(QWidget):
             self._upset_badge.setVisible(False)
 
         # ── Sharp money panel ──
-        ml_pub = result.get("ml_sharp_home_public", 0)
-        ml_mon = result.get("ml_sharp_home_money", 0)
-        sharp_agrees = result.get("sharp_agrees")
+        ml_pub, ml_mon, sharp_agrees = self._resolve_sharp_display_values(result)
         self._sharp_panel.update_data(ml_pub, ml_mon, sharp_agrees)
 
         # ── Vegas reference ──

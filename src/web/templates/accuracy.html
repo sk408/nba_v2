@@ -18,6 +18,39 @@
 
 {% if fund and fund.total_games %}
 
+<div class="panel phase-gate-panel">
+    <div class="panel-header static">
+        <span class="panel-title">Phase Gate Status</span>
+        <span class="phase-gate-badge {% if phase_acceptance.passed %}pass{% else %}fail{% endif %}">
+            {% if phase_acceptance.passed %}PASS{% else %}FAIL{% endif %}
+        </span>
+    </div>
+    <div class="panel-body">
+        <div class="phase-gate-summary">
+            <span>Failed checks: {{ phase_acceptance.failed_count or 0 }}</span>
+            {% if drift and drift.fundamentals and drift.sharp %}
+            <span>
+                Drift alerts (fund/sharp):
+                {{ drift.fundamentals.alert_count or 0 }} / {{ drift.sharp.alert_count or 0 }}
+            </span>
+            {% endif %}
+        </div>
+        {% if phase_acceptance.failed_checks %}
+        <ul class="phase-gate-fail-list">
+            {% for check in phase_acceptance.failed_checks[:4] %}
+            <li>{{ check.label }} - {{ check.detail }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        <div class="phase-gate-meta">
+            <span>Generated: {{ phase_acceptance.generated_at or 'n/a' }}</span>
+            {% if phase_acceptance_report and phase_acceptance_report.report_path %}
+            <span>Report: <span class="phase-gate-path">{{ phase_acceptance_report.report_path }}</span></span>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
 {# ── Primary Metrics ── #}
 <div class="metrics-hero">
     <div class="metric-card primary">
@@ -167,6 +200,100 @@
                 <span class="upset-value">{{ fund.upset_accuracy|pct }}</span>
                 <span class="upset-label">Upset Accuracy</span>
             </div>
+        </div>
+    </div>
+</div>
+
+{# ── Underdog Quality Frontier ── #}
+<div class="panel">
+    <div class="panel-header static">
+        <span class="panel-title">Underdog Quality Frontier (Fundamentals)</span>
+    </div>
+    <div class="panel-body">
+        {% if fund.hit_rate_quality_observation %}
+        <p class="quality-observation">{{ fund.hit_rate_quality_observation }}</p>
+        {% endif %}
+
+        <div class="quality-tier-grid">
+            <div class="quality-tier-card">
+                <span class="quality-tier-label">Tier A</span>
+                <span class="quality-tier-value">{{ "%.1f"|format(fund.tier_a_hit_rate or 0) }}%</span>
+                <span class="quality-tier-sub">{{ "%.1f"|format(fund.tier_a_coverage_pct or 0) }}% coverage</span>
+            </div>
+            <div class="quality-tier-card">
+                <span class="quality-tier-label">Tier B</span>
+                <span class="quality-tier-value">{{ "%.1f"|format(fund.tier_b_hit_rate or 0) }}%</span>
+                <span class="quality-tier-sub">{{ "%.1f"|format(fund.tier_b_coverage_pct or 0) }}% coverage</span>
+            </div>
+            <div class="quality-tier-card">
+                <span class="quality-tier-label">Tier C</span>
+                <span class="quality-tier-value">{{ "%.1f"|format(fund.tier_c_hit_rate or 0) }}%</span>
+                <span class="quality-tier-sub">{{ "%.1f"|format(fund.tier_c_coverage_pct or 0) }}% coverage</span>
+            </div>
+        </div>
+
+        <div class="frontier-table-wrap">
+            <table class="breakdown-table">
+                <thead>
+                    <tr>
+                        <th>Frontier Slice</th>
+                        <th>Picks</th>
+                        <th>Hit Rate</th>
+                        <th>ML ROI</th>
+                        <th>Avg Conf</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if fund.upset_quality_frontier %}
+                        {% for point in fund.upset_quality_frontier[:6] %}
+                        <tr>
+                            <td>Top {{ "%.0f"|format(point.upset_coverage_pct) }}% upsets</td>
+                            <td>{{ "%.0f"|format(point.picks) }}</td>
+                            <td>{{ "%.1f"|format(point.hit_rate) }}%</td>
+                            <td class="{% if point.ml_roi > 0 %}positive{% else %}negative{% endif %}">
+                                {{ "%.1f"|format(point.ml_roi) }}%
+                            </td>
+                            <td>{{ "%.1f"|format(point.avg_confidence) }}%</td>
+                        </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr>
+                            <td colspan="5" class="no-data">No frontier data available.</td>
+                        </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="frontier-table-wrap">
+            <table class="breakdown-table">
+                <thead>
+                    <tr>
+                        <th>Odds Band</th>
+                        <th>Bets</th>
+                        <th>Hit Rate</th>
+                        <th>ML ROI</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if fund.upset_roi_by_odds_band %}
+                        {% for _, band in fund.upset_roi_by_odds_band.items() %}
+                        <tr>
+                            <td>{{ band.label }}</td>
+                            <td>{{ band.bets }}</td>
+                            <td>{{ "%.1f"|format(band.hit_rate) }}%</td>
+                            <td class="{% if band.ml_roi > 0 %}positive{% else %}negative{% endif %}">
+                                {{ "%.1f"|format(band.ml_roi) }}%
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr>
+                            <td colspan="4" class="no-data">No odds-band ROI data available.</td>
+                        </tr>
+                    {% endif %}
+                </tbody>
+            </table>
         </div>
     </div>
 </div>

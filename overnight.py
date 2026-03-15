@@ -58,6 +58,7 @@ class RichOvernightConsole:
     STEP_LABELS = {
         "backup": "Backup",
         "sync": "Data Sync",
+        "settle_recommendations": "Settle Outcomes",
         "seed_arenas": "Seed Arenas",
         "bbref_sync": "BBRef Sync",
         "referee_sync": "Referee Sync",
@@ -74,6 +75,7 @@ class RichOvernightConsole:
         self.current_activity = "Initializing..."
         self.pass_results: list[dict] = []
         self.pass_gate: dict[int, dict[str, dict]] = {}
+        self.pass_ml_gate: dict[int, dict[str, dict]] = {}
         self.best_result: dict | None = None
         self.trial_current = 0
         self.trial_total = 0
@@ -130,6 +132,77 @@ class RichOvernightConsole:
         if gate.get("saved"):
             return Text("SAVED", style="bold green")
         return Text("REJECTED", style="bold red")
+
+    def _set_ml_gate_status(self, mode: str, payload: dict):
+        """Record ML underdog gate diagnostics for current pass/mode."""
+        if mode not in ("fundamentals", "sharp"):
+            return
+        if self.current_pass <= 0:
+            self.current_pass = 1
+        if self.current_pass not in self.pass_ml_gate:
+            self.pass_ml_gate[self.current_pass] = {}
+        self.pass_ml_gate[self.current_pass][mode] = dict(payload)
+
+    def _ml_gate_brief_text(self, pass_num: int, mode: str) -> Text:
+        """Render compact ML gate delta for pass table."""
+        entry = self.pass_ml_gate.get(pass_num, {}).get(mode)
+        if not entry:
+            return Text("-", style="dim")
+        status = str(entry.get("status", "off"))
+        if status == "off":
+            return Text("OFF", style="dim")
+        if status == "skip":
+            return Text("SKIP", style="yellow")
+        brier_lift = entry.get("brier_lift")
+        if brier_lift is None:
+            return Text("-", style="dim")
+        color = "green" if bool(entry.get("passed", False)) else "red"
+        return Text(f"{float(brier_lift):+0.4f}", style=f"bold {color}")
+
+    def _build_ml_gate_panel(self) -> Panel:
+        """Build per-pass ML gate diagnostics panel."""
+        lines = Text()
+        entries = []
+        for pass_num in sorted(self.pass_ml_gate.keys()):
+            for mode in ("fundamentals", "sharp"):
+                data = self.pass_ml_gate.get(pass_num, {}).get(mode)
+                if isinstance(data, dict):
+                    entries.append((pass_num, mode, data))
+        if not entries:
+            lines.append("No ML gate diagnostics yet.", style="dim")
+            return Panel(lines, title="ML Gate Deltas", border_style="magenta")
+
+        for idx, (pass_num, mode, data) in enumerate(entries[-10:]):
+            if idx > 0:
+                lines.append("\n")
+            prefix = f"Pass {pass_num} {'Fund' if mode == 'fundamentals' else 'Sharp'}: "
+            lines.append(prefix, style="bold")
+            status = str(data.get("status", "off"))
+            if status == "off":
+                lines.append("OFF", style="dim")
+                continue
+            if status == "skip":
+                lines.append("SKIP", style="yellow")
+                reason = str(data.get("reason", "")).strip()
+                if reason:
+                    lines.append(f" ({reason})", style="dim")
+                continue
+            baseline_brier = float(data.get("baseline_brier", 0.0) or 0.0)
+            candidate_brier = float(data.get("candidate_brier", 0.0) or 0.0)
+            brier_lift = float(data.get("brier_lift", 0.0) or 0.0)
+            baseline_logloss = float(data.get("baseline_logloss", 0.0) or 0.0)
+            candidate_logloss = float(data.get("candidate_logloss", 0.0) or 0.0)
+            logloss_lift = float(data.get("logloss_lift", 0.0) or 0.0)
+            passed = bool(data.get("passed", False))
+            lines.append(
+                f"Brier {baseline_brier:.4f}->{candidate_brier:.4f} "
+                f"(delta {brier_lift:+.4f}), "
+                f"Logloss {baseline_logloss:.4f}->{candidate_logloss:.4f} "
+                f"(delta {logloss_lift:+.4f}) "
+                f"[{'PASS' if passed else 'FAIL'}]",
+                style="green" if passed else "red",
+            )
+        return Panel(lines, title="ML Gate Deltas", border_style="magenta")
 
     def start(self):
         self._live = Live(
@@ -308,7 +381,7 @@ class RichOvernightConsole:
             self.trial_total = new_total
 
         # Step labels in loop passes: [backup], [sync], etc.
-        m = re.search(r"\[(backup|sync|seed_arenas|bbref_sync|referee_sync|"
+        m = re.search(r"\[(backup|sync|settle_recommendations|seed_arenas|bbref_sync|referee_sync|"
                        r"elo_compute|precompute|optimize_fundamentals|"
                        r"optimize_sharp|backtest)\]",
                       stripped, re.IGNORECASE)
@@ -366,6 +439,40 @@ class RichOvernightConsole:
             # Keep the core reason concise in table/log context
             reason = reason.replace("- keeping current weights", "").strip()
             self._set_gate_status(mode=mode, saved=False, reason=reason)
+            return
+
+        m = re.search(
+            r"ML underdog diagnostics:\s*brier\s+([\d.]+)->([\d.]+)\s*"
+            r"\(lift\s*([+\-\d.]+)\),\s*logloss\s+([\d.]+)->([\d.]+)\s*"
+            r"\(lift\s*([+\-\d.]+)\),\s*gate\s*(PASS|FAIL)",
+            stripped,
+        )
+        if m:
+            mode = self._active_opt_target or "fundamentals"
+            payload = {
+                "status": "applied",
+                "baseline_brier": float(m.group(1)),
+                "candidate_brier": float(m.group(2)),
+                "brier_lift": float(m.group(3)),
+                "baseline_logloss": float(m.group(4)),
+                "candidate_logloss": float(m.group(5)),
+                "logloss_lift": float(m.group(6)),
+                "passed": m.group(7) == "PASS",
+            }
+            self._set_ml_gate_status(mode=mode, payload=payload)
+            return
+
+        m = re.search(r"ML underdog diagnostics:\s*skipped\s*\((.+)\)", stripped)
+        if m:
+            mode = self._active_opt_target or "fundamentals"
+            self._set_ml_gate_status(
+                mode=mode,
+                payload={
+                    "status": "skip",
+                    "reason": m.group(1).strip(),
+                    "passed": True,
+                },
+            )
             return
 
         # Precompute progress: "Precomputed 25/150 games"
@@ -566,6 +673,8 @@ class RichOvernightConsole:
                 header_style="bold",
                 expand=True,
             )
+            table.caption = "MLΔ = Brier lift (baseline-candidate), higher is better"
+            table.caption_style = "dim"
             table.add_column("Pass", justify="center", style="dim", width=6)
             table.add_column("Duration", justify="center", width=10)
             table.add_column("Winner%", justify="center", width=10)
@@ -573,7 +682,9 @@ class RichOvernightConsole:
             table.add_column("Upset Rate", justify="center", width=10)
             table.add_column("ML ROI", justify="center", width=10)
             table.add_column("Fund Gate", justify="center", width=12)
+            table.add_column("Fund MLΔ", justify="center", width=11)
             table.add_column("Sharp Gate", justify="center", width=12)
+            table.add_column("Sharp MLΔ", justify="center", width=11)
             table.add_column("Status", justify="center", width=10)
 
             for r in self.pass_results:
@@ -587,16 +698,19 @@ class RichOvernightConsole:
                     f"{r['upset_rate']:.0f}%" if r["upset_rate"] else "-",
                     f"{r['ml_roi']:+.1f}%" if r["ml_roi"] else "-",
                     self._gate_text(r["pass"], "fundamentals"),
+                    self._ml_gate_brief_text(r["pass"], "fundamentals"),
                     self._gate_text(r["pass"], "sharp"),
+                    self._ml_gate_brief_text(r["pass"], "sharp"),
                     status,
                     style=style,
                 )
 
             if not self.pass_results:
-                table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "awaiting")
+                table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "awaiting")
 
             # Best result highlight
             results_layout = Layout()
+            ml_panel = self._build_ml_gate_panel()
             if self.best_result:
                 best_text = Text.assemble(
                     ("Best: ", "bold"),
@@ -608,11 +722,15 @@ class RichOvernightConsole:
                     f"  (Pass {self.best_result['pass']})",
                 )
                 results_layout.split_column(
-                    Layout(table, ratio=3),
+                    Layout(table, ratio=4),
                     Layout(Panel(best_text, style="green"), size=3),
+                    Layout(ml_panel, size=6),
                 )
             else:
-                results_layout.update(table)
+                results_layout.split_column(
+                    Layout(table, ratio=4),
+                    Layout(ml_panel, size=6),
+                )
 
             layout["results"].update(results_layout)
 

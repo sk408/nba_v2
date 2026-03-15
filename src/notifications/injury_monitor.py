@@ -80,7 +80,7 @@ class InjuryMonitor:
         """Check for injury changes and create notifications."""
         # Sync source feed into DB first so diffing compares fresh state.
         try:
-            updated = int(sync_injuries())
+            updated = int(sync_injuries(use_cache=False))
             logger.info("injury_monitor_db_updates=%d", updated)
         except Exception as e:
             logger.debug(f"Scrape failed in monitor: {e}")

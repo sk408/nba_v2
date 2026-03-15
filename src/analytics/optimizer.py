@@ -1,6 +1,9 @@
 """Optuna CMA-ES optimizer for NBA Fundamentals V2.
 
-Loss function: -(winner_pct + upset_accuracy * upset_rate / 100 * upset_bonus_mult)
+Loss function:
+-(winner_pct + upset_accuracy * upset_rate / 100 * upset_bonus_mult - objective_penalty)
+where objective_penalty increases when upset coverage or Tier-A hit rate
+falls below configured targets.
 
 Studies are persisted to data/optuna_studies.db so trials accumulate across
 runs and survive crashes.  CMA-ES sampler learns parameter correlations for
@@ -15,17 +18,28 @@ import hashlib
 import logging
 import os
 import random
+import time
 from typing import List, Dict, Any, Optional, Callable, Tuple
 
 import numpy as np
 
+from src.config import get as get_setting
 from src.analytics.prediction import GameInput
 from src.analytics.weight_config import (
-    WeightConfig, get_weight_config, save_weight_config,
+    FOUR_FACTORS_FIXED_SCALE,
+    WeightConfig,
+    get_weight_config,
+    save_weight_config,
     OPTIMIZER_RANGES, SHARP_MODE_RANGES, invalidate_weight_cache,
     CD_RANGES, CD_SHARP_RANGES,
 )
 from src.analytics.thresholds import MODEL_PICK_EDGE_THRESHOLD, ACTUAL_WIN_THRESHOLD
+from src.analytics.underdog_metrics import (
+    DEFAULT_TIER_A_MIN_CONFIDENCE,
+    DEFAULT_TIER_B_MIN_CONFIDENCE,
+    summarize_underdog_quality,
+)
+from src.analytics.underdog_ml_scorer import compare_walk_forward_underdog_scorer
 from src.utils.settings_helpers import (
     safe_bool_setting,
     safe_float_setting,
@@ -70,6 +84,105 @@ def _safe_int_setting(key: str, default: int) -> int:
 def _safe_bool_setting(key: str, default: bool) -> bool:
     """Read a bool setting with tolerant parsing."""
     return safe_bool_setting(key, default)
+
+
+def _objective_signature_blob() -> str:
+    """Return objective settings fingerprint for Optuna study names."""
+    return "|".join(
+        [
+            f"upset_bonus:{_safe_float_setting('upset_bonus_mult', 0.5):.4f}",
+            f"target_cov:{_safe_float_setting('optimizer_objective_target_upset_coverage_pct', 20.0):.4f}",
+            f"target_tier_a:{_safe_float_setting('optimizer_objective_target_tier_a_hit_rate', 56.0):.4f}",
+            f"cov_short_mult:{_safe_float_setting('optimizer_objective_coverage_shortfall_mult', 0.20):.4f}",
+            f"tier_a_short_mult:{_safe_float_setting('optimizer_objective_tier_a_shortfall_mult', 0.12):.4f}",
+            f"tier_a_prior_w:{_safe_float_setting('optimizer_objective_tier_a_prior_weight', 12.0):.4f}",
+            f"tier_a_min:{_safe_float_setting('optimizer_objective_tier_a_min_confidence', DEFAULT_TIER_A_MIN_CONFIDENCE):.4f}",
+            f"tier_b_min:{_safe_float_setting('optimizer_objective_tier_b_min_confidence', DEFAULT_TIER_B_MIN_CONFIDENCE):.4f}",
+            f"val_probe:{int(_safe_bool_setting('optimizer_objective_val_probe_enabled', True))}",
+            f"val_probe_n:{_safe_int_setting('optimizer_objective_val_probe_sample_size', 480)}",
+            f"val_probe_slices:{_safe_int_setting('optimizer_objective_val_probe_slices', 3)}",
+            f"val_probe_loss_mult:{_safe_float_setting('optimizer_objective_val_probe_loss_mult', 1.0):.4f}",
+            f"val_probe_wdrop_mult:{_safe_float_setting('optimizer_objective_val_probe_winner_drop_mult', 0.35):.4f}",
+            f"udog_conf_edge:{int(_safe_bool_setting('underdog_confidence_use_edge_logistic', True))}",
+            f"udog_conf_scale:{_safe_float_setting('underdog_confidence_edge_scale', 70.0):.4f}",
+            f"rolling_cv:{int(_safe_bool_setting('optimizer_rolling_cv_enabled', True))}",
+            f"rolling_cv_folds:{_safe_int_setting('optimizer_rolling_cv_folds', 4)}",
+            f"rolling_cv_min_train:{_safe_int_setting('optimizer_rolling_cv_min_train_games', 320)}",
+            f"rolling_cv_val_games:{_safe_int_setting('optimizer_rolling_cv_val_games', 160)}",
+            f"rolling_cv_worst_mult:{_safe_float_setting('optimizer_rolling_cv_worst_fold_mult', 0.40):.4f}",
+            f"wide_ranges:{int(_safe_bool_setting('optimizer_use_wide_ranges', False))}",
+            f"tuning_mode:{str(get_setting('optimizer_tuning_mode', 'classic'))}",
+            f"family_pen:{int(_safe_bool_setting('optimizer_objective_use_family_dominance_penalty', True))}",
+            f"family_pen_mult:{_safe_float_setting('optimizer_objective_family_penalty_mult', 0.05):.4f}",
+            f"ff_p95_cap:{_safe_float_setting('optimizer_objective_ff_p95_cap', 95.0):.4f}",
+            f"onoff_p95_cap:{_safe_float_setting('optimizer_objective_onoff_p95_cap', 25.0):.4f}",
+            f"l2_prior_mult:{_safe_float_setting('optimizer_objective_l2_prior_mult', 0.02):.4f}",
+            f"onoff_player_smooth:{_safe_float_setting('optimizer_onoff_player_minutes_smoothing', 800.0):.4f}",
+            f"onoff_team_slots:{_safe_float_setting('optimizer_onoff_team_reliability_slots', 12.0):.4f}",
+        ]
+    )
+
+
+def _build_rolling_time_folds(
+    n_games: int,
+    fold_count: int,
+    min_train_games: int,
+    val_games: int,
+) -> List[Tuple[int, int]]:
+    """Return expanding-train rolling folds as (train_end, val_end) indices."""
+    total = max(0, int(n_games))
+    if total <= 0:
+        return []
+
+    min_train = max(40, int(min_train_games))
+    val_len = max(20, int(val_games))
+    if min_train + val_len > total:
+        return []
+
+    max_train_end = total - val_len
+    if max_train_end < min_train:
+        return []
+
+    folds = max(1, int(fold_count))
+    if folds == 1:
+        return [(max_train_end, max_train_end + val_len)]
+
+    start = min_train
+    end = max_train_end
+    if end <= start:
+        return [(max_train_end, max_train_end + val_len)]
+
+    train_ends: List[int] = []
+    for i in range(folds):
+        frac = i / float(max(1, folds - 1))
+        train_end = int(round(start + (end - start) * frac))
+        train_end = max(min_train, min(max_train_end, train_end))
+        if not train_ends or train_end != train_ends[-1]:
+            train_ends.append(train_end)
+
+    out: List[Tuple[int, int]] = []
+    for train_end in train_ends:
+        val_end = train_end + val_len
+        if train_end >= min_train and val_end <= total:
+            out.append((train_end, val_end))
+
+    if not out:
+        out.append((max_train_end, max_train_end + val_len))
+    return out
+
+
+def _rolling_cv_objective_loss(
+    fold_losses: List[float],
+    worst_fold_mult: float,
+) -> Tuple[float, float, float]:
+    """Return (robust_score, mean_loss, worst_loss)."""
+    if not fold_losses:
+        return float("inf"), float("inf"), float("inf")
+    mean_loss = float(np.mean(fold_losses))
+    worst_loss = float(np.max(fold_losses))
+    worst_excess = max(0.0, worst_loss - mean_loss)
+    robust_score = mean_loss + worst_excess * max(0.0, float(worst_fold_mult))
+    return robust_score, mean_loss, worst_loss
 
 
 def _max_weight_delta(a: WeightConfig, b: WeightConfig) -> float:
@@ -304,8 +417,11 @@ def _passes_robust_save_gate(
     if not loss_improved:
         if use_hybrid_loss_gate and has_all_loss:
             reasons.append(
-                f"loss gate failed (val {candidate_loss:.3f} vs {baseline_loss:.3f}; "
-                f"hybrid {candidate_hybrid_loss:.3f} vs {baseline_hybrid_loss:.3f})"
+                f"loss gate failed (val {candidate_loss:.3f} vs {baseline_loss:.3f}, "
+                f"delta {candidate_loss - baseline_loss:+.3f}; "
+                f"hybrid {candidate_hybrid_loss:.3f} vs {baseline_hybrid_loss:.3f}, "
+                f"delta {candidate_hybrid_loss - baseline_hybrid_loss:+.3f}; "
+                f"lower loss is better)"
             )
             if not (val_loss_improved or hybrid_loss_improved):
                 reasons.append(
@@ -641,6 +757,14 @@ class VectorizedGames:
         self.away_pythag_wpct = np.array([g.away_pythag_wpct for g in games], dtype=float)
         self.home_onoff = np.array([g.home_onoff_impact for g in games])
         self.away_onoff = np.array([g.away_onoff_impact for g in games])
+        self.home_onoff_reliability = np.array(
+            [g.home_onoff_reliability for g in games],
+            dtype=float,
+        )
+        self.away_onoff_reliability = np.array(
+            [g.away_onoff_reliability for g in games],
+            dtype=float,
+        )
         self.pace_diff = np.array([abs(g.home_pace - g.away_pace) for g in games])
         self.home_fg3_luck = np.array([g.home_fg3_luck for g in games])
         self.away_fg3_luck = np.array([g.away_fg3_luck for g in games])
@@ -683,15 +807,68 @@ class VectorizedGames:
         self._road_trip_diff = self.away_road_trip_game - self.home_road_trip_game
         self._srs_diff = self.home_srs - self.away_srs
         self._pythag_diff = self.home_pythag_wpct - self.away_pythag_wpct
-        self._onoff_diff = self.home_onoff - self.away_onoff
+        self._home_onoff_signal = self.home_onoff
+        self._away_onoff_signal = self.away_onoff
+        self._home_onoff_reliability = np.clip(self.home_onoff_reliability, 0.0, 1.0)
+        self._away_onoff_reliability = np.clip(self.away_onoff_reliability, 0.0, 1.0)
         self._fg3_luck_diff = self.home_fg3_luck - self.away_fg3_luck
         self._process_total_edge = (self._process_paint_edge + self._process_fb_edge
                                     + self._process_sec_edge + self._process_tov_edge)
 
-        from src.config import get as get_setting
         upset_bonus_max = max(0.0, _safe_float_setting("upset_bonus_mult_max", 5.0))
         self._upset_bonus_mult = float(
             np.clip(_safe_float_setting("upset_bonus_mult", 0.5), 0.0, upset_bonus_max)
+        )
+        self._objective_target_upset_coverage_pct = max(
+            0.0,
+            _safe_float_setting("optimizer_objective_target_upset_coverage_pct", 20.0),
+        )
+        self._objective_target_tier_a_hit_rate = float(
+            np.clip(
+                _safe_float_setting("optimizer_objective_target_tier_a_hit_rate", 56.0),
+                0.0,
+                100.0,
+            )
+        )
+        self._objective_coverage_shortfall_mult = max(
+            0.0,
+            _safe_float_setting("optimizer_objective_coverage_shortfall_mult", 0.20),
+        )
+        self._objective_tier_a_shortfall_mult = max(
+            0.0,
+            _safe_float_setting("optimizer_objective_tier_a_shortfall_mult", 0.12),
+        )
+        self._objective_tier_a_prior_weight = max(
+            0.0,
+            _safe_float_setting("optimizer_objective_tier_a_prior_weight", 12.0),
+        )
+        self._objective_tier_a_min_confidence = float(
+            np.clip(
+                _safe_float_setting(
+                    "optimizer_objective_tier_a_min_confidence",
+                    DEFAULT_TIER_A_MIN_CONFIDENCE,
+                ),
+                0.0,
+                100.0,
+            )
+        )
+        self._objective_tier_b_min_confidence = float(
+            np.clip(
+                _safe_float_setting(
+                    "optimizer_objective_tier_b_min_confidence",
+                    DEFAULT_TIER_B_MIN_CONFIDENCE,
+                ),
+                0.0,
+                self._objective_tier_a_min_confidence,
+            )
+        )
+        self._underdog_confidence_use_edge_logistic = _safe_bool_setting(
+            "underdog_confidence_use_edge_logistic",
+            True,
+        )
+        self._underdog_confidence_edge_scale = max(
+            1.0,
+            _safe_float_setting("underdog_confidence_edge_scale", 70.0),
         )
         self._competitive_dog_margin = max(
             0.0,
@@ -711,6 +888,22 @@ class VectorizedGames:
         self._min_ml_payout = max(
             1.0,
             _safe_float_setting("optimizer_min_ml_payout", MIN_ML_PAYOUT),
+        )
+        self._objective_use_family_dominance_penalty = _safe_bool_setting(
+            "optimizer_objective_use_family_dominance_penalty",
+            True,
+        )
+        self._objective_family_penalty_mult = max(
+            0.0,
+            _safe_float_setting("optimizer_objective_family_penalty_mult", 0.05),
+        )
+        self._objective_ff_p95_cap = max(
+            0.0,
+            _safe_float_setting("optimizer_objective_ff_p95_cap", 95.0),
+        )
+        self._objective_onoff_p95_cap = max(
+            0.0,
+            _safe_float_setting("optimizer_objective_onoff_p95_cap", 25.0),
         )
 
     def evaluate(self, w: WeightConfig, include_sharp: bool = False,
@@ -762,14 +955,14 @@ class VectorizedGames:
         ff = (self.ff_efg_edge * w.ff_efg_weight
               + self.ff_tov_edge * w.ff_tov_weight
               + self.ff_oreb_edge * w.ff_oreb_weight
-              + self.ff_fta_edge * w.ff_fta_weight) * w.four_factors_scale
+              + self.ff_fta_edge * w.ff_fta_weight) * FOUR_FACTORS_FIXED_SCALE
         game_score += ff
 
         # 8. Opponent Four Factors (defensive matchup)
         opp_ff = (self.opp_ff_efg_edge * w.opp_ff_efg_weight
                   + self.opp_ff_tov_edge * w.opp_ff_tov_weight
                   + self.opp_ff_oreb_edge * w.opp_ff_oreb_weight
-                  + self.opp_ff_fta_edge * w.opp_ff_fta_weight) * w.four_factors_scale
+                  + self.opp_ff_fta_edge * w.opp_ff_fta_weight) * FOUR_FACTORS_FIXED_SCALE
         game_score += opp_ff
 
         # 9. Clutch (masked: only applied when |game_score| < threshold)
@@ -807,7 +1000,15 @@ class VectorizedGames:
         game_score += self._road_trip_diff * w.road_trip_game_mult
         game_score += self._srs_diff * w.srs_diff_mult
         game_score += self._pythag_diff * w.pythag_diff_mult
-        game_score += self._onoff_diff * w.onoff_impact_mult
+        onoff_lambda = max(0.0, float(getattr(w, "onoff_reliability_lambda", 0.0)))
+        home_onoff = self._home_onoff_signal * (
+            self._home_onoff_reliability / (self._home_onoff_reliability + onoff_lambda + 1e-9)
+        )
+        away_onoff = self._away_onoff_signal * (
+            self._away_onoff_reliability / (self._away_onoff_reliability + onoff_lambda + 1e-9)
+        )
+        onoff_adj = (home_onoff - away_onoff) * w.onoff_impact_mult
+        game_score += onoff_adj
         game_score -= self._fg3_luck_diff * w.fg3_luck_mult  # negative: hot team regresses down
         game_score += self._process_total_edge * w.process_edge_mult
 
@@ -903,6 +1104,72 @@ class VectorizedGames:
             float(long_dog_onepos_count) / max(1, long_dog_count) * 100.0
         )
 
+        abs_game_score = np.abs(game_score)
+        if self._underdog_confidence_use_edge_logistic:
+            confidence = 100.0 * (
+                1.0 - np.exp(-abs_game_score / self._underdog_confidence_edge_scale)
+            )
+        else:
+            confidence = np.clip(abs_game_score / 15.0 * 100.0, 0.0, 100.0)
+        tier_a_mask = model_picks_upset & (
+            confidence >= self._objective_tier_a_min_confidence
+        )
+        tier_a_count_fast = int(np.sum(tier_a_mask))
+        tier_a_correct_count_fast = int(np.sum(tier_a_mask & upset_correct))
+        tier_a_hit_rate_fast = (
+            float(tier_a_correct_count_fast) / max(1, tier_a_count_fast) * 100.0
+        )
+        tier_a_hit_rate_for_loss = _shrunk_rate_pct(
+            tier_a_correct_count_fast,
+            tier_a_count_fast,
+            upset_accuracy if upset_count > 0 else 50.0,
+            self._objective_tier_a_prior_weight,
+        )
+        coverage_shortfall = max(
+            0.0,
+            self._objective_target_upset_coverage_pct - upset_rate,
+        )
+        tier_a_shortfall = max(
+            0.0,
+            self._objective_target_tier_a_hit_rate - tier_a_hit_rate_for_loss,
+        )
+        objective_penalty = (
+            coverage_shortfall * self._objective_coverage_shortfall_mult
+            + tier_a_shortfall * self._objective_tier_a_shortfall_mult
+        )
+
+        quality_summary = summarize_underdog_quality(
+            [],
+            total_games=self.n,
+            tier_a_min_confidence=self._objective_tier_a_min_confidence,
+            tier_b_min_confidence=self._objective_tier_b_min_confidence,
+            confidence_use_edge_logistic=self._underdog_confidence_use_edge_logistic,
+            confidence_edge_scale=self._underdog_confidence_edge_scale,
+        )
+        if not fast and upset_count > 0:
+            upset_idx = np.flatnonzero(model_picks_upset)
+            upset_samples = []
+            for idx in upset_idx:
+                is_correct = bool(upset_correct[idx])
+                payout = float(dog_payout_mult[idx])
+                upset_samples.append(
+                    {
+                        "confidence": float(confidence[idx]),
+                        "edge_abs": float(abs_game_score[idx]),
+                        "upset_correct": is_correct,
+                        "ml_profit": (payout - 1.0) if is_correct else -1.0,
+                        "ml_payout": payout,
+                    }
+                )
+            quality_summary = summarize_underdog_quality(
+                upset_samples,
+                total_games=self.n,
+                tier_a_min_confidence=self._objective_tier_a_min_confidence,
+                tier_b_min_confidence=self._objective_tier_b_min_confidence,
+                confidence_use_edge_logistic=self._underdog_confidence_use_edge_logistic,
+                confidence_edge_scale=self._underdog_confidence_edge_scale,
+            )
+
         # ML ROI (diagnostic only — not in loss function, skip in fast mode)
         ml_roi = -4.54
         ml_win_rate = winner_pct
@@ -964,7 +1231,25 @@ class VectorizedGames:
         # LOSS FUNCTION
         # ──────────────────────────────────────────────────────────
 
-        loss = -(winner_pct + upset_accuracy * upset_rate / 100.0 * self._upset_bonus_mult)
+        objective_base_score = (
+            winner_pct + upset_accuracy * upset_rate / 100.0 * self._upset_bonus_mult
+        )
+        objective_score = objective_base_score - objective_penalty
+        loss = -objective_score
+
+        ff_total_adj = ff + opp_ff
+        ff_p95_abs = float(np.percentile(np.abs(ff_total_adj), 95))
+        onoff_p95_abs = float(np.percentile(np.abs(onoff_adj), 95))
+        ff_p95_excess = 0.0
+        onoff_p95_excess = 0.0
+        family_penalty = 0.0
+        if self._objective_use_family_dominance_penalty:
+            ff_p95_excess = max(0.0, ff_p95_abs - self._objective_ff_p95_cap)
+            onoff_p95_excess = max(0.0, onoff_p95_abs - self._objective_onoff_p95_cap)
+            family_penalty = (
+                ff_p95_excess + onoff_p95_excess
+            ) * self._objective_family_penalty_mult
+            loss += family_penalty
 
         # Compression penalty — prevent degenerate narrow-band predictions
         if compression_ratio < COMPRESSION_RATIO_FLOOR:
@@ -988,6 +1273,23 @@ class VectorizedGames:
             "long_dog_onepos_rate": long_dog_onepos_rate,
             "long_dog_min_payout": self._long_dog_min_payout,
             "long_dog_onepos_margin": self._long_dog_onepos_margin,
+            "upset_coverage_pct": quality_summary.get("coverage_pct", upset_rate),
+            "upset_tier_metrics": quality_summary.get("tier_metrics", {}),
+            "upset_roi_by_odds_band": quality_summary.get("roi_by_odds_band", {}),
+            "upset_quality_frontier": quality_summary.get("quality_frontier", []),
+            "hit_rate_quality_observation": quality_summary.get(
+                "hit_rate_quality_observation",
+                "",
+            ),
+            "tier_a_hit_rate": quality_summary.get(
+                "tier_a_hit_rate",
+                tier_a_hit_rate_fast,
+            ),
+            "tier_b_hit_rate": quality_summary.get("tier_b_hit_rate", 0.0),
+            "tier_c_hit_rate": quality_summary.get("tier_c_hit_rate", 0.0),
+            "tier_a_coverage_pct": quality_summary.get("tier_a_coverage_pct", 0.0),
+            "tier_b_coverage_pct": quality_summary.get("tier_b_coverage_pct", 0.0),
+            "tier_c_coverage_pct": quality_summary.get("tier_c_coverage_pct", 0.0),
             "ml_roi": ml_roi,
             "ml_win_rate": ml_win_rate,
             "ml_bet_count": ml_bet_count,
@@ -995,8 +1297,144 @@ class VectorizedGames:
             "ml_min_payout": self._min_ml_payout,
             "spread_mae": spread_mae,
             "compression_ratio": compression_ratio,
+            "objective_base_score": objective_base_score,
+            "objective_penalty": objective_penalty,
+            "objective_family_penalty": family_penalty,
+            "objective_ff_p95_abs": ff_p95_abs,
+            "objective_onoff_p95_abs": onoff_p95_abs,
+            "objective_ff_p95_excess": ff_p95_excess,
+            "objective_onoff_p95_excess": onoff_p95_excess,
+            "objective_score": objective_score,
+            "objective_coverage_shortfall": coverage_shortfall,
+            "objective_tier_a_shortfall": tier_a_shortfall,
+            "objective_tier_a_hit_rate_for_loss": tier_a_hit_rate_for_loss,
+            "objective_target_upset_coverage_pct": self._objective_target_upset_coverage_pct,
+            "objective_target_tier_a_hit_rate": self._objective_target_tier_a_hit_rate,
             "loss": loss,
         }
+
+
+_FF_FAMILY_KEYS = {
+    "ff_efg_weight",
+    "ff_tov_weight",
+    "ff_oreb_weight",
+    "ff_fta_weight",
+    "opp_ff_efg_weight",
+    "opp_ff_tov_weight",
+    "opp_ff_oreb_weight",
+    "opp_ff_fta_weight",
+}
+
+_ONOFF_FAMILY_KEYS = {
+    "onoff_impact_mult",
+    "onoff_reliability_lambda",
+}
+
+
+def _select_optimizer_ranges(
+    include_sharp: bool,
+) -> Tuple[Dict[str, Tuple[float, float]], str]:
+    """Return active optimizer ranges and profile label."""
+    wide_ranges_enabled = _safe_bool_setting("optimizer_use_wide_ranges", False)
+    if include_sharp:
+        ranges = CD_SHARP_RANGES if wide_ranges_enabled else SHARP_MODE_RANGES
+    else:
+        ranges = CD_RANGES if wide_ranges_enabled else OPTIMIZER_RANGES
+    range_profile = "wide (CD)" if wide_ranges_enabled else "default"
+    return dict(ranges), range_profile
+
+
+def _allocate_blocked_stage_trials(total_trials: int) -> Dict[str, int]:
+    """Allocate total trials across blocked pathway stages."""
+    total = max(1, int(total_trials))
+    min_stage = max(25, _safe_int_setting("optimizer_blocked_min_stage_trials", 250))
+    core_frac = max(0.0, _safe_float_setting("optimizer_blocked_core_fraction", 0.35))
+    ff_frac = max(0.0, _safe_float_setting("optimizer_blocked_ff_fraction", 0.25))
+    onoff_frac = max(0.0, _safe_float_setting("optimizer_blocked_onoff_fraction", 0.15))
+    joint_frac = max(0.0, _safe_float_setting("optimizer_blocked_joint_fraction", 0.25))
+    frac_map = {
+        "core": core_frac,
+        "ff": ff_frac,
+        "onoff": onoff_frac,
+        "joint_refine": joint_frac,
+    }
+    frac_sum = sum(frac_map.values())
+    if frac_sum <= 0.0:
+        frac_map = {"core": 0.35, "ff": 0.25, "onoff": 0.15, "joint_refine": 0.25}
+        frac_sum = 1.0
+
+    allocations: Dict[str, int] = {}
+    for stage, frac in frac_map.items():
+        allocations[stage] = int(round(total * (frac / frac_sum)))
+
+    deficit = total - sum(allocations.values())
+    if deficit != 0:
+        allocations["joint_refine"] = max(1, allocations["joint_refine"] + deficit)
+
+    if total >= (4 * min_stage):
+        for stage in ("core", "ff", "onoff", "joint_refine"):
+            if allocations[stage] < min_stage:
+                delta = min_stage - allocations[stage]
+                allocations[stage] = min_stage
+                allocations["joint_refine"] = max(1, allocations["joint_refine"] - delta)
+        # Re-balance again if needed.
+        deficit = total - sum(allocations.values())
+        if deficit != 0:
+            allocations["joint_refine"] = max(1, allocations["joint_refine"] + deficit)
+    return allocations
+
+
+def _build_trust_region_ranges(
+    center_weights: WeightConfig,
+    base_ranges: Dict[str, Tuple[float, float]],
+    radius_fraction: float,
+) -> Dict[str, Tuple[float, float]]:
+    """Build a full-parameter trust region around center_weights."""
+    out: Dict[str, Tuple[float, float]] = {}
+    center_dict = center_weights.to_dict()
+    radius = float(np.clip(radius_fraction, 0.01, 1.0))
+    for key, (base_lo, base_hi) in base_ranges.items():
+        span = float(base_hi - base_lo)
+        center = float(center_dict.get(key, base_lo))
+        half_width = span * radius
+        lo = max(float(base_lo), center - half_width)
+        hi = min(float(base_hi), center + half_width)
+        if hi - lo < 1e-8:
+            eps = max(1e-6, span * 1e-3)
+            lo = max(float(base_lo), center - eps)
+            hi = min(float(base_hi), center + eps)
+        if hi < lo:
+            lo, hi = hi, lo
+        out[key] = (float(lo), float(hi))
+    return out
+
+
+def _ranges_signature_blob(ranges: Dict[str, Tuple[float, float]]) -> str:
+    """Return a stable signature that includes keys and numeric bounds."""
+    parts: List[str] = []
+    for key in sorted(ranges.keys()):
+        lo, hi = ranges[key]
+        parts.append(f"{key}:{float(lo):.12g}:{float(hi):.12g}")
+    return "|".join(parts)
+
+
+def _blocked_cycle_tag() -> str:
+    """Return rotating cycle tag used to reduce long-run Optuna anchoring."""
+    explicit = str(get_setting("optimizer_blocked_cycle_tag", "") or "").strip()
+    if explicit:
+        return explicit
+
+    base_tag = str(get_setting("optimizer_study_tag", "") or "").strip()
+    auto_rotate = _safe_bool_setting("optimizer_blocked_auto_cycle_tag", True)
+    if not auto_rotate:
+        return base_tag
+
+    cycle_hours = max(1, _safe_int_setting("optimizer_blocked_cycle_hours", 24))
+    bucket = int(time.time() // (cycle_hours * 3600))
+    auto_tag = f"cycle_{bucket}"
+    if base_tag:
+        return f"{base_tag}_{auto_tag}"
+    return auto_tag
 
 
 def optimize_weights(
@@ -1005,6 +1443,12 @@ def optimize_weights(
     include_sharp: bool = False,
     callback: Optional[Callable] = None,
     is_cancelled: Optional[Callable[[], bool]] = None,
+    *,
+    baseline_override: Optional[WeightConfig] = None,
+    param_ranges_override: Optional[Dict[str, Tuple[float, float]]] = None,
+    skip_save: bool = False,
+    _internal_blocked: bool = False,
+    stage_label: str = "main",
 ) -> Dict[str, Any]:
     """Run Optuna TPE optimization with walk-forward validation.
 
@@ -1025,6 +1469,127 @@ def optimize_weights(
             callback("Not enough games for walk-forward split")
         return {"improved": False}
 
+    tuning_mode = str(get_setting("optimizer_tuning_mode", "classic") or "classic").strip().lower()
+    blocked_mode_enabled = tuning_mode == "blocked"
+    if (
+        blocked_mode_enabled
+        and not _internal_blocked
+        and param_ranges_override is None
+        and not skip_save
+    ):
+        baseline_root = baseline_override if baseline_override is not None else get_weight_config()
+        active_ranges, active_range_profile = _select_optimizer_ranges(include_sharp)
+        ff_keys = {k for k in _FF_FAMILY_KEYS if k in active_ranges}
+        onoff_keys = {k for k in _ONOFF_FAMILY_KEYS if k in active_ranges}
+        core_keys = sorted(set(active_ranges.keys()) - ff_keys - onoff_keys)
+        stage_ranges: Dict[str, Dict[str, Tuple[float, float]]] = {}
+        if core_keys:
+            stage_ranges["core"] = {k: active_ranges[k] for k in core_keys}
+        if ff_keys:
+            stage_ranges["ff"] = {k: active_ranges[k] for k in sorted(ff_keys)}
+        if onoff_keys:
+            stage_ranges["onoff"] = {k: active_ranges[k] for k in sorted(onoff_keys)}
+        trial_alloc = _allocate_blocked_stage_trials(n_trials)
+        cycle_tag = _blocked_cycle_tag()
+        mode_prefix = "sharp" if include_sharp else "fundamentals"
+
+        if callback:
+            callback(
+                "Blocked optimizer pathways: "
+                f"mode={tuning_mode}, range_profile={active_range_profile}, "
+                f"cycle_tag={cycle_tag or 'none'}"
+            )
+            callback(
+                "Pathway trial allocation: "
+                f"core={trial_alloc.get('core', 0)}, "
+                f"ff={trial_alloc.get('ff', 0)}, "
+                f"onoff={trial_alloc.get('onoff', 0)}, "
+                f"joint_refine={trial_alloc.get('joint_refine', 0)}"
+            )
+
+        stage_current = baseline_root
+        stage_summaries: List[Dict[str, Any]] = []
+        for stage_name in ("core", "ff", "onoff"):
+            this_ranges = stage_ranges.get(stage_name)
+            this_trials = int(trial_alloc.get(stage_name, 0))
+            if not this_ranges or this_trials <= 0:
+                continue
+            stage_id = f"{mode_prefix}_{cycle_tag}_{stage_name}" if cycle_tag else f"{mode_prefix}_{stage_name}"
+            if callback:
+                callback(
+                    f"[blocked:{stage_name}] tuning {len(this_ranges)} params "
+                    f"for {this_trials} trials"
+                )
+            stage_result = optimize_weights(
+                games,
+                n_trials=this_trials,
+                include_sharp=include_sharp,
+                callback=callback,
+                is_cancelled=is_cancelled,
+                baseline_override=stage_current,
+                param_ranges_override=this_ranges,
+                skip_save=True,
+                _internal_blocked=True,
+                stage_label=stage_id,
+            )
+            stage_best = stage_result.get("best_weights")
+            if isinstance(stage_best, dict):
+                stage_current = WeightConfig.from_dict(stage_best)
+            stage_summaries.append(
+                {
+                    "stage": stage_name,
+                    "trials": this_trials,
+                    "objective_loss": stage_result.get("objective_loss"),
+                    "best_loss": stage_result.get("best_loss"),
+                    "best_winner_pct": stage_result.get("best_winner_pct"),
+                }
+            )
+
+        radius_fraction = float(
+            np.clip(
+                _safe_float_setting("optimizer_blocked_joint_radius_fraction", 0.18),
+                0.01,
+                1.0,
+            )
+        )
+        joint_ranges = _build_trust_region_ranges(stage_current, active_ranges, radius_fraction)
+        joint_trials = int(trial_alloc.get("joint_refine", max(1, n_trials // 4)))
+        joint_id = (
+            f"{mode_prefix}_{cycle_tag}_joint_refine"
+            if cycle_tag
+            else f"{mode_prefix}_joint_refine"
+        )
+        if callback:
+            callback(
+                f"[blocked:joint_refine] trust-region radius={radius_fraction:.2f}, "
+                f"params={len(joint_ranges)}, trials={joint_trials}"
+            )
+        final_result = optimize_weights(
+            games,
+            n_trials=joint_trials,
+            include_sharp=include_sharp,
+            callback=callback,
+            is_cancelled=is_cancelled,
+            baseline_override=baseline_root,
+            param_ranges_override=joint_ranges,
+            skip_save=False,
+            _internal_blocked=True,
+            stage_label=joint_id,
+        )
+        final_result["blocked_pathways"] = {
+            "enabled": True,
+            "mode": tuning_mode,
+            "cycle_tag": cycle_tag,
+            "range_profile": active_range_profile,
+            "stage_trials": trial_alloc,
+            "stages": stage_summaries,
+            "joint_radius_fraction": radius_fraction,
+            "ff_params": sorted(ff_keys),
+            "onoff_params": sorted(onoff_keys),
+            "core_param_count": len(core_keys),
+        }
+        return final_result
+
     vg_train = VectorizedGames(train_games)
     vg_val = VectorizedGames(val_games)
     vg_all = VectorizedGames(sorted_games)
@@ -1036,18 +1601,165 @@ def optimize_weights(
                  f"({val_games[0].game_date} to {val_games[-1].game_date})")
 
     # Baseline evaluation on both sets
-    baseline_w = get_weight_config()
+    baseline_w = baseline_override if baseline_override is not None else get_weight_config()
     baseline_train = vg_train.evaluate(baseline_w, include_sharp=include_sharp)
     baseline_val = vg_val.evaluate(baseline_w, include_sharp=include_sharp)
     baseline_all = vg_all.evaluate(baseline_w, include_sharp=include_sharp)
+    val_probe_enabled = _safe_bool_setting("optimizer_objective_val_probe_enabled", True)
+    val_probe_sample_size = _safe_int_setting("optimizer_objective_val_probe_sample_size", 480)
+    val_probe_slices = max(1, _safe_int_setting("optimizer_objective_val_probe_slices", 3))
+    val_probe_loss_mult = max(
+        0.0,
+        _safe_float_setting("optimizer_objective_val_probe_loss_mult", 1.0),
+    )
+    val_probe_winner_drop_mult = max(
+        0.0,
+        _safe_float_setting("optimizer_objective_val_probe_winner_drop_mult", 0.35),
+    )
+    target_probe_games = max(50, val_probe_sample_size)
+    vg_val_probes: List[VectorizedGames] = []
+    baseline_val_probes: List[Dict[str, float]] = []
+    val_probe_games_counts: List[int] = []
+    if val_probe_enabled:
+        if target_probe_games >= len(val_games):
+            probe_windows = [list(val_games)]
+        else:
+            max_start = max(0, len(val_games) - target_probe_games)
+            if val_probe_slices <= 1:
+                starts = [max_start // 2]
+            else:
+                starts = [
+                    int(round(max_start * i / float(val_probe_slices - 1)))
+                    for i in range(val_probe_slices)
+                ]
+            seen_starts = set()
+            ordered_starts: List[int] = []
+            for start in starts:
+                if start not in seen_starts:
+                    seen_starts.add(start)
+                    ordered_starts.append(start)
+            probe_windows = [
+                val_games[start:start + target_probe_games]
+                for start in ordered_starts
+                if val_games[start:start + target_probe_games]
+            ]
+            if not probe_windows:
+                probe_windows = [list(val_games[:target_probe_games])]
+        for probe_games in probe_windows:
+            vg_probe = VectorizedGames(list(probe_games))
+            baseline_probe = vg_probe.evaluate(
+                baseline_w,
+                include_sharp=include_sharp,
+                fast=True,
+            )
+            vg_val_probes.append(vg_probe)
+            baseline_val_probes.append(baseline_probe)
+            val_probe_games_counts.append(len(probe_games))
 
-    if callback:
+    rolling_cv_enabled = _safe_bool_setting("optimizer_rolling_cv_enabled", True)
+    rolling_cv_folds = max(1, _safe_int_setting("optimizer_rolling_cv_folds", 4))
+    rolling_cv_min_train_games = max(
+        120,
+        _safe_int_setting(
+            "optimizer_rolling_cv_min_train_games",
+            max(240, int(len(train_games) * 0.45)),
+        ),
+    )
+    rolling_cv_val_games = max(
+        40,
+        _safe_int_setting(
+            "optimizer_rolling_cv_val_games",
+            max(120, int(len(train_games) * 0.12)),
+        ),
+    )
+    rolling_cv_worst_fold_mult = max(
+        0.0,
+        _safe_float_setting("optimizer_rolling_cv_worst_fold_mult", 0.40),
+    )
+    rolling_fold_ranges = (
+        _build_rolling_time_folds(
+            len(train_games),
+            rolling_cv_folds,
+            rolling_cv_min_train_games,
+            rolling_cv_val_games,
+        )
+        if rolling_cv_enabled
+        else []
+    )
+    rolling_cv_val_windows: List[VectorizedGames] = []
+    baseline_cv_fold_losses: List[float] = []
+    baseline_cv_fold_winners: List[float] = []
+    if rolling_fold_ranges:
+        for train_end, val_end in rolling_fold_ranges:
+            fold_val_games = train_games[train_end:val_end]
+            vg_fold_val = VectorizedGames(fold_val_games)
+            baseline_fold = vg_fold_val.evaluate(
+                baseline_w,
+                include_sharp=include_sharp,
+                fast=True,
+            )
+            rolling_cv_val_windows.append(vg_fold_val)
+            baseline_cv_fold_losses.append(float(baseline_fold.get("loss", 0.0)))
+            baseline_cv_fold_winners.append(
+                float(baseline_fold.get("winner_pct", 0.0))
+            )
+    else:
+        rolling_cv_enabled = False
+    if rolling_cv_enabled:
+        baseline_cv_score, baseline_cv_mean, baseline_cv_worst = _rolling_cv_objective_loss(
+            baseline_cv_fold_losses,
+            rolling_cv_worst_fold_mult,
+        )
+    else:
+        baseline_cv_score = float(baseline_train["loss"])
+        baseline_cv_mean = baseline_cv_score
+        baseline_cv_worst = baseline_cv_score
+
+    ml_underdog_gate_enabled = (
+        (not skip_save)
+        and _safe_bool_setting(
+            "optimizer_ml_underdog_scorer_enabled",
+            False,
+        )
+    )
+    ml_underdog_lr = max(
+        0.0001,
+        _safe_float_setting("optimizer_ml_underdog_scorer_lr", 0.05),
+    )
+    ml_underdog_l2 = max(
+        0.0,
+        _safe_float_setting("optimizer_ml_underdog_scorer_l2", 1.0),
+    )
+    ml_underdog_max_iter = max(
+        50,
+        _safe_int_setting("optimizer_ml_underdog_scorer_max_iter", 220),
+    )
+    ml_underdog_min_train_samples = max(
+        20,
+        _safe_int_setting("optimizer_ml_underdog_scorer_min_train_samples", 140),
+    )
+    ml_underdog_min_val_samples = max(
+        20,
+        _safe_int_setting("optimizer_ml_underdog_scorer_min_val_samples", 60),
+    )
+    ml_underdog_min_brier_lift = max(
+        0.0,
+        _safe_float_setting("optimizer_ml_underdog_scorer_min_brier_lift", 0.0025),
+    )
+    blocked_stage_verbose = _safe_bool_setting(
+        "optimizer_blocked_stage_verbose",
+        False,
+    )
+    emit_stage_details = (not skip_save) or blocked_stage_verbose
+
+    if callback and emit_stage_details:
         callback(f"Baseline (train): Winner={baseline_train['winner_pct']:.1f}%, "
                  f"Upset={baseline_train['upset_accuracy']:.1f}% @ {baseline_train['upset_rate']:.1f}% rate, "
                  f"CompDog={baseline_train.get('competitive_dog_rate', 0.0):.1f}%, "
                  f"OnePosDog={baseline_train.get('one_possession_dog_rate', 0.0):.1f}%, "
                  f"LongDog1P={baseline_train.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={baseline_train['loss']:.3f}")
+        callback(f"  {baseline_train.get('hit_rate_quality_observation', '')}")
         callback(f"Baseline (valid): Winner={baseline_val['winner_pct']:.1f}%, "
                  f"Upset={baseline_val['upset_accuracy']:.1f}% @ {baseline_val['upset_rate']:.1f}% rate, "
                  f"CompDog={baseline_val.get('competitive_dog_rate', 0.0):.1f}%, "
@@ -1055,23 +1767,77 @@ def optimize_weights(
                  f"LongDog1P={baseline_val.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Favorites={baseline_val['favorites_pct']:.1f}%, "
                  f"Loss={baseline_val['loss']:.3f}")
+        callback(f"  {baseline_val.get('hit_rate_quality_observation', '')}")
         callback(f"Baseline (all):   Winner={baseline_all['winner_pct']:.1f}%, "
                  f"Upset={baseline_all['upset_accuracy']:.1f}% @ {baseline_all['upset_rate']:.1f}% rate, "
                  f"CompDog={baseline_all.get('competitive_dog_rate', 0.0):.1f}%, "
                  f"OnePosDog={baseline_all.get('one_possession_dog_rate', 0.0):.1f}%, "
                  f"LongDog1P={baseline_all.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={baseline_all['loss']:.3f}")
+        callback(f"  {baseline_all.get('hit_rate_quality_observation', '')}")
+        if vg_val_probes:
+            baseline_probe_losses = [float(p.get("loss", 0.0)) for p in baseline_val_probes]
+            baseline_probe_winners = [float(p.get("winner_pct", 0.0)) for p in baseline_val_probes]
+            callback(
+                "Objective val-probe: "
+                f"{len(vg_val_probes)} slices x {target_probe_games} games "
+                f"(actual sizes: {val_probe_games_counts}), "
+                f"baseline loss range={min(baseline_probe_losses):.3f}..{max(baseline_probe_losses):.3f}, "
+                f"baseline winner range={min(baseline_probe_winners):.1f}%..{max(baseline_probe_winners):.1f}%, "
+                f"loss_mult={val_probe_loss_mult:.2f}, "
+                f"winner_drop_mult={val_probe_winner_drop_mult:.2f}"
+            )
+        if rolling_cv_enabled:
+            fold_sizes = [val_end - train_end for train_end, val_end in rolling_fold_ranges]
+            callback(
+                "Objective rolling-CV: "
+                f"{len(rolling_fold_ranges)} folds, "
+                f"val sizes={fold_sizes}, "
+                f"worst_mult={rolling_cv_worst_fold_mult:.2f}, "
+                f"baseline score={baseline_cv_score:.3f} "
+                f"(mean={baseline_cv_mean:.3f}, worst={baseline_cv_worst:.3f})"
+            )
+        else:
+            callback("Objective rolling-CV: disabled (falling back to train loss objective)")
+        if ml_underdog_gate_enabled:
+            callback(
+                "ML underdog promotion gate: enabled "
+                f"(min brier lift +{ml_underdog_min_brier_lift:.4f}, "
+                f"min train/val upset samples "
+                f"{ml_underdog_min_train_samples}/{ml_underdog_min_val_samples})"
+            )
+        else:
+            callback("ML underdog promotion gate: disabled")
+    elif callback and skip_save:
+        callback(
+            f"[stage:{stage_label}] baseline "
+            f"(train={baseline_train['loss']:.3f}, valid={baseline_val['loss']:.3f}, "
+            f"all={baseline_all['loss']:.3f})"
+        )
 
     best_w = baseline_w
+    best_objective_loss = baseline_cv_score if rolling_cv_enabled else baseline_train["loss"]
     best_train_loss = baseline_train["loss"]
-    best_train_result = baseline_train
     last_saved_w = [baseline_w]
     min_weight_delta = _safe_float_setting("optimizer_save_min_weight_delta", 1e-4)
 
     # Select parameter ranges
-    ranges = SHARP_MODE_RANGES if include_sharp else OPTIMIZER_RANGES
+    if param_ranges_override is not None:
+        ranges = dict(param_ranges_override)
+        range_profile = "override"
+    else:
+        ranges, range_profile = _select_optimizer_ranges(include_sharp)
+    if callback:
+        callback(
+            f"Optimizer search ranges: {range_profile} ({len(ranges)} params)"
+            f" [stage={stage_label}]"
+        )
     deterministic = _safe_bool_setting("optimizer_deterministic", False)
     deterministic_seed = _safe_int_setting("optimizer_deterministic_seed", 42)
+    objective_l2_prior_mult = max(
+        0.0,
+        _safe_float_setting("optimizer_objective_l2_prior_mult", 0.02),
+    )
     if deterministic:
         random.seed(deterministic_seed)
         np.random.seed(deterministic_seed)
@@ -1088,15 +1854,136 @@ def optimize_weights(
                 params[key] = trial.suggest_float(key, lo, hi)
 
             w = WeightConfig.from_dict({**baseline_w.to_dict(), **params})
-            result = vg_train.evaluate(w, include_sharp=include_sharp, fast=True)
-            trial.set_user_attr("result", result)
-            return result["loss"]
+            train_result = vg_train.evaluate(w, include_sharp=include_sharp, fast=True)
+            objective_loss = float(train_result["loss"])
+            rolling_cv_score = objective_loss
+            rolling_cv_mean_loss = objective_loss
+            rolling_cv_worst_loss = objective_loss
+            rolling_cv_mean_winner = float(train_result.get("winner_pct", 0.0))
+            rolling_cv_worst_winner = rolling_cv_mean_winner
+            if rolling_cv_enabled and rolling_cv_val_windows:
+                fold_losses: List[float] = []
+                fold_winners: List[float] = []
+                for vg_fold_val in rolling_cv_val_windows:
+                    fold_result = vg_fold_val.evaluate(
+                        w,
+                        include_sharp=include_sharp,
+                        fast=True,
+                    )
+                    fold_losses.append(float(fold_result.get("loss", 0.0)))
+                    fold_winners.append(float(fold_result.get("winner_pct", 0.0)))
+                rolling_cv_score, rolling_cv_mean_loss, rolling_cv_worst_loss = (
+                    _rolling_cv_objective_loss(
+                        fold_losses,
+                        rolling_cv_worst_fold_mult,
+                    )
+                )
+                rolling_cv_mean_winner = float(np.mean(fold_winners)) if fold_winners else 0.0
+                rolling_cv_worst_winner = float(np.min(fold_winners)) if fold_winners else 0.0
+                objective_loss = rolling_cv_score
+            overfit_penalty = 0.0
+            l2_prior_penalty = 0.0
+            probe_loss_delta_mean = 0.0
+            probe_loss_delta_max = 0.0
+            probe_winner_drop_mean = 0.0
+            if vg_val_probes:
+                probe_loss_deltas: List[float] = []
+                probe_winner_drops: List[float] = []
+                for probe_idx, vg_probe in enumerate(vg_val_probes):
+                    val_probe_result = vg_probe.evaluate(
+                        w,
+                        include_sharp=include_sharp,
+                        fast=True,
+                    )
+                    baseline_probe = baseline_val_probes[probe_idx]
+                    probe_loss = float(val_probe_result.get("loss", 0.0))
+                    probe_winner = float(val_probe_result.get("winner_pct", 0.0))
+                    probe_loss_deltas.append(
+                        max(
+                            0.0,
+                            probe_loss - float(baseline_probe.get("loss", 0.0)),
+                        )
+                    )
+                    probe_winner_drops.append(
+                        max(
+                            0.0,
+                            float(baseline_probe.get("winner_pct", 0.0)) - probe_winner,
+                        )
+                    )
+
+                probe_loss_delta_mean = float(np.mean(probe_loss_deltas))
+                probe_loss_delta_max = float(np.max(probe_loss_deltas))
+                probe_winner_drop_mean = float(np.mean(probe_winner_drops))
+                overfit_penalty = (
+                    (probe_loss_delta_mean + 0.5 * probe_loss_delta_max) * val_probe_loss_mult
+                    + probe_winner_drop_mean * val_probe_winner_drop_mult
+                )
+                objective_loss += overfit_penalty
+            if objective_l2_prior_mult > 0.0 and ranges:
+                sq_sum = 0.0
+                count = 0
+                for key, (lo, hi) in ranges.items():
+                    span = max(1e-9, float(hi) - float(lo))
+                    base_v = float(getattr(baseline_w, key, 0.0))
+                    cur_v = float(getattr(w, key, base_v))
+                    sq_sum += ((cur_v - base_v) / span) ** 2
+                    count += 1
+                if count > 0:
+                    l2_prior_penalty = objective_l2_prior_mult * (sq_sum / float(count))
+                    objective_loss += l2_prior_penalty
+            trial.set_user_attr(
+                "result",
+                {
+                    "winner_pct": float(train_result.get("winner_pct", 0.0)),
+                    "upset_accuracy": float(train_result.get("upset_accuracy", 0.0)),
+                    "upset_rate": float(train_result.get("upset_rate", 0.0)),
+                    "loss": float(train_result.get("loss", 0.0)),
+                },
+            )
+            trial.set_user_attr("objective_overfit_penalty", overfit_penalty)
+            trial.set_user_attr("objective_l2_prior_penalty", l2_prior_penalty)
+            trial.set_user_attr(
+                "rolling_cv",
+                {
+                    "enabled": bool(rolling_cv_enabled and rolling_cv_val_windows),
+                    "fold_count": len(rolling_cv_val_windows),
+                    "score": rolling_cv_score,
+                    "mean_loss": rolling_cv_mean_loss,
+                    "worst_loss": rolling_cv_worst_loss,
+                    "mean_winner_pct": rolling_cv_mean_winner,
+                    "worst_winner_pct": rolling_cv_worst_winner,
+                    "worst_mult": rolling_cv_worst_fold_mult,
+                },
+            )
+            if vg_val_probes:
+                trial.set_user_attr(
+                    "val_probe",
+                    {
+                        "loss_delta_mean": probe_loss_delta_mean,
+                        "loss_delta_max": probe_loss_delta_max,
+                        "winner_drop_mean": probe_winner_drop_mean,
+                        "slices": len(vg_val_probes),
+                    },
+                )
+            return objective_loss
 
         # ── Persistent study with CMA-ES (in-memory for speed) ──
         # Version hash: changes when parameter space or training window changes.
         # A new hash creates a new study (old trials become irrelevant).
-        range_keys = sorted(ranges.keys())
-        version_blob = ",".join(range_keys) + "|" + train_games[-1].game_date
+        range_blob = _ranges_signature_blob(ranges)
+        objective_blob = _objective_signature_blob()
+        study_tag = str(get_setting("optimizer_study_tag", "") or "").strip()
+        version_blob = (
+            range_blob
+            + "|"
+            + train_games[-1].game_date
+            + "|"
+            + objective_blob
+        )
+        if stage_label:
+            version_blob += f"|stage:{stage_label}"
+        if study_tag:
+            version_blob += f"|tag:{study_tag}"
         if deterministic:
             version_blob += f"|deterministic:{deterministic_seed}"
         version_hash = hashlib.md5(version_blob.encode()).hexdigest()[:8]
@@ -1119,20 +2006,47 @@ def optimize_weights(
                          f"adding {n_trials} more")
         else:
             # First call: load from disk, then cache in memory.
-            # IPOP restart strategy: when CMA-ES converges (step size shrinks),
-            # it restarts with doubled population size to escape local minima.
-            sampler = optuna.samplers.CmaEsSampler(
-                restart_strategy="ipop",
-                seed=deterministic_seed if deterministic else None,
+            # NOTE: Optuna 4.4+ deprecates restart_strategy on CmaEsSampler.
+            # Keep sampler args minimal to avoid runtime warning spam.
+            suppress_independent_sampling_warn = _safe_bool_setting(
+                "optimizer_cmaes_suppress_independent_sampling_warn",
+                True,
             )
+            sampler_kwargs = {
+                "seed": deterministic_seed if deterministic else None,
+            }
+            if suppress_independent_sampling_warn:
+                try:
+                    sampler = optuna.samplers.CmaEsSampler(
+                        warn_independent_sampling=False,
+                        **sampler_kwargs,
+                    )
+                except TypeError:
+                    sampler = optuna.samplers.CmaEsSampler(**sampler_kwargs)
+            else:
+                sampler = optuna.samplers.CmaEsSampler(**sampler_kwargs)
 
             # Load best N trials from disk to warm-start CMA-ES.
             # Too many trials locks CMA-ES into a converged state;
             # too few loses the benefit of prior exploration.
-            MAX_SEED_TRIALS = 3000
+            seed_disk_trials_enabled = _safe_bool_setting(
+                "optimizer_seed_disk_trials_enabled",
+                True,
+            )
+            max_seed_trials = _safe_int_setting(
+                "optimizer_seed_disk_trials_max",
+                600,
+            )
+            seed_top_fraction = float(
+                np.clip(
+                    _safe_float_setting("optimizer_seed_disk_trials_top_fraction", 0.6),
+                    0.0,
+                    1.0,
+                )
+            )
             prior_trials = 0
             seed_trials = []
-            if not deterministic:
+            if seed_disk_trials_enabled and max_seed_trials > 0 and not deterministic:
                 try:
                     disk_study = optuna.load_study(
                         study_name=study_name,
@@ -1141,10 +2055,26 @@ def optimize_weights(
                     disk_completed = [t for t in disk_study.trials
                                       if t.state == optuna.trial.TrialState.COMPLETE]
                     prior_trials = len(disk_completed)
-                    if prior_trials > MAX_SEED_TRIALS:
-                        # Keep the best trials for warm-starting
+                    if prior_trials > max_seed_trials:
+                        # Use a blend of best + sampled tail to avoid
+                        # over-anchoring CMA-ES to one stale local basin.
                         disk_completed.sort(key=lambda t: t.value)
-                        seed_trials = disk_completed[:MAX_SEED_TRIALS]
+                        top_count = max(
+                            1,
+                            min(max_seed_trials, int(round(max_seed_trials * seed_top_fraction))),
+                        )
+                        tail_count = max(0, max_seed_trials - top_count)
+                        top_trials = disk_completed[:top_count]
+                        sampled_tail = []
+                        if tail_count > 0:
+                            tail_pool_end = min(len(disk_completed), max_seed_trials * 8)
+                            tail_pool = disk_completed[top_count:tail_pool_end]
+                            if tail_pool:
+                                sampled_tail = random.sample(
+                                    tail_pool,
+                                    min(tail_count, len(tail_pool)),
+                                )
+                        seed_trials = top_trials + sampled_tail
                     else:
                         seed_trials = disk_completed
                 except KeyError:
@@ -1163,20 +2093,23 @@ def optimize_weights(
             if callback:
                 loaded = len(seed_trials)
                 callback(f"Study '{study_name}': {prior_trials} prior trials on disk, "
-                         f"loaded best {loaded} to seed CMA-ES (IPOP), "
+                         f"loaded {loaded} seed trials for CMA-ES (IPOP), "
                          f"adding {n_trials} more")
 
         # Log interval from config
-        from src.config import get as get_setting
         log_interval = int(get_setting("optimizer_log_interval", 300))
-        _best_logged_loss = best_train_loss
+        _best_logged_loss = best_objective_loss
         _stagnation_counter = [0]
         _stagnation_threshold = int(get_setting("optuna_stagnation_threshold", 500))
         _early_stop_trials = int(get_setting("optuna_early_stop_trials", 2000))
         _min_trials_before_stop = int(get_setting("optuna_min_trials_before_stop", 500))
 
         # Track best weights for checkpoint saving
-        _checkpoint_best_loss = [best_train_loss]
+        _checkpoint_best_loss = [best_objective_loss]
+        if ml_underdog_gate_enabled and callback:
+            callback(
+                "Checkpoint saves disabled while ML underdog gate is enabled."
+            )
 
         def trial_callback(study, trial):
             nonlocal _best_logged_loss
@@ -1193,7 +2126,11 @@ def optimize_weights(
 
                 # Checkpoint: save best weights immediately so they survive crashes.
                 # Only checkpoint if meaningfully better than last checkpoint.
-                if trial.value < _checkpoint_best_loss[0] - 0.01:
+                if (
+                    not skip_save
+                    and not ml_underdog_gate_enabled
+                    and trial.value < _checkpoint_best_loss[0] - 0.01
+                ):
                     _checkpoint_best_loss[0] = trial.value
                     try:
                         ckpt_w = WeightConfig.from_dict(
@@ -1239,16 +2176,53 @@ def optimize_weights(
                                  f"without improvement after {trial.number} total trials")
                     study.stop()
 
-            if trial.number % log_interval == 0 or is_new_best:
+            if trial.number % log_interval == 0 or (is_new_best and emit_stage_details):
                 if callback:
                     res = trial.user_attrs.get("result", {})
                     win = res.get("winner_pct", 0)
                     upset_acc = res.get("upset_accuracy", 0)
                     upset_r = res.get("upset_rate", 0)
-                    callback(f"Trial {trial.number}/{n_trials}: loss={trial.value:.3f} "
-                             f"(Winner={win:.1f}%, "
-                             f"Upset={upset_acc:.1f}% @ {upset_r:.1f}% rate)")
-                    if is_new_best:
+                    rolling_cv_meta = trial.user_attrs.get("rolling_cv", {})
+                    cv_enabled = False
+                    cv_score = float(res.get("loss", 0.0))
+                    cv_mean = cv_score
+                    cv_worst = cv_score
+                    if isinstance(rolling_cv_meta, dict):
+                        cv_enabled = bool(rolling_cv_meta.get("enabled", False))
+                        cv_score = float(rolling_cv_meta.get("score", cv_score) or cv_score)
+                        cv_mean = float(rolling_cv_meta.get("mean_loss", cv_score) or cv_score)
+                        cv_worst = float(rolling_cv_meta.get("worst_loss", cv_score) or cv_score)
+                    overfit_penalty = float(
+                        trial.user_attrs.get("objective_overfit_penalty", 0.0)
+                    )
+                    l2_prior_penalty = float(
+                        trial.user_attrs.get("objective_l2_prior_penalty", 0.0)
+                    )
+                    val_probe_meta = trial.user_attrs.get("val_probe", {})
+                    probe_delta_mean = 0.0
+                    probe_delta_max = 0.0
+                    if isinstance(val_probe_meta, dict):
+                        probe_delta_mean = float(
+                            val_probe_meta.get("loss_delta_mean", 0.0) or 0.0
+                        )
+                        probe_delta_max = float(
+                            val_probe_meta.get("loss_delta_max", 0.0) or 0.0
+                        )
+                    callback(
+                        f"Trial {trial.number}/{n_trials}: objective={trial.value:.3f} "
+                        f"(train_loss={res.get('loss', 0.0):.3f}, "
+                        f"cv={'on' if cv_enabled else 'off'}, "
+                        f"cv_score={cv_score:.3f}, "
+                        f"cv_mean={cv_mean:.3f}, "
+                        f"cv_worst={cv_worst:.3f}, "
+                        f"overfit_penalty={overfit_penalty:.3f}, "
+                        f"l2_prior_penalty={l2_prior_penalty:.3f}, "
+                        f"probe_loss_delta_mean={probe_delta_mean:.3f}, "
+                        f"probe_loss_delta_max={probe_delta_max:.3f}, "
+                        f"Winner={win:.1f}%, "
+                        f"Upset={upset_acc:.1f}% @ {upset_r:.1f}% rate)"
+                    )
+                    if is_new_best and emit_stage_details:
                         merged_params = {**baseline_w.to_dict(), **trial.params}
                         callback(
                             "  Best multipliers: "
@@ -1299,44 +2273,77 @@ def optimize_weights(
                      f"(saving {len(new_trials)} to disk in background)")
 
         # Evaluate top-N training trials on validation to find best generalizer
-        from src.config import get as _get_setting
-        top_n = int(_get_setting("optuna_top_n_validation", 10))
+        top_n_raw = int(get_setting("optuna_top_n_validation", 10))
+        top_n = max(30, top_n_raw)
+        if completed:
+            top_n = min(top_n, len(completed))
+        if callback and top_n != top_n_raw:
+            callback(
+                f"optuna_top_n_validation={top_n_raw} adjusted to {top_n} "
+                "(minimum 30 for validation generalization)"
+            )
         completed.sort(key=lambda t: t.value)
         candidates = completed[:top_n]
 
-        if candidates and candidates[0].value < best_train_loss:
-            best_val_loss = float("inf")
+        if candidates and candidates[0].value < best_objective_loss:
+            best_candidate_objective = float("inf")
+            best_candidate_val_loss = float("inf")
             chosen_rank = 0
-            if callback:
+            if callback and emit_stage_details:
                 callback(f"Validating top {len(candidates)} training trials...")
 
             for rank, trial in enumerate(candidates):
                 cand_w = WeightConfig.from_dict(
                     {**baseline_w.to_dict(), **trial.params})
                 cand_val = vg_val.evaluate(cand_w, include_sharp=include_sharp)
-                cand_val_loss = cand_val["loss"]
+                cand_val_loss = float(cand_val["loss"])
+                cand_objective = float(trial.value)
+                cand_cv_mean = cand_objective
+                cand_cv_worst = cand_objective
+                if rolling_cv_enabled and rolling_cv_val_windows:
+                    cand_fold_losses = []
+                    for vg_fold_val in rolling_cv_val_windows:
+                        fold_result = vg_fold_val.evaluate(
+                            cand_w,
+                            include_sharp=include_sharp,
+                            fast=True,
+                        )
+                        cand_fold_losses.append(float(fold_result.get("loss", 0.0)))
+                    cand_objective, cand_cv_mean, cand_cv_worst = _rolling_cv_objective_loss(
+                        cand_fold_losses,
+                        rolling_cv_worst_fold_mult,
+                    )
 
-                if callback and rank < 5:
+                if callback and emit_stage_details and rank < 5:
                     tr = trial.user_attrs.get("result", {})
                     callback(
-                        f"  #{rank + 1} train loss={trial.value:.3f} "
+                        f"  #{rank + 1} objective={cand_objective:.3f} "
+                        f"(cv mean={cand_cv_mean:.3f}, cv worst={cand_cv_worst:.3f}) "
+                        f"train loss={trial.value:.3f} "
                         f"(Winner={tr.get('winner_pct', 0):.1f}%) "
                         f"-> val loss={cand_val_loss:.3f} "
                         f"(Winner={cand_val.get('winner_pct', 0):.1f}%)")
 
-                if cand_val_loss < best_val_loss:
-                    best_val_loss = cand_val_loss
+                if (
+                    cand_objective < best_candidate_objective
+                    or (
+                        abs(cand_objective - best_candidate_objective) <= 1e-9
+                        and cand_val_loss < best_candidate_val_loss
+                    )
+                ):
+                    best_candidate_objective = cand_objective
+                    best_candidate_val_loss = cand_val_loss
                     best_w = cand_w
-                    best_train_loss = trial.value
-                    best_train_result = trial.user_attrs.get(
-                        "result",
-                        vg_train.evaluate(cand_w, include_sharp=include_sharp))
+                    best_objective_loss = cand_objective
+                    best_train_loss = float(
+                        trial.user_attrs.get("result", {}).get("loss", trial.value)
+                    )
                     chosen_rank = rank
 
-            if callback and chosen_rank > 0:
+            if callback and emit_stage_details and chosen_rank > 0:
                 callback(
                     f"Selected trial #{chosen_rank + 1} "
-                    f"(not #1) -- better validation performance")
+                    f"(not #1) -- better robust objective")
 
     except ImportError:
         if callback:
@@ -1351,27 +2358,45 @@ def optimize_weights(
                 params[key] = random.uniform(lo, hi)
             w = WeightConfig.from_dict({**baseline_w.to_dict(), **params})
             result = vg_train.evaluate(w, include_sharp=include_sharp, fast=True)
-            if result["loss"] < best_train_loss:
+            if result["loss"] < best_objective_loss:
                 best_w = w
+                best_objective_loss = result["loss"]
                 best_train_loss = result["loss"]
-                best_train_result = result
             if callback and (i + 1) % 300 == 0:
                 callback(f"Random trial {i + 1}/{n_trials}: "
                          f"best_loss={best_train_loss:.3f}")
 
     # Walk-forward validation
+    best_train_full = vg_train.evaluate(best_w, include_sharp=include_sharp)
     best_val = vg_val.evaluate(best_w, include_sharp=include_sharp)
     best_all = vg_all.evaluate(best_w, include_sharp=include_sharp)
+    candidate_cv_score: Optional[float] = None
+    candidate_cv_mean: Optional[float] = None
+    candidate_cv_worst: Optional[float] = None
+    if rolling_cv_enabled and rolling_cv_val_windows:
+        candidate_cv_fold_losses = []
+        for vg_fold_val in rolling_cv_val_windows:
+            fold_result = vg_fold_val.evaluate(
+                best_w,
+                include_sharp=include_sharp,
+                fast=True,
+            )
+            candidate_cv_fold_losses.append(float(fold_result.get("loss", 0.0)))
+        candidate_cv_score, candidate_cv_mean, candidate_cv_worst = _rolling_cv_objective_loss(
+            candidate_cv_fold_losses,
+            rolling_cv_worst_fold_mult,
+        )
 
-    if callback:
+    if callback and emit_stage_details:
         callback("-- Walk-forward results --")
-        callback(f"  Train:  Winner={best_train_result['winner_pct']:.1f}%, "
-                 f"Upset={best_train_result['upset_accuracy']:.1f}% "
-                 f"@ {best_train_result['upset_rate']:.1f}% rate, "
-                 f"CompDog={best_train_result.get('competitive_dog_rate', 0.0):.1f}%, "
-                 f"OnePosDog={best_train_result.get('one_possession_dog_rate', 0.0):.1f}%, "
-                 f"LongDog1P={best_train_result.get('long_dog_onepos_rate', 0.0):.1f}%, "
-                 f"Loss={best_train_loss:.3f}")
+        callback(f"  Train:  Winner={best_train_full['winner_pct']:.1f}%, "
+                 f"Upset={best_train_full['upset_accuracy']:.1f}% "
+                 f"@ {best_train_full['upset_rate']:.1f}% rate, "
+                 f"CompDog={best_train_full.get('competitive_dog_rate', 0.0):.1f}%, "
+                 f"OnePosDog={best_train_full.get('one_possession_dog_rate', 0.0):.1f}%, "
+                 f"LongDog1P={best_train_full.get('long_dog_onepos_rate', 0.0):.1f}%, "
+                 f"Loss={best_train_full['loss']:.3f}")
+        callback(f"    {best_train_full.get('hit_rate_quality_observation', '')}")
         callback(f"  Valid:  Winner={best_val['winner_pct']:.1f}%, "
                  f"Upset={best_val['upset_accuracy']:.1f}% "
                  f"@ {best_val['upset_rate']:.1f}% rate, "
@@ -1380,6 +2405,7 @@ def optimize_weights(
                  f"LongDog1P={best_val.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Favorites={best_val['favorites_pct']:.1f}%, "
                  f"Loss={best_val['loss']:.3f}")
+        callback(f"    {best_val.get('hit_rate_quality_observation', '')}")
         callback(f"  All:    Winner={best_all['winner_pct']:.1f}%, "
                  f"Upset={best_all['upset_accuracy']:.1f}% "
                  f"@ {best_all['upset_rate']:.1f}% rate, "
@@ -1387,24 +2413,141 @@ def optimize_weights(
                  f"OnePosDog={best_all.get('one_possession_dog_rate', 0.0):.1f}%, "
                  f"LongDog1P={best_all.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={best_all['loss']:.3f}")
+        callback(f"    {best_all.get('hit_rate_quality_observation', '')}")
 
     # Save gate: robust anti-gaming guardrails on validation
     baseline_winner_pct = baseline_val.get("winner_pct", 0)
     favorites_pct = best_val.get("favorites_pct", 0)
     best_winner_pct = best_val.get("winner_pct", 0)
-    save_ok, save_reason, save_details = _passes_robust_save_gate(
-        baseline=baseline_val,
-        candidate=best_val,
-        n_validation_games=len(val_games),
-        baseline_all=baseline_all,
-        candidate_all=best_all,
-    )
+    if skip_save:
+        save_ok = False
+        save_reason = f"stage search only ({stage_label})"
+        save_details = {
+            "stage_label": stage_label,
+            "skip_save": True,
+            "rolling_cv_enabled": rolling_cv_enabled,
+            "rolling_cv_fold_count": len(rolling_cv_val_windows),
+            "rolling_cv_worst_fold_mult": rolling_cv_worst_fold_mult,
+            "baseline_cv_score": baseline_cv_score if rolling_cv_enabled else None,
+            "baseline_cv_mean_loss": baseline_cv_mean if rolling_cv_enabled else None,
+            "baseline_cv_worst_loss": baseline_cv_worst if rolling_cv_enabled else None,
+            "candidate_cv_score": candidate_cv_score if rolling_cv_enabled else None,
+            "candidate_cv_mean_loss": candidate_cv_mean if rolling_cv_enabled else None,
+            "candidate_cv_worst_loss": candidate_cv_worst if rolling_cv_enabled else None,
+            "candidate_only": True,
+        }
+    else:
+        save_ok, save_reason, save_details = _passes_robust_save_gate(
+            baseline=baseline_val,
+            candidate=best_val,
+            n_validation_games=len(val_games),
+            baseline_all=baseline_all,
+            candidate_all=best_all,
+        )
+        save_details["rolling_cv_enabled"] = rolling_cv_enabled
+        save_details["rolling_cv_fold_count"] = len(rolling_cv_val_windows)
+        save_details["rolling_cv_worst_fold_mult"] = rolling_cv_worst_fold_mult
+        save_details["baseline_cv_score"] = baseline_cv_score if rolling_cv_enabled else None
+        save_details["baseline_cv_mean_loss"] = baseline_cv_mean if rolling_cv_enabled else None
+        save_details["baseline_cv_worst_loss"] = baseline_cv_worst if rolling_cv_enabled else None
+        save_details["candidate_cv_score"] = candidate_cv_score if rolling_cv_enabled else None
+        save_details["candidate_cv_mean_loss"] = candidate_cv_mean if rolling_cv_enabled else None
+        save_details["candidate_cv_worst_loss"] = candidate_cv_worst if rolling_cv_enabled else None
 
-    if callback:
+    ml_gate_result: Dict[str, Any] = {
+        "enabled": bool(ml_underdog_gate_enabled),
+        "applied": False,
+        "passed": True,
+        "reason": "disabled",
+    }
+    if ml_underdog_gate_enabled:
+        ml_gate_result = compare_walk_forward_underdog_scorer(
+            train_games=train_games,
+            val_games=val_games,
+            baseline_weights=baseline_w,
+            candidate_weights=best_w,
+            include_sharp=include_sharp,
+            min_train_samples=ml_underdog_min_train_samples,
+            min_val_samples=ml_underdog_min_val_samples,
+            learning_rate=ml_underdog_lr,
+            l2=ml_underdog_l2,
+            max_iter=ml_underdog_max_iter,
+            min_brier_improvement=ml_underdog_min_brier_lift,
+        )
+        if callback:
+            if ml_gate_result.get("applied"):
+                baseline_ml = ml_gate_result.get("baseline", {})
+                candidate_ml = ml_gate_result.get("candidate", {})
+                baseline_brier = float(
+                    (baseline_ml or {}).get("brier", 0.0) or 0.0
+                )
+                candidate_brier = float(
+                    (candidate_ml or {}).get("brier", 0.0) or 0.0
+                )
+                baseline_logloss = float(
+                    (baseline_ml or {}).get("logloss", 0.0) or 0.0
+                )
+                candidate_logloss = float(
+                    (candidate_ml or {}).get("logloss", 0.0) or 0.0
+                )
+                callback(
+                    "ML underdog diagnostics: "
+                    f"brier {baseline_brier:.4f}->{candidate_brier:.4f} "
+                    f"(lift {float(ml_gate_result.get('brier_lift', 0.0)):+.4f}), "
+                    f"logloss {baseline_logloss:.4f}->{candidate_logloss:.4f} "
+                    f"(lift {float(ml_gate_result.get('logloss_lift', 0.0)):+.4f}), "
+                    f"gate {'PASS' if ml_gate_result.get('passed') else 'FAIL'} "
+                    f"(min +{ml_underdog_min_brier_lift:.4f})"
+                )
+            else:
+                callback(
+                    f"ML underdog diagnostics: skipped ({ml_gate_result.get('reason', 'n/a')})"
+                )
+        if not bool(ml_gate_result.get("passed", True)):
+            save_ok = False
+            ml_reason = str(ml_gate_result.get("reason", "")).strip()
+            if save_reason == "pass":
+                save_reason = ml_reason or "ml underdog gate failed"
+            elif ml_reason:
+                save_reason = f"{save_reason}; {ml_reason}"
+    save_details["ml_underdog_gate_enabled"] = bool(ml_gate_result.get("enabled", False))
+    save_details["ml_underdog_gate_applied"] = bool(ml_gate_result.get("applied", False))
+    save_details["ml_underdog_gate_passed"] = bool(ml_gate_result.get("passed", True))
+    save_details["ml_underdog_gate_reason"] = str(ml_gate_result.get("reason", ""))
+    save_details["ml_underdog_gate_min_brier_lift"] = ml_underdog_min_brier_lift
+    save_details["ml_underdog_gate_brier_lift"] = ml_gate_result.get("brier_lift")
+    save_details["ml_underdog_gate_logloss_lift"] = ml_gate_result.get("logloss_lift")
+    ml_gate_baseline = ml_gate_result.get("baseline", {})
+    ml_gate_candidate = ml_gate_result.get("candidate", {})
+    save_details["ml_underdog_gate_baseline_brier"] = (
+        (ml_gate_baseline or {}).get("brier")
+        if isinstance(ml_gate_baseline, dict)
+        else None
+    )
+    save_details["ml_underdog_gate_candidate_brier"] = (
+        (ml_gate_candidate or {}).get("brier")
+        if isinstance(ml_gate_candidate, dict)
+        else None
+    )
+    save_details["ml_underdog_gate_baseline_logloss"] = (
+        (ml_gate_baseline or {}).get("logloss")
+        if isinstance(ml_gate_baseline, dict)
+        else None
+    )
+    save_details["ml_underdog_gate_candidate_logloss"] = (
+        (ml_gate_candidate or {}).get("logloss")
+        if isinstance(ml_gate_candidate, dict)
+        else None
+    )
+    save_details["ml_underdog_gate"] = ml_gate_result
+
+    if callback and emit_stage_details:
         callback(
             "Save gate diagnostics: "
-            f"loss(val) {baseline_val.get('loss', 0.0):.3f}->{best_val.get('loss', 0.0):.3f}, "
-            f"loss(all) {baseline_all.get('loss', 0.0):.3f}->{best_all.get('loss', 0.0):.3f}, "
+            f"loss(val) {baseline_val.get('loss', 0.0):.3f}->{best_val.get('loss', 0.0):.3f} "
+            f"(delta {best_val.get('loss', 0.0) - baseline_val.get('loss', 0.0):+.3f}; lower is better), "
+            f"loss(all) {baseline_all.get('loss', 0.0):.3f}->{best_all.get('loss', 0.0):.3f} "
+            f"(delta {best_all.get('loss', 0.0) - baseline_all.get('loss', 0.0):+.3f}), "
             f"compDog(val) {baseline_val.get('competitive_dog_rate', 0.0):.1f}%"
             f"->{best_val.get('competitive_dog_rate', 0.0):.1f}%, "
             f"onePosDog(val) {baseline_val.get('one_possession_dog_rate', 0.0):.1f}%"
@@ -1412,7 +2555,8 @@ def optimize_weights(
             f"longDog1P(val) {baseline_val.get('long_dog_onepos_rate', 0.0):.1f}%"
             f"->{best_val.get('long_dog_onepos_rate', 0.0):.1f}%, "
             f"hybrid {float(save_details.get('baseline_hybrid_loss', baseline_val.get('loss', 0.0))):.3f}"
-            f"->{float(save_details.get('candidate_hybrid_loss', best_val.get('loss', 0.0))):.3f}, "
+            f"->{float(save_details.get('candidate_hybrid_loss', best_val.get('loss', 0.0))):.3f} "
+            f"(delta {float(save_details.get('candidate_hybrid_loss', best_val.get('loss', 0.0))) - float(save_details.get('baseline_hybrid_loss', baseline_val.get('loss', 0.0))):+.3f}), "
             f"ROI {baseline_val.get('ml_roi', 0.0):+.2f}%->{best_val.get('ml_roi', 0.0):+.2f}% "
             f"(lb95 {best_val.get('ml_roi_lb95', 0.0):+.2f}%), "
             f"min ML payout {best_val.get('ml_min_payout', MIN_ML_PAYOUT):.2f}x, "
@@ -1448,9 +2592,26 @@ def optimize_weights(
             callback(f"Validation save gate rejected: {save_reason} "
                      f"- keeping current weights")
     else:
-        if callback:
+        if callback and not skip_save:
             callback(f"Validation save gate rejected: {save_reason} "
                      f"- keeping current weights")
+        elif callback and skip_save:
+            callback(f"[stage:{stage_label}] Candidate selected (save skipped)")
+
+    # Checkpoint saves can happen during Optuna callbacks before final selection.
+    # If final selection is a no-op versus last checkpoint, report improved=True
+    # so overnight no-save logic does not treat this pass as a false negative.
+    checkpoint_delta = _max_weight_delta(baseline_w, last_saved_w[0])
+    checkpoint_saved = (
+        checkpoint_delta >= min_weight_delta and not ml_underdog_gate_enabled and not skip_save
+    )
+    save_details["checkpoint_weight_delta"] = checkpoint_delta
+    save_details["checkpoint_saved"] = checkpoint_saved
+    save_details["checkpoint_disabled_by_ml_gate"] = ml_underdog_gate_enabled
+    if checkpoint_saved and not did_save:
+        did_save = True
+        if save_reason.startswith("no-op weight update"):
+            save_reason = "pass (checkpoint already saved optimized weights)"
 
     return {
         "baseline_loss": baseline_val["loss"],
@@ -1463,9 +2624,18 @@ def optimize_weights(
         "improved": did_save,
         "save_gate_reason": save_reason,
         "save_gate_details": save_details,
-        "train_loss": best_train_loss,
+        "train_loss": best_train_full["loss"],
+        "trial_train_loss": best_train_loss,
+        "objective_loss": best_objective_loss,
+        "objective_mode": "rolling_cv" if rolling_cv_enabled else "train_loss",
+        "rolling_cv_enabled": rolling_cv_enabled,
+        "rolling_cv_fold_count": len(rolling_cv_val_windows),
+        "ml_underdog_gate": ml_gate_result,
         "deterministic": deterministic,
         "deterministic_seed": deterministic_seed if deterministic else None,
+        "best_weights": best_w.to_dict(),
+        "stage_label": stage_label,
+        "skip_save": bool(skip_save),
         **best_val,
     }
 
@@ -1534,13 +2704,13 @@ def compare_modes(
     gs += (home_me - away_me) * w.rating_matchup_mult
     ff = (vg.ff_efg_edge * w.ff_efg_weight + vg.ff_tov_edge * w.ff_tov_weight
           + vg.ff_oreb_edge * w.ff_oreb_weight + vg.ff_fta_edge * w.ff_fta_weight
-          ) * w.four_factors_scale
+          ) * FOUR_FACTORS_FIXED_SCALE
     gs += ff
     opp_ff = (vg.opp_ff_efg_edge * w.opp_ff_efg_weight
               + vg.opp_ff_tov_edge * w.opp_ff_tov_weight
               + vg.opp_ff_oreb_edge * w.opp_ff_oreb_weight
               + vg.opp_ff_fta_edge * w.opp_ff_fta_weight
-              ) * w.four_factors_scale
+              ) * FOUR_FACTORS_FIXED_SCALE
     gs += opp_ff
     clutch_mask = np.abs(gs) < w.clutch_threshold
     clutch_adj = np.clip(vg.clutch_diff * w.clutch_scale, -w.clutch_cap, w.clutch_cap)
@@ -1550,6 +2720,14 @@ def compare_modes(
     gs += (home_eff - away_eff) * w.hustle_effort_mult
     gs += vg.net_rest * w.rest_advantage_mult
     gs -= vg.away_b2b_at_altitude * w.altitude_b2b_penalty
+    onoff_lambda = max(0.0, float(getattr(w, "onoff_reliability_lambda", 0.0)))
+    home_onoff = vg._home_onoff_signal * (
+        vg._home_onoff_reliability / (vg._home_onoff_reliability + onoff_lambda + 1e-9)
+    )
+    away_onoff = vg._away_onoff_signal * (
+        vg._away_onoff_reliability / (vg._away_onoff_reliability + onoff_lambda + 1e-9)
+    )
+    gs += (home_onoff - away_onoff) * w.onoff_impact_mult
 
     # Fundamentals-only picks
     fund_picks_home = gs > MODEL_PICK_EDGE_THRESHOLD

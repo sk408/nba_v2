@@ -31,8 +31,10 @@ _SCRAPE_TTL = 3600  # 60 minutes
 _scrape_cache_lock = threading.Lock()
 
 
-def _get_cached_scrape(source: str) -> Optional[List[Dict[str, Any]]]:
+def _get_cached_scrape(source: str, use_cache: bool = True) -> Optional[List[Dict[str, Any]]]:
     """Return cached scrape result if still fresh."""
+    if not use_cache:
+        return None
     import time
     with _scrape_cache_lock:
         if source in _scrape_cache:
@@ -126,13 +128,13 @@ def _classify_keyword(detail: str) -> str:
     return "other"
 
 
-def scrape_espn_injuries() -> List[Dict[str, Any]]:
+def scrape_espn_injuries(use_cache: bool = True) -> List[Dict[str, Any]]:
     """Scrape injuries from ESPN.
 
     ESPN table columns (as of 2025):
       Name | Position | Est. Return | Status | Detail
     """
-    cached = _get_cached_scrape("ESPN")
+    cached = _get_cached_scrape("ESPN", use_cache=use_cache)
     if cached is not None:
         return cached
 
@@ -249,7 +251,7 @@ def _clean_cbs_name(raw: str) -> str:
     return normalize_name(raw)
 
 
-def scrape_cbs_injuries() -> List[Dict[str, Any]]:
+def scrape_cbs_injuries(use_cache: bool = True) -> List[Dict[str, Any]]:
     """Scrape injuries from CBS Sports.
 
     CBS table columns (as of 2025):
@@ -257,7 +259,7 @@ def scrape_cbs_injuries() -> List[Dict[str, Any]]:
     Note: CBS does NOT provide an explicit status (Out/Day-To-Day/etc).
     We default to "Out" and refine if the injury text hints at status.
     """
-    cached = _get_cached_scrape("CBS")
+    cached = _get_cached_scrape("CBS", use_cache=use_cache)
     if cached is not None:
         return cached
 
@@ -343,9 +345,9 @@ def _infer_status_from_text(text: str) -> str:
     return "Out"  # conservative default
 
 
-def scrape_rotowire_injuries() -> List[Dict[str, Any]]:
+def scrape_rotowire_injuries(use_cache: bool = True) -> List[Dict[str, Any]]:
     """Scrape injuries from RotoWire (fallback — may return 0 if site changed)."""
-    cached = _get_cached_scrape("RotoWire")
+    cached = _get_cached_scrape("RotoWire", use_cache=use_cache)
     if cached is not None:
         return cached
 
@@ -440,7 +442,7 @@ def remove_manual_injury(player_id_or_name):
         json.dump(injuries, f, indent=2)
 
 
-def scrape_all_injuries() -> List[Dict[str, Any]]:
+def scrape_all_injuries(use_cache: bool = True) -> List[Dict[str, Any]]:
     """Scrape from all sources and merge (ESPN primary, CBS fills gaps).
 
     ESPN is the highest-quality source (has real status like Out/Day-To-Day).
@@ -451,7 +453,7 @@ def scrape_all_injuries() -> List[Dict[str, Any]]:
     seen_names: set = set()
 
     # Primary: ESPN
-    espn = scrape_espn_injuries()
+    espn = scrape_espn_injuries(use_cache=use_cache)
     if espn:
         logger.info(f"Got {len(espn)} injuries from ESPN")
         for inj in espn:
@@ -461,7 +463,7 @@ def scrape_all_injuries() -> List[Dict[str, Any]]:
                 combined.append(inj)
 
     # Secondary: CBS fills gaps (players ESPN missed)
-    cbs = scrape_cbs_injuries()
+    cbs = scrape_cbs_injuries(use_cache=use_cache)
     if cbs:
         logger.info(f"Got {len(cbs)} injuries from CBS")
         for inj in cbs:
@@ -472,7 +474,7 @@ def scrape_all_injuries() -> List[Dict[str, Any]]:
 
     # Fallback: RotoWire
     if not combined:
-        rw = scrape_rotowire_injuries()
+        rw = scrape_rotowire_injuries(use_cache=use_cache)
         if rw:
             logger.info(f"Got {len(rw)} injuries from RotoWire")
             combined = rw
@@ -527,12 +529,12 @@ def _match_player_id(name: str) -> Optional[int]:
     return None
 
 
-def sync_injuries(callback=None) -> int:
+def sync_injuries(callback=None, use_cache: bool = True) -> int:
     """Full injury sync: scrape + manual overrides → update DB."""
     if callback:
         callback("Scraping injury data...")
 
-    scraped = scrape_all_injuries()
+    scraped = scrape_all_injuries(use_cache=use_cache)
     manual = load_manual_injuries()
     now = datetime.now().isoformat()
 

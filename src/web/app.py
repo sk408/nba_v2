@@ -2,16 +2,22 @@
 
 Routes:
   /                          Dashboard (today's games with predictions)
+  /underdogs                 Ranked underdog opportunities + filters
   /matchup/<hid>/<aid>/<date>  Game detail with breakdown + sharp panel
   /accuracy                  Backtest results with A/B comparison
   /gamecast                  Live gamecast view (ESPN integration)
   /api/predict  (POST)       JSON prediction endpoint
+  /api/underdogs             JSON underdog screener endpoint
+  /api/underdogs/alerts/dispatch (POST) Persist alert state + notify new signals
   /api/sync     (POST)       Trigger data sync (background thread)
   /api/sync/odds-today (POST) Trigger odds-only sync for today's games
   /api/gamecast/games        Today's games (ESPN scoreboard)
   /api/gamecast/<game_id>    Full game data (summary, boxscore, plays, odds)
 """
 
+import csv
+import hashlib
+import io
 import json
 import logging
 import hmac
@@ -25,9 +31,22 @@ import time
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
-from flask import Flask, render_template, jsonify, request, session, abort
+from flask import Flask, render_template, jsonify, request, session, abort, Response
 
+from src.analytics.alert_rules import (
+    build_underdog_alert_candidates,
+    build_underdog_alert_digest,
+)
+from src.analytics.drift_monitor import evaluate_underdog_drift
+from src.analytics.phase_gates import evaluate_phase_acceptance
+from src.analytics.recommendation_outcomes import persist_recommendation_snapshot
+from src.analytics.underdog_alert_state import update_underdog_alert_state
+from src.analytics.underdog_metrics import quality_tier_for_confidence
+from src.config import get as get_setting
+from src.notifications.models import NotificationCategory, NotificationSeverity
+from src.notifications.service import create_notification
 from src.utils.timezone_utils import nba_today
 
 logger = logging.getLogger(__name__)
@@ -55,8 +74,38 @@ _CSRF_PROTECTED_ENDPOINTS = {
     "api_predict",
     "api_sync",
     "api_sync_odds_today",
+    "api_underdogs_alerts_dispatch",
     "api_shutdown",
     "api_deploy",
+}
+_UNDERDOG_TIERS = {"ALL", "A", "B", "C"}
+_UNDERDOG_PRESETS = {"all", "high_quality", "value_zone", "long_dogs", "balanced"}
+_UNDERDOG_SORT_FIELDS = {"rank_score", "confidence", "dog_payout", "edge", "start_time"}
+_UNDERDOG_PRESET_LABELS = {
+    "all": "All",
+    "high_quality": "High Quality",
+    "value_zone": "Value Zone",
+    "long_dogs": "Long Dogs",
+    "balanced": "Balanced",
+}
+_ADJUSTMENT_DISPLAY_NAMES = {
+    "fatigue": "Fatigue",
+    "turnover": "Turnovers",
+    "rebound": "Rebounds",
+    "rating_matchup": "Rating Matchup",
+    "ff_efg": "Effective FG%",
+    "ff_tov": "Turnover Rate",
+    "ff_oreb": "Off. Rebound%",
+    "ff_fta": "Free Throw Rate",
+    "ff_def_efg": "Opp. Effective FG%",
+    "ff_def_tov": "Opp. Turnover Rate",
+    "ff_def_oreb": "Opp. Off. Reb%",
+    "ff_def_fta": "Opp. Free Throw Rate",
+    "clutch": "Clutch Performance",
+    "hustle": "Hustle Stats",
+    "pace": "Pace Differential",
+    "sharp_money": "Sharp Money",
+    "sharp_ml": "Sharp Money",
 }
 
 
@@ -133,24 +182,822 @@ def _json_error(message: str, status: int):
     return jsonify({"error": message}), status
 
 
+def _parse_bool_arg(raw: Optional[str], default: bool = False) -> bool:
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _safe_float_arg(raw: Any, default: float = 0.0) -> float:
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int_arg(
+    raw: Any,
+    default: int,
+    min_value: Optional[int] = None,
+    max_value: Optional[int] = None,
+) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+def _build_date_strip(today: str, selected_date: str, days: int = 7) -> List[Dict[str, Any]]:
+    today_dt = datetime.strptime(today, "%Y-%m-%d")
+    dates = []
+    for i in range(days):
+        day = today_dt + timedelta(days=i)
+        value = day.strftime("%Y-%m-%d")
+        dates.append({
+            "label": (
+                day.strftime("%a %-m/%d")
+                if os.name != "nt"
+                else day.strftime("%a %#m/%d")
+            ),
+            "value": value,
+            "is_active": value == selected_date,
+        })
+    return dates
+
+
+def _parse_underdog_filters() -> Dict[str, Any]:
+    preset = str(request.args.get("preset", "all")).strip().lower()
+    if preset not in _UNDERDOG_PRESETS:
+        preset = "all"
+
+    preset_defaults: Dict[str, Dict[str, Any]] = {
+        "all": {
+            "tier": "ALL",
+            "min_confidence": 0.0,
+            "min_payout": 0.0,
+            "value_only": False,
+            "include_sharp": False,
+            "sort_by": "rank_score",
+            "sort_dir": "desc",
+            "limit": 24,
+        },
+        "high_quality": {
+            "tier": "A",
+            "min_confidence": 70.0,
+            "min_payout": 1.7,
+            "value_only": False,
+            "include_sharp": True,
+            "sort_by": "confidence",
+            "sort_dir": "desc",
+            "limit": 24,
+        },
+        "value_zone": {
+            "tier": "ALL",
+            "min_confidence": 58.0,
+            "min_payout": 1.7,
+            "value_only": True,
+            "include_sharp": True,
+            "sort_by": "rank_score",
+            "sort_dir": "desc",
+            "limit": 24,
+        },
+        "long_dogs": {
+            "tier": "ALL",
+            "min_confidence": 55.0,
+            "min_payout": 3.0,
+            "value_only": False,
+            "include_sharp": True,
+            "sort_by": "dog_payout",
+            "sort_dir": "desc",
+            "limit": 40,
+        },
+        "balanced": {
+            "tier": "ALL",
+            "min_confidence": 60.0,
+            "min_payout": 1.9,
+            "value_only": False,
+            "include_sharp": True,
+            "sort_by": "rank_score",
+            "sort_dir": "desc",
+            "limit": 30,
+        },
+    }
+    defaults = preset_defaults[preset]
+
+    today = nba_today()
+    selected_date = request.args.get("date", today)
+    if not _MATCHUP_DATE_RE.match(selected_date or ""):
+        selected_date = today
+    else:
+        try:
+            datetime.strptime(selected_date, "%Y-%m-%d")
+        except ValueError:
+            selected_date = today
+
+    tier = str(request.args.get("tier", defaults["tier"])).upper()
+    if tier not in _UNDERDOG_TIERS:
+        tier = str(defaults["tier"])
+
+    min_confidence = _safe_float_arg(
+        request.args.get("min_confidence"),
+        float(defaults["min_confidence"]),
+    )
+    min_confidence = max(0.0, min(100.0, min_confidence))
+
+    min_payout = _safe_float_arg(
+        request.args.get("min_payout"),
+        float(defaults["min_payout"]),
+    )
+    min_payout = max(0.0, min_payout)
+
+    include_sharp = _parse_bool_arg(
+        request.args.get("include_sharp"),
+        default=bool(defaults["include_sharp"]),
+    )
+    value_only = _parse_bool_arg(
+        request.args.get("value_only"),
+        default=bool(defaults["value_only"]),
+    )
+    limit = _safe_int_arg(
+        request.args.get("limit"),
+        default=int(defaults["limit"]),
+        min_value=1,
+        max_value=200,
+    )
+
+    sort_by = str(request.args.get("sort_by", defaults["sort_by"])).strip().lower()
+    sort_aliases = {
+        "rank": "rank_score",
+        "score": "rank_score",
+        "edge_score": "rank_score",
+        "edge": "edge",
+        "game_score": "edge",
+        "start": "start_time",
+        "start_utc": "start_time",
+    }
+    sort_by = sort_aliases.get(sort_by, sort_by)
+    if sort_by not in _UNDERDOG_SORT_FIELDS:
+        sort_by = str(defaults["sort_by"])
+
+    sort_dir = str(request.args.get("sort_dir", defaults["sort_dir"])).strip().lower()
+    if sort_dir not in {"asc", "desc"}:
+        sort_dir = str(defaults["sort_dir"])
+
+    return {
+        "preset": preset,
+        "date": selected_date,
+        "tier": tier,
+        "min_confidence": min_confidence,
+        "min_payout": min_payout,
+        "include_sharp": include_sharp,
+        "value_only": value_only,
+        "sort_by": sort_by,
+        "sort_dir": sort_dir,
+        "limit": limit,
+    }
+
+
+def _adjustment_display_name(key: Any) -> str:
+    text = str(key or "").strip()
+    if not text:
+        return ""
+    return _ADJUSTMENT_DISPLAY_NAMES.get(text, text.replace("_", " ").title())
+
+
+def _build_pick_drivers(pred: Dict[str, Any], max_items: int = 3) -> List[Dict[str, Any]]:
+    raw_adjustments = pred.get("adjustments")
+    if not isinstance(raw_adjustments, dict):
+        return []
+
+    pick = str(pred.get("pick", "")).upper()
+    rows: List[Dict[str, Any]] = []
+    for key, value in raw_adjustments.items():
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if abs(numeric) < 0.05:
+            continue
+
+        direction = "home" if numeric > 0 else "away" if numeric < 0 else "neutral"
+        supports_pick = (
+            (pick == "HOME" and numeric > 0)
+            or (pick == "AWAY" and numeric < 0)
+        )
+        rows.append(
+            {
+                "key": str(key),
+                "label": _adjustment_display_name(key),
+                "value": round(numeric, 2),
+                "direction": direction,
+                "supports_pick": supports_pick,
+                "abs_value": abs(numeric),
+            }
+        )
+
+    if not rows:
+        return []
+
+    rows.sort(
+        key=lambda row: (
+            1 if row["supports_pick"] else 0,
+            row["abs_value"],
+        ),
+        reverse=True,
+    )
+    top_rows = rows[: max(1, int(max_items))]
+    for row in top_rows:
+        row.pop("abs_value", None)
+    return top_rows
+
+
+def _build_caution_flags(pred: Dict[str, Any], drivers_count: int) -> List[Dict[str, Any]]:
+    flags: List[Dict[str, Any]] = []
+
+    confidence = max(0.0, min(100.0, _safe_float_arg(pred.get("confidence"), 0.0)))
+    edge = abs(_safe_float_arg(pred.get("game_score"), 0.0))
+    dog_payout = max(0.0, _safe_float_arg(pred.get("dog_payout"), 0.0))
+    is_value_zone = bool(pred.get("is_value_zone"))
+    sharp_agrees = pred.get("sharp_agrees")
+    home_public = _safe_float_arg(pred.get("ml_sharp_home_public"), 0.0)
+    home_money = _safe_float_arg(pred.get("ml_sharp_home_money"), 0.0)
+
+    if edge < 3.0:
+        flags.append({
+            "code": "EDGE_SIZE_RISK",
+            "severity": "high",
+            "label": "Thin model edge",
+            "detail": f"|score| {edge:.2f} < 3.0",
+        })
+    elif edge < 6.0:
+        flags.append({
+            "code": "EDGE_SIZE_RISK",
+            "severity": "medium",
+            "label": "Moderate edge only",
+            "detail": f"|score| {edge:.2f} < 6.0",
+        })
+
+    if confidence < 55.0:
+        flags.append({
+            "code": "LOW_CONFIDENCE",
+            "severity": "high",
+            "label": "Lower confidence tier",
+            "detail": f"{confidence:.0f}% < 55%",
+        })
+    elif confidence < 70.0:
+        flags.append({
+            "code": "MID_CONFIDENCE",
+            "severity": "medium",
+            "label": "Mid confidence tier",
+            "detail": f"{confidence:.0f}% < 70%",
+        })
+
+    if dog_payout <= 0:
+        flags.append({
+            "code": "MARKET_DATA_GAP",
+            "severity": "medium",
+            "label": "Missing moneyline payout",
+            "detail": "Dog payout unavailable",
+        })
+    elif dog_payout >= 4.0:
+        flags.append({
+            "code": "LONG_DOG_VOLATILITY",
+            "severity": "high",
+            "label": "Very long dog variance",
+            "detail": f"Payout {dog_payout:.2f}x",
+        })
+    elif dog_payout >= 3.0:
+        flags.append({
+            "code": "LONG_DOG_VOLATILITY",
+            "severity": "medium",
+            "label": "Long dog variance",
+            "detail": f"Payout {dog_payout:.2f}x",
+        })
+
+    if not is_value_zone:
+        flags.append({
+            "code": "OUTSIDE_VALUE_ZONE",
+            "severity": "low",
+            "label": "Outside value zone",
+            "detail": "Market spread not in value band",
+        })
+
+    if sharp_agrees is False:
+        divergence = abs(home_money - home_public)
+        flags.append({
+            "code": "SHARP_DISAGREEMENT",
+            "severity": "high" if divergence >= 10.0 else "medium",
+            "label": "Sharp money disagrees",
+            "detail": f"Split divergence {divergence:.0f}pp",
+        })
+    elif sharp_agrees is None and (home_public <= 0 or home_money <= 0):
+        flags.append({
+            "code": "SHARP_DATA_GAP",
+            "severity": "low",
+            "label": "Sharp split unavailable",
+            "detail": "Public/money split missing",
+        })
+
+    if drivers_count < 2:
+        flags.append({
+            "code": "WEAK_DRIVER_SIGNAL",
+            "severity": "medium",
+            "label": "Few strong model drivers",
+            "detail": f"{drivers_count} notable driver(s)",
+        })
+
+    return flags
+
+
+def _build_why_pick_payload(pred: Dict[str, Any]) -> Dict[str, Any]:
+    pick = str(pred.get("pick", "")).upper()
+    pick_team = pred.get("home_team") if pick == "HOME" else pred.get("away_team")
+    confidence = max(0.0, min(100.0, _safe_float_arg(pred.get("confidence"), 0.0)))
+    edge = abs(_safe_float_arg(pred.get("game_score"), 0.0))
+    dog_payout = max(0.0, _safe_float_arg(pred.get("dog_payout"), 0.0))
+
+    drivers = _build_pick_drivers(pred, max_items=3)
+    caution_flags = _build_caution_flags(pred, drivers_count=len(drivers))
+
+    top_driver = drivers[0] if drivers else None
+    top_driver_text = (
+        f" Top driver: {top_driver['label']} ({top_driver['value']:+.2f})."
+        if top_driver
+        else ""
+    )
+    summary = (
+        f"{pick_team or pick} underdog edge {edge:.1f} "
+        f"at {confidence:.0f}% confidence.{top_driver_text}"
+    ).strip()
+
+    sharp_divergence = None
+    if pred.get("ml_sharp_home_public") is not None and pred.get("ml_sharp_home_money") is not None:
+        sharp_divergence = (
+            _safe_float_arg(pred.get("ml_sharp_home_money"), 0.0)
+            - _safe_float_arg(pred.get("ml_sharp_home_public"), 0.0)
+        )
+
+    return {
+        "summary": summary,
+        "edge": {
+            "game_score": round(_safe_float_arg(pred.get("game_score"), 0.0), 3),
+            "confidence": round(confidence, 1),
+            "tier": pred.get("tier"),
+            "pick": pick,
+        },
+        "market": {
+            "vegas_spread": _safe_float_arg(pred.get("vegas_spread"), 0.0),
+            "is_value_zone": bool(pred.get("is_value_zone")),
+            "dog_payout": round(dog_payout, 3),
+        },
+        "sharp": {
+            "home_public_pct": _safe_float_arg(pred.get("ml_sharp_home_public"), 0.0),
+            "home_money_pct": _safe_float_arg(pred.get("ml_sharp_home_money"), 0.0),
+            "divergence_pct": sharp_divergence,
+            "agrees": pred.get("sharp_agrees"),
+        },
+        "drivers": drivers,
+        "caution_flags": caution_flags,
+    }
+
+
+def _score_underdog_candidate(pred: Dict[str, Any]) -> float:
+    confidence = max(0.0, min(100.0, _safe_float_arg(pred.get("confidence"), 0.0)))
+    dog_payout = max(0.0, _safe_float_arg(pred.get("dog_payout"), 0.0))
+    edge_magnitude = abs(_safe_float_arg(pred.get("game_score"), 0.0))
+    score = confidence
+    score += min(20.0, edge_magnitude * 0.9)
+    score += max(0.0, (dog_payout - 1.5) * 10.0)
+    if pred.get("is_value_zone"):
+        score += 6.0
+    return score
+
+
+def _rank_underdog_candidates(predictions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ranked: List[Dict[str, Any]] = []
+    for pred in predictions:
+        if not pred.get("is_dog_pick"):
+            continue
+        row = dict(pred)
+        confidence = max(0.0, min(100.0, _safe_float_arg(row.get("confidence"), 0.0)))
+        dog_payout = max(0.0, _safe_float_arg(row.get("dog_payout"), 0.0))
+        row["confidence"] = confidence
+        row["dog_payout"] = dog_payout
+        row["tier"] = quality_tier_for_confidence(confidence)
+        row["rank_score"] = round(_score_underdog_candidate(row), 2)
+        why_pick = _build_why_pick_payload(row)
+        row["why_pick"] = why_pick
+        row["caution_flags"] = why_pick.get("caution_flags", [])
+        row["drivers"] = why_pick.get("drivers", [])
+        ranked.append(row)
+
+    ranked.sort(
+        key=lambda row: (
+            row.get("rank_score", 0.0),
+            row.get("confidence", 0.0),
+            row.get("dog_payout", 0.0),
+        ),
+        reverse=True,
+    )
+    for idx, row in enumerate(ranked, start=1):
+        row["rank"] = idx
+    return ranked
+
+
+def _filter_ranked_underdogs(
+    ranked: List[Dict[str, Any]],
+    tier: str,
+    min_confidence: float,
+    min_payout: float,
+    value_only: bool,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    for row in ranked:
+        if tier != "ALL" and row.get("tier") != tier:
+            continue
+        if _safe_float_arg(row.get("confidence"), 0.0) < min_confidence:
+            continue
+        if _safe_float_arg(row.get("dog_payout"), 0.0) < min_payout:
+            continue
+        if value_only and not row.get("is_value_zone"):
+            continue
+        results.append(row)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _sort_ranked_underdogs(
+    ranked: List[Dict[str, Any]],
+    sort_by: str,
+    sort_dir: str,
+) -> List[Dict[str, Any]]:
+    reverse = sort_dir != "asc"
+    normalized = sort_by if sort_by in _UNDERDOG_SORT_FIELDS else "rank_score"
+
+    def key_for_row(row: Dict[str, Any]):
+        if normalized == "confidence":
+            return _safe_float_arg(row.get("confidence"), 0.0)
+        if normalized == "dog_payout":
+            return _safe_float_arg(row.get("dog_payout"), 0.0)
+        if normalized == "edge":
+            return abs(_safe_float_arg(row.get("game_score"), 0.0))
+        if normalized == "start_time":
+            raw = str(row.get("start_utc") or "")
+            return raw if raw else "9999-12-31T23:59:59Z"
+        return _safe_float_arg(row.get("rank_score"), 0.0)
+
+    return sorted(ranked, key=key_for_row, reverse=reverse)
+
+
+def _summarize_screened_underdogs(screened: List[Dict[str, Any]]) -> Dict[str, Any]:
+    total = len(screened)
+    if total == 0:
+        return {
+            "count": 0,
+            "value_zone_count": 0,
+            "avg_confidence": 0.0,
+            "avg_payout": 0.0,
+            "avg_edge": 0.0,
+            "tier_counts": {"A": 0, "B": 0, "C": 0},
+        }
+
+    value_zone_count = sum(1 for row in screened if row.get("is_value_zone"))
+    tier_counts = {
+        "A": sum(1 for row in screened if row.get("tier") == "A"),
+        "B": sum(1 for row in screened if row.get("tier") == "B"),
+        "C": sum(1 for row in screened if row.get("tier") == "C"),
+    }
+    avg_confidence = sum(_safe_float_arg(row.get("confidence"), 0.0) for row in screened) / total
+    avg_payout = sum(_safe_float_arg(row.get("dog_payout"), 0.0) for row in screened) / total
+    avg_edge = (
+        sum(abs(_safe_float_arg(row.get("game_score"), 0.0)) for row in screened) / total
+    )
+    return {
+        "count": total,
+        "value_zone_count": value_zone_count,
+        "avg_confidence": round(avg_confidence, 2),
+        "avg_payout": round(avg_payout, 3),
+        "avg_edge": round(avg_edge, 3),
+        "tier_counts": tier_counts,
+    }
+
+
+def _filters_to_query_params(filters: Dict[str, Any]) -> Dict[str, str]:
+    return {
+        "preset": str(filters.get("preset", "all")),
+        "date": str(filters.get("date", nba_today())),
+        "tier": str(filters.get("tier", "ALL")),
+        "min_confidence": f"{_safe_float_arg(filters.get('min_confidence'), 0.0):.0f}",
+        "min_payout": f"{_safe_float_arg(filters.get('min_payout'), 0.0):.1f}",
+        "include_sharp": "1" if filters.get("include_sharp") else "0",
+        "value_only": "1" if filters.get("value_only") else "0",
+        "sort_by": str(filters.get("sort_by", "rank_score")),
+        "sort_dir": str(filters.get("sort_dir", "desc")),
+        "limit": str(_safe_int_arg(filters.get("limit"), 24, min_value=1, max_value=200)),
+    }
+
+
+def _underdog_alert_scope_key(filters: Dict[str, Any]) -> str:
+    canonical = {
+        "date": str(filters.get("date", nba_today())),
+        "preset": str(filters.get("preset", "all")),
+        "tier": str(filters.get("tier", "ALL")),
+        "min_confidence": round(_safe_float_arg(filters.get("min_confidence"), 0.0), 2),
+        "min_payout": round(_safe_float_arg(filters.get("min_payout"), 0.0), 3),
+        "include_sharp": bool(filters.get("include_sharp")),
+        "value_only": bool(filters.get("value_only")),
+    }
+    encoded = json.dumps(canonical, sort_keys=True).encode("utf-8")
+    digest = hashlib.sha1(encoded).hexdigest()[:16]
+    return f"{canonical['date']}:{digest}"
+
+
+def _underdog_alert_signal_key(alert: Dict[str, Any]) -> str:
+    game_date = str(alert.get("game_date", "")).strip()
+    away_ref = str(alert.get("away_team_id") or alert.get("away_team") or "").strip()
+    home_ref = str(alert.get("home_team_id") or alert.get("home_team") or "").strip()
+    pick = str(alert.get("pick", "")).strip().upper()
+    code = str(alert.get("code", "")).strip().upper()
+    return f"{game_date}:{away_ref}:{home_ref}:{pick}:{code}"
+
+
+def _with_underdog_alert_keys(alerts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    keyed: List[Dict[str, Any]] = []
+    for alert in alerts:
+        row = dict(alert)
+        row["signal_key"] = _underdog_alert_signal_key(row)
+        keyed.append(row)
+    return keyed
+
+
+def _severity_for_underdog_alert(priority: Any) -> str:
+    score = _safe_float_arg(priority, 0.0)
+    if score >= 90.0:
+        return NotificationSeverity.CRITICAL.value
+    if score >= 80.0:
+        return NotificationSeverity.WARNING.value
+    return NotificationSeverity.INFO.value
+
+
+def _dispatch_underdog_alert_notifications(
+    scope_key: str,
+    alert_state: Dict[str, Any],
+    notify_resolved: bool = False,
+) -> List[Dict[str, Any]]:
+    created: List[Dict[str, Any]] = []
+    new_alerts = alert_state.get("new_alerts", [])
+    if isinstance(new_alerts, list):
+        for alert in new_alerts:
+            confidence = _safe_float_arg(alert.get("confidence"), 0.0)
+            payout = _safe_float_arg(alert.get("dog_payout"), 0.0)
+            title = f"Underdog Alert: {alert.get('label', 'Signal')}"
+            message = (
+                f"{alert.get('away_team', '?')} @ {alert.get('home_team', '?')} - "
+                f"{str(alert.get('pick', '')).upper()} "
+                f"({confidence:.0f}%, {payout:.2f}x)"
+            )
+            payload = {
+                "scope_key": scope_key,
+                "signal_key": alert.get("signal_key"),
+                "state": "new",
+                "alert": alert,
+            }
+            notification_id = create_notification(
+                NotificationCategory.UNDERDOG.value,
+                _severity_for_underdog_alert(alert.get("priority")),
+                title,
+                message,
+                data=payload,
+            )
+            created.append({
+                "notification_id": notification_id,
+                "signal_key": alert.get("signal_key"),
+                "state": "new",
+            })
+
+    if notify_resolved:
+        resolved_alerts = alert_state.get("resolved_alerts", [])
+        if isinstance(resolved_alerts, list):
+            for alert in resolved_alerts:
+                title = "Underdog Alert Resolved"
+                message = (
+                    f"{alert.get('away_team', '?')} @ {alert.get('home_team', '?')} "
+                    f"{str(alert.get('pick', '')).upper()} signal resolved"
+                )
+                payload = {
+                    "scope_key": scope_key,
+                    "signal_key": alert.get("signal_key"),
+                    "state": "resolved",
+                    "alert": alert,
+                }
+                notification_id = create_notification(
+                    NotificationCategory.UNDERDOG.value,
+                    NotificationSeverity.INFO.value,
+                    title,
+                    message,
+                    data=payload,
+                )
+                created.append({
+                    "notification_id": notification_id,
+                    "signal_key": alert.get("signal_key"),
+                    "state": "resolved",
+                })
+    return created
+
+
+def _run_underdog_screen(filters: Dict[str, Any]) -> Dict[str, Any]:
+    selected_date = str(filters.get("date", nba_today()))
+    predictions = _get_games_for_date(
+        selected_date,
+        include_sharp=bool(filters.get("include_sharp")),
+    )
+    ranked_all = _rank_underdog_candidates(predictions)
+    sorted_rows = _sort_ranked_underdogs(
+        ranked_all,
+        sort_by=str(filters.get("sort_by", "rank_score")),
+        sort_dir=str(filters.get("sort_dir", "desc")),
+    )
+    screened = _filter_ranked_underdogs(
+        sorted_rows,
+        tier=str(filters.get("tier", "ALL")),
+        min_confidence=_safe_float_arg(filters.get("min_confidence"), 0.0),
+        min_payout=_safe_float_arg(filters.get("min_payout"), 0.0),
+        value_only=bool(filters.get("value_only")),
+        limit=_safe_int_arg(filters.get("limit"), 24, min_value=1, max_value=200),
+    )
+    for idx, row in enumerate(screened, start=1):
+        row["list_rank"] = idx
+    return {
+        "ranked_all": ranked_all,
+        "screened": screened,
+        "summary": _summarize_screened_underdogs(screened),
+    }
+
+
+def _build_underdog_digest_text(
+    selected_date: str,
+    filters: Dict[str, Any],
+    rows: List[Dict[str, Any]],
+    summary: Dict[str, Any],
+    alerts: List[Dict[str, Any]],
+) -> str:
+    lines = [
+        f"Underdog digest for {selected_date}",
+        (
+            f"Filters: preset={filters.get('preset')} tier={filters.get('tier')} "
+            f"min_conf={_safe_float_arg(filters.get('min_confidence'), 0.0):.0f}% "
+            f"min_payout={_safe_float_arg(filters.get('min_payout'), 0.0):.1f}x "
+            f"sort={filters.get('sort_by')}:{filters.get('sort_dir')}"
+        ),
+        (
+            f"Screened: {summary.get('count', 0)} | value-zone: "
+            f"{summary.get('value_zone_count', 0)} | "
+            f"avg_conf: {_safe_float_arg(summary.get('avg_confidence'), 0.0):.1f}% | "
+            f"avg_payout: {_safe_float_arg(summary.get('avg_payout'), 0.0):.2f}x"
+        ),
+        f"Alerts: {len(alerts)}",
+        "",
+        "Top underdogs:",
+    ]
+
+    for row in rows[: min(10, len(rows))]:
+        pick = str(row.get("pick", "")).upper()
+        pick_team = row.get("home_team") if pick == "HOME" else row.get("away_team")
+        why_pick = row.get("why_pick") if isinstance(row.get("why_pick"), dict) else {}
+        lines.append(
+            (
+                f"- #{row.get('list_rank', '?')} {row.get('away_team')} @ {row.get('home_team')}: "
+                f"{pick_team} ({_safe_float_arg(row.get('confidence'), 0.0):.0f}%, "
+                f"{_safe_float_arg(row.get('dog_payout'), 0.0):.2f}x, "
+                f"tier {row.get('tier')}, score {_safe_float_arg(row.get('rank_score'), 0.0):.1f}) "
+                f"- {why_pick.get('summary', '')}"
+            ).strip()
+        )
+
+    if alerts:
+        lines.append("")
+        lines.append("Alert candidates:")
+        for alert in alerts[: min(8, len(alerts))]:
+            lines.append(
+                (
+                    f"- {alert.get('label')}: {alert.get('away_team')} @ {alert.get('home_team')} "
+                    f"({float(alert.get('confidence', 0.0)):.0f}%, {float(alert.get('dog_payout', 0.0)):.2f}x)"
+                )
+            )
+
+    return "\n".join(lines)
+
+
+def _build_phase_acceptance_report_meta(raw_report: Any) -> Dict[str, Any]:
+    report_path = ""
+    latest_path = ""
+    if isinstance(raw_report, dict):
+        report_path = str(raw_report.get("report_path", "") or "").strip()
+        latest_path = str(raw_report.get("latest_path", "") or "").strip()
+
+    report_dir = str(
+        get_setting("weekly_frontier_report_dir", "data/reports") or "data/reports"
+    ).strip() or "data/reports"
+    default_latest = os.path.join(report_dir, "phase_acceptance_latest.json")
+    if not latest_path:
+        latest_path = default_latest
+    if not report_path:
+        report_path = latest_path
+
+    return {
+        "report_path": report_path,
+        "latest_path": latest_path,
+        "exists": bool(
+            (report_path and os.path.exists(report_path))
+            or (latest_path and os.path.exists(latest_path))
+        ),
+    }
+
+
+def _enrich_predictions_with_start_times(predictions: List[Dict[str, Any]], game_date: str):
+    if not predictions:
+        return
+
+    start_lookup: Dict[str, str] = {}
+    try:
+        from src.data.gamecast import fetch_espn_scoreboard
+
+        for game in fetch_espn_scoreboard(game_date):
+            key = f"{game.get('away_team', '')}@{game.get('home_team', '')}"
+            start_lookup[key] = str(game.get("date", "") or "")
+    except Exception as e:
+        logger.debug("ESPN start-time enrichment failed: %s", e)
+
+    missing_keys = []
+    for pred in predictions:
+        key = f"{pred.get('away_team', '')}@{pred.get('home_team', '')}"
+        start_utc = start_lookup.get(key, "")
+        pred["start_utc"] = start_utc
+        if not start_utc:
+            missing_keys.append(key)
+
+    if missing_keys:
+        try:
+            from src.data.nba_fetcher import fetch_nba_cdn_schedule
+
+            for game in fetch_nba_cdn_schedule():
+                if game.get("game_date") != game_date:
+                    continue
+                key = f"{game.get('away_team', '')}@{game.get('home_team', '')}"
+                if key in start_lookup and start_lookup[key]:
+                    continue
+                start_lookup[key] = str(game.get("game_time_utc", "") or "")
+        except Exception as e:
+            logger.debug("CDN start-time enrichment failed: %s", e)
+
+        for pred in predictions:
+            if pred.get("start_utc"):
+                continue
+            key = f"{pred.get('away_team', '')}@{pred.get('home_team', '')}"
+            pred["start_utc"] = start_lookup.get(key, "")
+
+    predictions.sort(
+        key=lambda pred: (
+            pred.get("start_utc") or "9999-12-31T23:59:59Z",
+            pred.get("away_team", ""),
+            pred.get("home_team", ""),
+        )
+    )
+
+
 # ──────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────
 
 def _get_todays_games() -> List[Dict[str, Any]]:
     """Fetch today's games from game_odds and run predictions."""
+    return _get_games_for_date(nba_today(), include_sharp=False)
+
+
+def _get_games_for_date(game_date: str, include_sharp: bool = False) -> List[Dict[str, Any]]:
+    """Fetch game_odds rows for a date and run predictions."""
     from src.database import db
-    from src.analytics.prediction import predict_matchup
     from src.analytics.stats_engine import get_team_abbreviations, get_team_names
 
-    today = nba_today()
     abbr_map = get_team_abbreviations()
     name_map = get_team_names()
 
     games = db.fetch_all(
         "SELECT home_team_id, away_team_id, spread, home_moneyline, away_moneyline "
         "FROM game_odds WHERE game_date = ?",
-        (today,),
+        (game_date,),
     )
 
     predictions = []
@@ -158,11 +1005,12 @@ def _get_todays_games() -> List[Dict[str, Any]]:
         home_id = g["home_team_id"]
         away_id = g["away_team_id"]
         try:
-            pred = predict_matchup(home_id, away_id, today)
-            pred_dict = asdict(pred)
-            # Add full team names for display
-            pred_dict["home_name"] = name_map.get(home_id, pred_dict.get("home_team", ""))
-            pred_dict["away_name"] = name_map.get(away_id, pred_dict.get("away_team", ""))
+            pred_dict = _run_prediction(
+                home_id,
+                away_id,
+                game_date,
+                include_sharp=include_sharp,
+            )
             predictions.append(pred_dict)
         except Exception as e:
             logger.warning("Failed to predict %s vs %s: %s", home_id, away_id, e)
@@ -174,18 +1022,20 @@ def _get_todays_games() -> List[Dict[str, Any]]:
                 "away_team": abbr_map.get(away_id, str(away_id)),
                 "home_name": name_map.get(home_id, ""),
                 "away_name": name_map.get(away_id, ""),
-                "game_date": today,
+                "game_date": game_date,
                 "pick": "",
                 "confidence": 0,
                 "projected_home_pts": 0,
                 "projected_away_pts": 0,
                 "is_dog_pick": False,
                 "is_value_zone": False,
+                "dog_payout": 0.0,
                 "game_score": 0,
                 "vegas_spread": g.get("spread") or 0,
                 "error": "Prediction unavailable",
             })
 
+    _enrich_predictions_with_start_times(predictions, game_date)
     return predictions
 
 
@@ -404,6 +1254,58 @@ def dashboard():
     )
 
 
+@app.route("/underdogs")
+def underdogs():
+    """Ranked underdog opportunities with date + quality filters."""
+    today = nba_today()
+    filters = _parse_underdog_filters()
+    selected_date = filters["date"]
+    dates = _build_date_strip(today, selected_date)
+
+    ranked = []
+    total_candidates = 0
+    summary = _summarize_screened_underdogs([])
+    alerts_preview: List[Dict[str, Any]] = []
+    alert_digest = build_underdog_alert_digest([], total_candidates=0)
+    error = None
+    try:
+        screened = _run_underdog_screen(filters)
+        ranked = screened["screened"]
+        total_candidates = len(screened["ranked_all"])
+        summary = screened["summary"]
+        alerts_preview = build_underdog_alert_candidates(ranked, max_items=6)
+        alert_digest = build_underdog_alert_digest(
+            alerts_preview,
+            total_candidates=total_candidates,
+        )
+    except Exception as e:
+        logger.error("Underdogs page error: %s", e, exc_info=True)
+        error = "Unable to load underdog opportunities right now."
+
+    export_query = urlencode(_filters_to_query_params(filters))
+    preset_options = [
+        {"value": key, "label": _UNDERDOG_PRESET_LABELS.get(key, key.title())}
+        for key in ("all", "high_quality", "value_zone", "long_dogs", "balanced")
+    ]
+
+    return render_template(
+        "underdogs.html",
+        predictions=ranked,
+        filters=filters,
+        today=today,
+        selected_date=selected_date,
+        dates=dates,
+        game_count=len(ranked),
+        total_candidates=total_candidates,
+        summary=summary,
+        alerts_preview=alerts_preview,
+        alert_digest=alert_digest,
+        export_query=export_query,
+        preset_options=preset_options,
+        error=error,
+    )
+
+
 @app.route("/matchup")
 def matchup_picker():
     """Game picker for matchup predictions — shows games for selected date."""
@@ -610,6 +1512,9 @@ def accuracy():
     """Backtest results with A/B comparison."""
     error = None
     results = None
+    phase_acceptance: Dict[str, Any] = {}
+    phase_acceptance_report = _build_phase_acceptance_report_meta({})
+    drift: Dict[str, Any] = {}
 
     try:
         from src.analytics.backtester import run_backtest
@@ -621,12 +1526,43 @@ def accuracy():
     fund = results.get("fundamentals", {}) if results else {}
     sharp = results.get("sharp", {}) if results else {}
     comparison = results.get("comparison", {}) if results else {}
+    if fund or sharp:
+        drift_raw = results.get("drift", {}) if isinstance(results, dict) else {}
+        if isinstance(drift_raw, dict) and drift_raw:
+            drift = drift_raw
+        else:
+            drift = {
+                "fundamentals": evaluate_underdog_drift(fund),
+                "sharp": evaluate_underdog_drift(sharp),
+            }
+
+        phase_acceptance_raw = (
+            results.get("phase_acceptance", {}) if isinstance(results, dict) else {}
+        )
+        if isinstance(phase_acceptance_raw, dict) and phase_acceptance_raw:
+            phase_acceptance = phase_acceptance_raw
+        else:
+            phase_acceptance = evaluate_phase_acceptance(
+                {
+                    "fundamentals": fund,
+                    "sharp": sharp,
+                    "comparison": comparison,
+                    "drift": drift,
+                }
+            )
+
+        phase_acceptance_report = _build_phase_acceptance_report_meta(
+            results.get("phase_acceptance_report", {}) if isinstance(results, dict) else {}
+        )
 
     return render_template(
         "accuracy.html",
         fund=fund,
         sharp=sharp,
         comparison=comparison,
+        drift=drift,
+        phase_acceptance=phase_acceptance,
+        phase_acceptance_report=phase_acceptance_report,
         error=error,
     )
 
@@ -667,6 +1603,235 @@ def api_predict():
     except Exception as e:
         logger.error("API predict error: %s", e, exc_info=True)
         return _json_error("Prediction failed. Please try again.", 500)
+
+
+@app.route("/api/underdogs")
+def api_underdogs():
+    """JSON underdog screener endpoint with ranking + filters."""
+    filters = _parse_underdog_filters()
+    selected_date = filters["date"]
+    try:
+        screened = _run_underdog_screen(filters)
+        ranked_all = screened["ranked_all"]
+        rows = screened["screened"]
+        summary = screened["summary"]
+        alerts = _with_underdog_alert_keys(
+            build_underdog_alert_candidates(rows, max_items=12)
+        )
+        alert_digest = build_underdog_alert_digest(
+            alerts,
+            total_candidates=len(ranked_all),
+        )
+        return jsonify({
+            "date": selected_date,
+            "filters": filters,
+            "total_candidates": len(ranked_all),
+            "count": len(rows),
+            "summary": summary,
+            "alerts": alerts,
+            "alert_digest": alert_digest,
+            "underdogs": rows,
+        })
+    except Exception as e:
+        logger.error("API underdogs error: %s", e, exc_info=True)
+        return _json_error("Unable to load underdog opportunities right now.", 500)
+
+
+@app.route("/api/underdogs/export.csv")
+def api_underdogs_export_csv():
+    """Export filtered underdog candidates as CSV."""
+    filters = _parse_underdog_filters()
+    selected_date = str(filters.get("date", nba_today()))
+    try:
+        screened = _run_underdog_screen(filters)
+        rows = screened["screened"]
+        output = io.StringIO()
+        fieldnames = [
+            "list_rank",
+            "rank",
+            "tier",
+            "home_team",
+            "away_team",
+            "pick",
+            "confidence",
+            "game_score",
+            "rank_score",
+            "dog_payout",
+            "is_value_zone",
+            "vegas_spread",
+            "start_utc",
+            "why_pick_summary",
+            "caution_flags",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            why_pick = row.get("why_pick") if isinstance(row.get("why_pick"), dict) else {}
+            caution_labels = [
+                str(flag.get("label", "")).strip()
+                for flag in row.get("caution_flags", [])
+                if isinstance(flag, dict) and str(flag.get("label", "")).strip()
+            ]
+            writer.writerow(
+                {
+                    "list_rank": row.get("list_rank", ""),
+                    "rank": row.get("rank", ""),
+                    "tier": row.get("tier", ""),
+                    "home_team": row.get("home_team", ""),
+                    "away_team": row.get("away_team", ""),
+                    "pick": row.get("pick", ""),
+                    "confidence": row.get("confidence", 0.0),
+                    "game_score": row.get("game_score", 0.0),
+                    "rank_score": row.get("rank_score", 0.0),
+                    "dog_payout": row.get("dog_payout", 0.0),
+                    "is_value_zone": bool(row.get("is_value_zone")),
+                    "vegas_spread": row.get("vegas_spread", 0.0),
+                    "start_utc": row.get("start_utc", ""),
+                    "why_pick_summary": why_pick.get("summary", ""),
+                    "caution_flags": "; ".join(caution_labels),
+                }
+            )
+
+        filename = f"underdogs_{selected_date}.csv"
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        logger.error("API underdogs CSV export error: %s", e, exc_info=True)
+        return _json_error("Unable to export underdog opportunities right now.", 500)
+
+
+@app.route("/api/underdogs/alerts")
+def api_underdogs_alerts():
+    """Alert-focused underdog endpoint using current screener filters."""
+    filters = _parse_underdog_filters()
+    selected_date = str(filters.get("date", nba_today()))
+    try:
+        screened = _run_underdog_screen(filters)
+        ranked_all = screened["ranked_all"]
+        rows = screened["screened"]
+        alerts = _with_underdog_alert_keys(
+            build_underdog_alert_candidates(rows, max_items=20)
+        )
+        digest = build_underdog_alert_digest(
+            alerts,
+            total_candidates=len(ranked_all),
+        )
+        return jsonify({
+            "date": selected_date,
+            "filters": filters,
+            "scope_key": _underdog_alert_scope_key(filters),
+            "alert_digest": digest,
+            "alerts": alerts,
+        })
+    except Exception as e:
+        logger.error("API underdogs alerts error: %s", e, exc_info=True)
+        return _json_error("Unable to load underdog alerts right now.", 500)
+
+
+@app.route("/api/underdogs/alerts/dispatch", methods=["POST"])
+def api_underdogs_alerts_dispatch():
+    """Persist alert state + dispatch notifications for newly detected signals."""
+    filters = _parse_underdog_filters()
+    selected_date = str(filters.get("date", nba_today()))
+    notify_resolved = _parse_bool_arg(request.args.get("notify_resolved"), default=False)
+    max_items = _safe_int_arg(
+        request.args.get("max_items"),
+        default=20,
+        min_value=1,
+        max_value=100,
+    )
+
+    try:
+        screened = _run_underdog_screen(filters)
+        ranked_all = screened["ranked_all"]
+        rows = screened["screened"]
+        alerts = _with_underdog_alert_keys(
+            build_underdog_alert_candidates(rows, max_items=max_items)
+        )
+        digest = build_underdog_alert_digest(
+            alerts,
+            total_candidates=len(ranked_all),
+        )
+        scope_key = _underdog_alert_scope_key(filters)
+        state = update_underdog_alert_state(
+            scope_key=scope_key,
+            game_date=selected_date,
+            alerts=alerts,
+            total_candidates=len(ranked_all),
+            digest=digest,
+        )
+        snapshot = persist_recommendation_snapshot(
+            game_date=selected_date,
+            scope_key=scope_key,
+            filters=filters,
+            rows=rows,
+            total_candidates=len(ranked_all),
+            summary=screened.get("summary"),
+            alert_digest=digest,
+        )
+        notifications = _dispatch_underdog_alert_notifications(
+            scope_key=scope_key,
+            alert_state=state,
+            notify_resolved=notify_resolved,
+        )
+        return jsonify(
+            {
+                "date": selected_date,
+                "filters": filters,
+                "scope_key": scope_key,
+                "total_candidates": len(ranked_all),
+                "count": len(rows),
+                "summary": screened.get("summary", {}),
+                "alert_digest": digest,
+                "alerts": alerts,
+                "state": state,
+                "snapshot": snapshot,
+                "notifications": notifications,
+            }
+        )
+    except Exception as e:
+        logger.error("API underdogs alert dispatch error: %s", e, exc_info=True)
+        return _json_error("Unable to dispatch underdog alerts right now.", 500)
+
+
+@app.route("/api/underdogs/digest")
+def api_underdogs_digest():
+    """Text + JSON digest for automation scripts."""
+    filters = _parse_underdog_filters()
+    selected_date = str(filters.get("date", nba_today()))
+    try:
+        screened = _run_underdog_screen(filters)
+        ranked_all = screened["ranked_all"]
+        rows = screened["screened"]
+        summary = screened["summary"]
+        alerts = _with_underdog_alert_keys(
+            build_underdog_alert_candidates(rows, max_items=12)
+        )
+        digest = build_underdog_alert_digest(
+            alerts,
+            total_candidates=len(ranked_all),
+        )
+        text = _build_underdog_digest_text(
+            selected_date=selected_date,
+            filters=filters,
+            rows=rows,
+            summary=summary,
+            alerts=alerts,
+        )
+        return jsonify({
+            "date": selected_date,
+            "filters": filters,
+            "summary": summary,
+            "alert_digest": digest,
+            "alerts": alerts,
+            "digest_text": text,
+        })
+    except Exception as e:
+        logger.error("API underdogs digest error: %s", e, exc_info=True)
+        return _json_error("Unable to build underdog digest right now.", 500)
 
 
 # Background sync state
@@ -1436,22 +2601,4 @@ def pct_filter(value):
 @app.template_filter("adj_name")
 def adj_name_filter(key):
     """Convert adjustment key to display name."""
-    names = {
-        "fatigue": "Fatigue",
-        "turnover": "Turnovers",
-        "rebound": "Rebounds",
-        "rating_matchup": "Rating Matchup",
-        "ff_efg": "Effective FG%",
-        "ff_tov": "Turnover Rate",
-        "ff_oreb": "Off. Rebound%",
-        "ff_fta": "Free Throw Rate",
-        "ff_def_efg": "Opp. Effective FG%",
-        "ff_def_tov": "Opp. Turnover Rate",
-        "ff_def_oreb": "Opp. Off. Reb%",
-        "ff_def_fta": "Opp. Free Throw Rate",
-        "clutch": "Clutch Performance",
-        "hustle": "Hustle Stats",
-        "pace": "Pace Differential",
-        "sharp_money": "Sharp Money",
-    }
-    return names.get(key, key.replace("_", " ").title())
+    return _adjustment_display_name(key)

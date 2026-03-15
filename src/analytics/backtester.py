@@ -24,6 +24,7 @@ from src.analytics.prediction import (
 )
 from src.analytics.optimizer import VectorizedGames
 from src.analytics.thresholds import MODEL_PICK_EDGE_THRESHOLD, ACTUAL_WIN_THRESHOLD
+from src.analytics.underdog_metrics import summarize_underdog_quality
 from src.analytics.weight_config import WeightConfig, get_weight_config
 from src.analytics.stats_engine import get_team_abbreviations
 
@@ -39,7 +40,7 @@ _BACKTEST_CACHE_DIR = os.path.join(
 _BACKTEST_CACHE_TTL = 3600  # 1 hour
 ONE_POSSESSION_DOG_MARGIN = 3.0
 LONG_DOG_MIN_PAYOUT = 3.0
-_BACKTEST_METRICS_VERSION = 2
+_BACKTEST_METRICS_VERSION = 4
 
 # In-memory cache (module-level singleton)
 _mem_cache: Optional[Dict[str, Any]] = None
@@ -270,6 +271,7 @@ def _build_per_game_result(
 def _aggregate_from_per_game(per_game: List[Dict]) -> Dict[str, Any]:
     """Compute aggregate metrics from a list of per-game result dicts."""
     if not per_game:
+        quality_summary = summarize_underdog_quality([], total_games=0)
         return {
             "winner_pct": 0.0,
             "favorites_pct": 0.0,
@@ -289,6 +291,14 @@ def _aggregate_from_per_game(per_game: List[Dict]) -> Dict[str, Any]:
             "ml_win_rate": 0.0,
             "spread_mae": 0.0,
             "total_games": 0,
+            "upset_coverage_pct": quality_summary.get("coverage_pct", 0.0),
+            "upset_tier_metrics": quality_summary.get("tier_metrics", {}),
+            "upset_roi_by_odds_band": quality_summary.get("roi_by_odds_band", {}),
+            "upset_quality_frontier": quality_summary.get("quality_frontier", []),
+            "hit_rate_quality_observation": quality_summary.get(
+                "hit_rate_quality_observation",
+                "",
+            ),
         }
 
     total = len(per_game)
@@ -339,6 +349,19 @@ def _aggregate_from_per_game(per_game: List[Dict]) -> Dict[str, Any]:
         errors.append(abs(g["game_score"] - actual_spread))
     spread_mae = sum(errors) / max(1, len(errors))
 
+    upset_samples = [
+        {
+            "confidence": g.get("confidence", 0.0),
+            "edge_abs": abs(float(g.get("game_score", 0.0) or 0.0)),
+            "upset_correct": bool(g.get("upset_correct", False)),
+            "ml_profit": g.get("ml_profit", 0.0),
+            "ml_payout": g.get("ml_payout", 0.0),
+        }
+        for g in per_game
+        if g.get("is_upset_pick")
+    ]
+    quality_summary = summarize_underdog_quality(upset_samples, total_games=total)
+
     return {
         "winner_pct": winner_pct,
         "favorites_pct": favorites_pct,
@@ -358,6 +381,14 @@ def _aggregate_from_per_game(per_game: List[Dict]) -> Dict[str, Any]:
         "ml_win_rate": ml_win_rate,
         "spread_mae": spread_mae,
         "total_games": total,
+        "upset_coverage_pct": quality_summary.get("coverage_pct", 0.0),
+        "upset_tier_metrics": quality_summary.get("tier_metrics", {}),
+        "upset_roi_by_odds_band": quality_summary.get("roi_by_odds_band", {}),
+        "upset_quality_frontier": quality_summary.get("quality_frontier", []),
+        "hit_rate_quality_observation": quality_summary.get(
+            "hit_rate_quality_observation",
+            "",
+        ),
     }
 
 
@@ -603,6 +634,7 @@ def backtest_summary(results: Optional[Dict[str, Any]] = None,
         f"({f.get('upset_count', 0)} picks)",
         f"  Upset acc:     {f.get('upset_accuracy', 0):.1f}% "
         f"({f.get('upset_correct', 0)} correct)",
+        f"  Quality obs:   {f.get('hit_rate_quality_observation', 'n/a')}",
         f"  Comp dog rate: {f.get('competitive_dog_rate', 0):.1f}% "
         f"({f.get('competitive_dog_count', 0)} of {f.get('upset_count', 0)}), "
         f"margin <= {f.get('competitive_dog_margin', 7.5):.1f}",
@@ -622,6 +654,7 @@ def backtest_summary(results: Optional[Dict[str, Any]] = None,
         f"({s.get('upset_count', 0)} picks)",
         f"  Upset acc:     {s.get('upset_accuracy', 0):.1f}% "
         f"({s.get('upset_correct', 0)} correct)",
+        f"  Quality obs:   {s.get('hit_rate_quality_observation', 'n/a')}",
         f"  Comp dog rate: {s.get('competitive_dog_rate', 0):.1f}% "
         f"({s.get('competitive_dog_count', 0)} of {s.get('upset_count', 0)}), "
         f"margin <= {s.get('competitive_dog_margin', 7.5):.1f}",

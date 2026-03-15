@@ -1,7 +1,8 @@
-"""10-step pipeline orchestrator.
+"""11-step pipeline orchestrator.
 
-Steps: backup -> sync -> seed_arenas -> bbref_sync -> referee_sync -> elo_compute
-       -> precompute -> optimize_fundamentals -> optimize_sharp -> backtest
+Steps: backup -> sync -> settle_recommendations -> seed_arenas -> bbref_sync
+       -> referee_sync -> elo_compute -> precompute -> optimize_fundamentals
+       -> optimize_sharp -> backtest
 
 No disabled steps, no dead code. Each step receives (callback, is_cancelled) and
 returns a result dict. Pipeline state is persisted to data/pipeline_state.json
@@ -84,6 +85,21 @@ _SAVE_GATE_DETAIL_EXPORT_KEYS = (
     "use_roi_gate",
     "use_hybrid_loss_gate",
     "use_long_dog_tiebreak_gate",
+    "rolling_cv_enabled",
+    "rolling_cv_fold_count",
+    "baseline_cv_score",
+    "candidate_cv_score",
+    "ml_underdog_gate_enabled",
+    "ml_underdog_gate_applied",
+    "ml_underdog_gate_passed",
+    "ml_underdog_gate_reason",
+    "ml_underdog_gate_min_brier_lift",
+    "ml_underdog_gate_brier_lift",
+    "ml_underdog_gate_logloss_lift",
+    "ml_underdog_gate_baseline_brier",
+    "ml_underdog_gate_candidate_brier",
+    "ml_underdog_gate_baseline_logloss",
+    "ml_underdog_gate_candidate_logloss",
 )
 
 
@@ -221,6 +237,19 @@ def run_data_sync(callback=None, is_cancelled=None) -> Dict:
     return {"sync_result": "complete" if not failures else "partial", "sync_failures": failures}
 
 
+def run_recommendation_settlement(callback=None, is_cancelled=None) -> Dict:
+    """Step 2a: Backfill realized outcomes for persisted recommendations."""
+    from src.analytics.recommendation_outcomes import backfill_recommendation_outcomes
+
+    result = backfill_recommendation_outcomes(callback=callback)
+    if callback:
+        callback(
+            "Recommendation outcomes settled: "
+            f"{result.get('settled', 0)}/{result.get('pending', 0)}"
+        )
+    return result
+
+
 def run_seed_arenas(callback=None, is_cancelled=None) -> Dict:
     """Step 2b: Seed arena data (one-time, idempotent)."""
     if callback:
@@ -318,11 +347,71 @@ def run_optimize_sharp(callback=None, is_cancelled=None) -> Dict:
 def run_backtest_and_compare(callback=None, is_cancelled=None) -> Dict:
     """Step 7: Run A/B backtest (fundamentals vs sharp) with fresh data."""
     from src.analytics.backtester import run_backtest, invalidate_backtest_cache
+    from src.analytics.drift_monitor import evaluate_underdog_drift, write_weekly_frontier_report
+    from src.analytics.phase_gates import evaluate_phase_acceptance, write_phase_acceptance_report
 
     invalidate_backtest_cache()  # force recompute after optimization
     result = run_backtest(callback=callback)
+    fundamentals = result.get("fundamentals", {})
+    sharp = result.get("sharp", {})
+    fundamentals_drift = evaluate_underdog_drift(fundamentals)
+    sharp_drift = evaluate_underdog_drift(sharp)
+    report_paths = write_weekly_frontier_report(result)
+    result["drift"] = {
+        "fundamentals": fundamentals_drift,
+        "sharp": sharp_drift,
+        "triggered": bool(
+            fundamentals_drift.get("triggered") or sharp_drift.get("triggered")
+        ),
+    }
+    result["weekly_frontier_report"] = report_paths
+    phase_acceptance = evaluate_phase_acceptance(result)
+    phase_acceptance_paths = write_phase_acceptance_report(phase_acceptance)
+    result["phase_acceptance"] = phase_acceptance
+    result["phase_acceptance_report"] = phase_acceptance_paths
+
+    if callback:
+        callback(
+            "Drift monitor: "
+            f"fund_alerts={fundamentals_drift.get('alert_count', 0)}, "
+            f"sharp_alerts={sharp_drift.get('alert_count', 0)}"
+        )
+        callback(f"Weekly frontier report: {report_paths.get('report_path', '')}")
+        callback(
+            "Phase acceptance: "
+            f"{'PASS' if phase_acceptance.get('passed') else 'FAIL'} "
+            f"({phase_acceptance.get('failed_count', 0)} failed checks)"
+        )
+        callback(
+            f"Phase acceptance report: {phase_acceptance_paths.get('report_path', '')}"
+        )
+
     _mark_step_done("backtest")
     return result
+
+
+def run_weekly_retraining_evaluation(
+    max_hours: float = 6.0,
+    reset_weights: bool = False,
+    callback: Optional[Callable] = None,
+) -> Dict[str, Any]:
+    """Run weekly retraining loop then emit backtest drift/frontier report."""
+    overnight = run_overnight(
+        max_hours=max_hours,
+        reset_weights=reset_weights,
+        callback=callback,
+    )
+    backtest_result = run_backtest_and_compare(callback=callback)
+    return {
+        "overnight": overnight,
+        "backtest": backtest_result,
+        "drift": backtest_result.get("drift", {}),
+        "weekly_frontier_report": backtest_result.get("weekly_frontier_report", {}),
+        "phase_acceptance": backtest_result.get("phase_acceptance", {}),
+        "phase_acceptance_report": backtest_result.get(
+            "phase_acceptance_report", {}
+        ),
+    }
 
 
 # ──────────────────────────────────────────────────────────────
@@ -334,6 +423,7 @@ StepFunc = Callable[[Optional[Callable], Optional[Callable]], Dict]
 PIPELINE_STEPS: List[Tuple[str, StepFunc]] = [
     ("backup", backup_snapshot),
     ("sync", run_data_sync),
+    ("settle_recommendations", run_recommendation_settlement),
     # ── V2.1 sync steps ──
     ("seed_arenas", run_seed_arenas),
     ("bbref_sync", run_bbref_sync),

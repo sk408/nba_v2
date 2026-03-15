@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Dict, Optional
 
 from src.database import db
-from src.config import get_season
+from src.config import get as get_setting, get_season
 from src.data import nba_fetcher, injury_scraper
 
 logger = logging.getLogger(__name__)
@@ -183,7 +183,6 @@ def sync_player_game_logs(callback: Optional[Callable] = None, force: bool = Fal
     now = datetime.now()
 
     # Step-level freshness: skip if synced within configured hours (unless force)
-    from src.config import get as get_setting
     freshness_hours = int(get_setting("sync_freshness_hours", 4))
     if not force and _is_fresh("player_game_logs", freshness_hours):
         if callback:
@@ -514,17 +513,49 @@ def sync_player_impact(callback: Optional[Callable] = None, force: bool = False)
         callback("Fetching player on/off data per team...")
     team_rows = db.fetch_all("SELECT team_id FROM teams")
     on_off_map = {}
+    on_off_consecutive_failures = 0
+    on_off_failures = 0
+    max_on_off_failures = int(get_setting("nba_api_on_off_abort_after_failures", 0))
+    abort_on_off_loop = max_on_off_failures > 0
     for i, trow in enumerate(team_rows):
         tid = trow["team_id"]
+        if callback:
+            callback(f"On/off: {i + 1}/{len(team_rows)} teams (team_id={tid})...")
         data = nba_fetcher.fetch_player_on_off(tid)
+        if not data.get("_ok", True):
+            on_off_failures += 1
+            on_off_consecutive_failures += 1
+            if callback:
+                callback(
+                    f"On/off failed for team_id={tid} "
+                    f"({on_off_consecutive_failures} consecutive failures; likely timeout/rate-limit pressure)"
+                )
+            if abort_on_off_loop and on_off_consecutive_failures >= max_on_off_failures:
+                logger.warning(
+                    "Stopping on/off team loop after %d consecutive failures (configured threshold=%d).",
+                    on_off_consecutive_failures,
+                    max_on_off_failures,
+                )
+                if callback:
+                    callback(
+                        "On/off timeout/rate-limit streak threshold reached; "
+                        "stopping remaining team on/off fetches for this sync."
+                    )
+                break
+            continue
+        on_off_consecutive_failures = 0
         for rec in data.get("on", []):
             pid = int(rec.get("VS_PLAYER_ID", rec.get("PLAYER_ID", 0)))
             on_off_map.setdefault(pid, {})["on"] = rec
         for rec in data.get("off", []):
             pid = int(rec.get("VS_PLAYER_ID", rec.get("PLAYER_ID", 0)))
             on_off_map.setdefault(pid, {}).setdefault("off", rec)
-        if callback and (i + 1) % 10 == 0:
-            callback(f"On/off: {i + 1}/{len(team_rows)} teams...")
+
+    if callback and on_off_failures:
+        callback(
+            f"On/off fetch had {on_off_failures} failed team request(s); "
+            "continuing with available data."
+        )
 
     players = db.fetch_all("SELECT player_id, team_id FROM players")
     batch = []
