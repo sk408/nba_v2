@@ -1,0 +1,65 @@
+{
+  "generated_at": "2026-03-17T06:05:13+00:00",
+  "passed": true,
+  "failed_count": 0,
+  "checks": [
+    {
+      "id": "winner_pct_floor",
+      "label": "Winner accuracy floor",
+      "passed": true,
+      "actual": 65.0223,
+      "threshold": 60.0,
+      "operator": ">=",
+      "detail": "65.02 >= 60.00"
+    },
+    {
+      "id": "upset_coverage_floor",
+      "label": "Upset coverage floor",
+      "passed": true,
+      "actual": 24.3679,
+      "threshold": 20.0,
+      "operator": ">=",
+      "detail": "24.37 + 0.50 >= 20.00",
+      "threshold_target": 20.0,
+      "tolerance_pp": 0.5,
+      "effective_threshold": 19.5
+    },
+    {
+      "id": "tier_a_hit_rate_floor",
+      "label": "Tier A hit-rate floor",
+      "passed": true,
+      "actual": 60.0,
+      "threshold": 56.0,
+      "operator": ">=",
+      "detail": "60.00 >= 56.00"
+    },
+    {
+      "id": "ml_roi_floor",
+      "label": "Moneyline ROI floor",
+      "passed": true,
+      "actual": 2.3388,
+      "threshold": 0.0,
+      "operator": ">=",
+      "detail": "2.34 >= 0.00"
+    },
+    {
+      "id": "fund_drift_alert_budget",
+      "label": "Fundamentals drift-alert budget",
+      "passed": true,
+      "actual": 1.0,
+      "threshold": 1.0,
+      "operator": "<=",
+      "detail": "1.00 <= 1.00"
+    }
+  ],
+  "thresholds": {
+    "min_winner_pct": 60.0,
+    "min_upset_coverage_pct": 20.0,
+    "upset_coverage_tolerance_pp": 0.5,
+    "min_tier_a_hit_rate": 56.0,
+    "min_ml_roi": 0.0,
+    "max_fund_drift_alerts": 1.0
+  },
+  "failed_checks": [],
+  "report_date": "2026-03-17"
+}

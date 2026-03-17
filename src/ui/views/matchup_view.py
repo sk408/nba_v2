@@ -1319,11 +1319,23 @@ class MatchupView(QWidget):
         is_vz = result.get("is_value_zone", False)
         dog_payout = result.get("dog_payout", 0)
         vegas_sp = result.get("vegas_spread", 0)
+        vegas_home_ml = result.get("vegas_home_ml", 0)
+        vegas_away_ml = result.get("vegas_away_ml", 0)
+
+        market_parts = []
+        if vegas_sp:
+            market_parts.append(f"Spread: {vegas_sp:+.1f}")
+        if vegas_home_ml:
+            market_parts.append(f"Home ML: {vegas_home_ml:+d}")
+        if vegas_away_ml:
+            market_parts.append(f"Away ML: {vegas_away_ml:+d}")
+        market_segment = f"  |  {'  |  '.join(market_parts)}" if market_parts else ""
+        outside_value_note = " (outside value zone)" if vegas_sp else ""
 
         if is_dog and is_vz and dog_payout > 0:
             self._upset_badge.setText(
-                f"  UPSET PICK: {pick_team} ({dog_payout:.2f}x)  |  "
-                f"Vegas spread: {vegas_sp:+.1f}  |  Model edge: {game_score:+.1f}  "
+                f"  UPSET PICK: {pick_team} ({dog_payout:.2f}x)"
+                f"{market_segment}  |  Model edge: {game_score:+.1f}  "
             )
             self._upset_badge.setProperty("class", "badge-dog")
             self._upset_badge.style().unpolish(self._upset_badge)
@@ -1331,9 +1343,8 @@ class MatchupView(QWidget):
             self._upset_badge.setVisible(True)
         elif is_dog:
             self._upset_badge.setText(
-                f"  UPSET PICK: {pick_team}  |  "
-                f"Vegas spread: {vegas_sp:+.1f}  |  Model edge: {game_score:+.1f}  "
-                f"(outside value zone)"
+                f"  UPSET PICK: {pick_team}{market_segment}  |  "
+                f"Model edge: {game_score:+.1f}{outside_value_note}  "
             )
             self._upset_badge.setProperty("class", "badge-dog-outside")
             self._upset_badge.style().unpolish(self._upset_badge)
@@ -1347,8 +1358,6 @@ class MatchupView(QWidget):
         self._sharp_panel.update_data(ml_pub, ml_mon, sharp_agrees)
 
         # ── Vegas reference ──
-        vegas_home_ml = result.get("vegas_home_ml", 0)
-        vegas_away_ml = result.get("vegas_away_ml", 0)
         if vegas_sp or vegas_home_ml or vegas_away_ml:
             parts = []
             if vegas_sp:

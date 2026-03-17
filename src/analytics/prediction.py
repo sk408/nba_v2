@@ -195,6 +195,57 @@ class Prediction:
     score_calibration_mode: str = ""
 
 
+def _moneyline_payout_multiplier(ml_line: int) -> float:
+    """Return decimal payout multiplier from American odds line."""
+    if ml_line == 0:
+        return 0.0
+    if ml_line < 0:
+        return 1.0 + 100.0 / abs(ml_line)
+    return 1.0 + ml_line / 100.0
+
+
+def _classify_dog_pick(
+    game_score: float,
+    vegas_spread: float,
+    vegas_home_ml: int,
+    vegas_away_ml: int,
+) -> tuple[bool, bool, float]:
+    """Classify underdog/value signals from spread and moneyline context.
+
+    Moneyline is the primary source of favorite/underdog direction so upset
+    highlighting aligns with moneyline-first workflows.
+    Spread is only used as a fallback when moneyline is unavailable.
+    """
+    if abs(game_score) <= MODEL_PICK_EDGE_THRESHOLD:
+        return False, False, 0.0
+
+    model_favors_home = game_score > MODEL_PICK_EDGE_THRESHOLD
+    has_moneyline = vegas_home_ml != 0 and vegas_away_ml != 0
+    has_spread = vegas_spread != 0
+    is_value_zone = has_spread and 4.0 <= abs(vegas_spread) <= 12.0
+
+    favorite_home: Optional[bool]
+    if has_moneyline and vegas_home_ml != vegas_away_ml:
+        # Lower American odds line implies the favorite (e.g. -150 < +130).
+        favorite_home = vegas_home_ml < vegas_away_ml
+    elif has_spread:
+        # Home spread is from home-team perspective (negative => home favorite).
+        favorite_home = vegas_spread < 0
+    else:
+        favorite_home = None
+
+    if favorite_home is None:
+        return False, is_value_zone, 0.0
+
+    underdog_home = not favorite_home
+    is_dog_pick = model_favors_home == underdog_home
+    if not is_dog_pick or not has_moneyline:
+        return is_dog_pick, is_value_zone, 0.0
+
+    dog_ml = vegas_home_ml if model_favors_home else vegas_away_ml
+    return is_dog_pick, is_value_zone, _moneyline_payout_multiplier(dog_ml)
+
+
 def _resolve_tanking_feature_mode() -> str:
     """Return validated tanking feature mode: live, oracle, or both."""
     try:
@@ -1117,17 +1168,13 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
     pred.home_team = home_abbr
     pred.away_team = away_abbr
 
-    # Dog pick detection (using Vegas lines from GameInput)
-    vs = game.vegas_spread
-    if vs != 0 and abs(pred.game_score) > 0.5:
-        pred.is_dog_pick = (vs * pred.game_score > 0)
-        pred.is_value_zone = 4.0 <= abs(vs) <= 12.0
-        if pred.is_dog_pick and pred.vegas_home_ml != 0 and pred.vegas_away_ml != 0:
-            dog_ml = pred.vegas_away_ml if vs < 0 else pred.vegas_home_ml
-            if dog_ml < 0:
-                pred.dog_payout = 1.0 + 100.0 / abs(dog_ml)
-            else:
-                pred.dog_payout = 1.0 + dog_ml / 100.0
+    # Dog pick detection (moneyline-first, spread as fallback only).
+    pred.is_dog_pick, pred.is_value_zone, pred.dog_payout = _classify_dog_pick(
+        game_score=pred.game_score,
+        vegas_spread=pred.vegas_spread,
+        vegas_home_ml=pred.vegas_home_ml,
+        vegas_away_ml=pred.vegas_away_ml,
+    )
 
     pred.odds_fetched_at = odds_fetched_at
     return pred
