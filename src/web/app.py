@@ -70,6 +70,7 @@ _SHUTDOWN_TOKEN = os.environ.get("NBA_SHUTDOWN_TOKEN", "").strip()
 _DEPLOY_ENABLED = os.environ.get("NBA_DEPLOY_ENABLED", "0") == "1"
 _DEPLOY_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "deploy.sh")
 _DEPLOY_STATUS_FILE = os.path.join("data", "deploy_status.json")
+_STYLE_ASSET_PATH = os.path.join(os.path.dirname(__file__), "static", "style.css")
 _CSRF_PROTECTED_ENDPOINTS = {
     "api_predict",
     "api_sync",
@@ -117,12 +118,20 @@ def _ensure_csrf_token() -> str:
     return token
 
 
+def _asset_version(path: str) -> str:
+    try:
+        return str(int(os.path.getmtime(path)))
+    except OSError:
+        return "1"
+
+
 @app.context_processor
 def _inject_template_globals():
     return {
         "csrf_token": _ensure_csrf_token(),
         "shutdown_enabled": _SHUTDOWN_ENABLED,
         "deploy_enabled": _DEPLOY_ENABLED,
+        "style_version": _asset_version(_STYLE_ASSET_PATH),
     }
 
 
