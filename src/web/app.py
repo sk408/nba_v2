@@ -1906,19 +1906,21 @@ def api_sync_odds_today():
         today = nba_today()
 
         try:
-            from src.data.odds_sync import sync_odds_for_date
+            from src.data.odds_sync import sync_upcoming_odds
+            from src.utils.timezone_utils import nba_tomorrow
+
+            tomorrow = nba_tomorrow()
 
             missing_before = _count_missing_odds_for_today(today)
             if missing_before is not None:
                 _sync_status = (
-                    f"Odds-only sync running for {today} "
-                    f"({missing_before} missing matchup(s) detected)..."
+                    f"Odds sync running for {today} + {tomorrow} "
+                    f"({missing_before} missing matchup(s) for today)..."
                 )
             else:
-                _sync_status = f"Odds-only sync running for {today}..."
+                _sync_status = f"Odds sync running for {today} + {tomorrow}..."
 
-            saved_count = sync_odds_for_date(
-                today,
+            saved_count = sync_upcoming_odds(
                 callback=lambda msg: _update_sync_status(msg),
             )
             missing_after = _count_missing_odds_for_today(today)
@@ -1927,28 +1929,29 @@ def api_sync_odds_today():
                 filled = max(0, missing_before - missing_after)
                 if filled > 0:
                     _sync_status = (
-                        f"Odds sync complete. Filled {filled} missing matchup(s) for {today}."
+                        f"Odds sync complete. Filled {filled} missing matchup(s). "
+                        f"Updated {saved_count} game(s) for {today} + {tomorrow}."
                     )
                 elif missing_after == 0:
                     _sync_status = (
-                        f"Odds sync complete. Today's matchups already have odds for {today}."
+                        f"Odds sync complete. {saved_count} game(s) updated for {today} + {tomorrow}."
                     )
                 elif saved_count > 0:
                     _sync_status = (
                         f"Odds sync complete. Updated {saved_count} game(s); "
-                        f"{missing_after} matchup(s) still missing."
+                        f"{missing_after} matchup(s) still missing for today."
                     )
                 else:
                     _sync_status = (
-                        f"Odds sync complete. No new odds returned for {today}; "
-                        f"{missing_after} matchup(s) still missing."
+                        f"Odds sync complete. No new odds returned; "
+                        f"{missing_after} matchup(s) still missing for today."
                     )
             elif saved_count > 0:
-                _sync_status = f"Odds sync complete. Updated {saved_count} game(s) for {today}."
+                _sync_status = f"Odds sync complete. Updated {saved_count} game(s) for {today} + {tomorrow}."
             else:
-                _sync_status = f"Odds sync complete. No new odds returned for {today}."
+                _sync_status = f"Odds sync complete. No new odds returned."
         except Exception as e:
-            logger.error("Background odds-only sync error: %s", e, exc_info=True)
+            logger.error("Background odds sync error: %s", e, exc_info=True)
             _sync_status = "Odds sync failed. See server logs."
         finally:
             with _sync_lock:
@@ -1959,7 +1962,7 @@ def api_sync_odds_today():
 
     return jsonify({
         "status": "started",
-        "message": "Odds-only sync for today started in background",
+        "message": "Odds sync for today + tomorrow started in background",
     })
 
 

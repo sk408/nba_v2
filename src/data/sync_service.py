@@ -641,10 +641,17 @@ def sync_historical_odds(callback: Optional[Callable] = None, force: bool = Fals
 
     if callback:
         callback("Syncing historical Vegas odds...")
-        
+
     count = backfill_odds(callback=callback, force=force)
+
+    # Also sync upcoming games (today + tomorrow) for fresh sharp money
+    if callback:
+        callback("Syncing upcoming odds (today + tomorrow)...")
+    upcoming = sync_upcoming_odds(callback=callback)
+    count += upcoming
+
     _set_sync_meta("odds_sync", current_gc, _get_last_game_date())
-    
+
     if callback:
         callback(f"Odds sync complete: {count} games updated.")
 

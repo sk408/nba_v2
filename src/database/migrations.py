@@ -362,6 +362,7 @@ CREATE TABLE IF NOT EXISTS game_odds (
     ml_away_public INTEGER,
     ml_home_money INTEGER,
     ml_away_money INTEGER,
+    num_bets INTEGER,
     PRIMARY KEY (game_date, home_team_id, away_team_id),
     FOREIGN KEY (home_team_id) REFERENCES teams(team_id),
     FOREIGN KEY (away_team_id) REFERENCES teams(team_id)
@@ -482,6 +483,7 @@ def _run_column_migrations():
     _add_column_if_missing("player_impact", "ws_per_48", "REAL DEFAULT 0.0")
     # New feature column: spread movement
     _add_column_if_missing("game_odds", "spread_movement", "REAL DEFAULT 0.0")
+    _add_column_if_missing("game_odds", "num_bets", "INTEGER")
     _add_column_if_missing("player_stats", "team_id", "INTEGER")
     _add_column_if_missing("elo_ratings", "season", "TEXT DEFAULT ''")
     try:

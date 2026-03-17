@@ -9,6 +9,7 @@ from src.database import db
 from src.data.injury_scraper import sync_injuries
 from src.notifications.service import create_notification
 from src.notifications.models import NotificationCategory, NotificationSeverity
+from src.data.odds_sync import sync_upcoming_odds
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class InjuryMonitor:
         self._thread: Optional[threading.Thread] = None
         self._previous_state: Dict[int, Dict] = {}
         self._lock = threading.Lock()
+        self._odds_cycle = 0  # odds refresh every 3rd cycle (~15 min)
 
     def start(self):
         """Start the monitoring loop."""
@@ -123,6 +125,16 @@ class InjuryMonitor:
         # Update state
         with self._lock:
             self._previous_state = current_state
+
+        # Odds refresh — piggyback every 3rd cycle (~15 min)
+        self._odds_cycle += 1
+        if self._odds_cycle % 3 == 0:
+            try:
+                updated = sync_upcoming_odds()
+                if updated:
+                    logger.info("Odds monitor refreshed %d game(s)", updated)
+            except Exception as e:
+                logger.debug("Odds refresh failed: %s", e)
 
     def _get_severity(self, player: Dict) -> str:
         """Determine notification severity based on player impact."""
