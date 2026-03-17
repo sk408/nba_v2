@@ -98,6 +98,10 @@ class WeightConfig:
     onoff_impact_mult: float = 0.5
     onoff_reliability_lambda: float = 0.35
     road_trip_game_mult: float = 0.25
+    season_progress_mult: float = 0.8
+    roster_shock_mult: float = 1.2
+    tank_live_mult: float = 1.0
+    tank_oracle_mult: float = 0.4
     cum_travel_7d_mult: float = 0.75
     pace_mismatch_mult: float = 0.2
     fg3_luck_mult: float = 15.0
@@ -185,6 +189,10 @@ OPTIMIZER_RANGES = {
     "onoff_impact_mult": (0.0, 3.0),
     "onoff_reliability_lambda": (0.0, 2.5),
     "road_trip_game_mult": (0.0, 2.0),
+    "season_progress_mult": (0.0, 3.0),
+    "roster_shock_mult": (0.0, 4.0),
+    "tank_live_mult": (0.0, 5.0),
+    "tank_oracle_mult": (0.0, 5.0),
     "cum_travel_7d_mult": (0.0, 5.0),
     "pace_mismatch_mult": (0.0, 2.0),
     "fg3_luck_mult": (0.0, 50.0),
@@ -244,6 +252,10 @@ CD_RANGES = {
     "onoff_impact_mult": (0.0, 5.0),
     "onoff_reliability_lambda": (0.0, 4.0),
     "road_trip_game_mult": (0.0, 3.0),
+    "season_progress_mult": (0.0, 5.0),
+    "roster_shock_mult": (0.0, 6.0),
+    "tank_live_mult": (0.0, 7.0),
+    "tank_oracle_mult": (0.0, 7.0),
     "cum_travel_7d_mult": (0.0, 7.0),
     "pace_mismatch_mult": (0.0, 3.0),
     "fg3_luck_mult": (0.0, 75.0),

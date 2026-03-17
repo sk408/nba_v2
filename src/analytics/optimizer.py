@@ -15,9 +15,11 @@ compare_modes() A/B tests fundamentals-only vs fundamentals+sharp.
 """
 
 import hashlib
+import json
 import logging
 import os
 import random
+import threading
 import time
 from typing import List, Dict, Any, Optional, Callable, Tuple
 
@@ -52,6 +54,14 @@ logger = logging.getLogger(__name__)
 # passes so we don't reload 18K+ trials from disk every time.
 _study_cache: Dict[str, Any] = {}        # study_name -> optuna.Study
 _save_threads: Dict[str, Any] = {}       # study_name -> threading.Thread
+_stage_champion_bank_lock = threading.Lock()
+_stage_champion_bank_path = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "data",
+    "stage_champion_bank.json",
+)
+_stage_champion_modes = ("fundamentals", "sharp")
+_stage_champion_stages = ("core", "ff", "onoff", "joint_refine")
 
 # Walk-forward: train on first N% of games, validate on last (1-N)%.
 WALK_FORWARD_SPLIT = 0.80
@@ -91,6 +101,12 @@ def _objective_signature_blob() -> str:
     return "|".join(
         [
             f"upset_bonus:{_safe_float_setting('upset_bonus_mult', 0.5):.4f}",
+            f"onepos_credit_enabled:{int(_safe_bool_setting('optimizer_onepos_credit_enabled', True))}",
+            f"onepos_credit_margin:{_safe_float_setting('optimizer_onepos_credit_margin', ONE_POSSESSION_DOG_MARGIN):.4f}",
+            f"onepos_credit_all_w:{_safe_float_setting('optimizer_onepos_credit_all_dogs_weight', 0.5):.4f}",
+            f"onepos_credit_long_w:{_safe_float_setting('optimizer_onepos_credit_long_dogs_weight', 1.0):.4f}",
+            f"onepos_credit_affects_winner:{int(_safe_bool_setting('optimizer_onepos_credit_affects_winner_pct', True))}",
+            f"save_onepos_credit_bump_mult:{_safe_float_setting('optimizer_save_onepos_credit_bump_mult', 0.15):.4f}",
             f"target_cov:{_safe_float_setting('optimizer_objective_target_upset_coverage_pct', 20.0):.4f}",
             f"target_tier_a:{_safe_float_setting('optimizer_objective_target_tier_a_hit_rate', 56.0):.4f}",
             f"cov_short_mult:{_safe_float_setting('optimizer_objective_coverage_shortfall_mult', 0.20):.4f}",
@@ -110,6 +126,9 @@ def _objective_signature_blob() -> str:
             f"rolling_cv_min_train:{_safe_int_setting('optimizer_rolling_cv_min_train_games', 320)}",
             f"rolling_cv_val_games:{_safe_int_setting('optimizer_rolling_cv_val_games', 160)}",
             f"rolling_cv_worst_mult:{_safe_float_setting('optimizer_rolling_cv_worst_fold_mult', 0.40):.4f}",
+            f"objective_track:{str(get_setting('optimizer_objective_primary_track', 'dual_track'))}",
+            f"objective_dual_live_w:{_safe_float_setting('optimizer_objective_dual_live_weight', 0.70):.4f}",
+            f"tank_mode:{str(get_setting('optimizer_tanking_feature_mode', 'both'))}",
             f"wide_ranges:{int(_safe_bool_setting('optimizer_use_wide_ranges', False))}",
             f"tuning_mode:{str(get_setting('optimizer_tuning_mode', 'classic'))}",
             f"family_pen:{int(_safe_bool_setting('optimizer_objective_use_family_dominance_penalty', True))}",
@@ -185,6 +204,32 @@ def _rolling_cv_objective_loss(
     return robust_score, mean_loss, worst_loss
 
 
+def _normalize_objective_track(raw: Any) -> str:
+    """Normalize objective track mode to live/oracle/dual_track."""
+    mode = str(raw or "dual_track").strip().lower()
+    if mode in {"live", "oracle", "dual_track"}:
+        return mode
+    if mode in {"dual", "both"}:
+        return "dual_track"
+    return "dual_track"
+
+
+def _compose_objective_loss(
+    live_loss: float,
+    oracle_loss: float,
+    objective_track: str,
+    dual_live_weight: float,
+) -> float:
+    """Combine live/oracle objective losses based on configured track mode."""
+    if objective_track == "live":
+        return float(live_loss)
+    if objective_track == "oracle":
+        return float(oracle_loss)
+    live_w = float(np.clip(dual_live_weight, 0.0, 1.0))
+    oracle_w = 1.0 - live_w
+    return float(live_w * float(live_loss) + oracle_w * float(oracle_loss))
+
+
 def _max_weight_delta(a: WeightConfig, b: WeightConfig) -> float:
     """Return max absolute per-parameter delta between two weight configs."""
     da = a.to_dict()
@@ -208,6 +253,21 @@ def _shrunk_rate_pct(
     weight = max(0.0, float(prior_weight))
     shrunk = (float(successes) + prior_prob * weight) / (float(attempts) + weight)
     return float(np.clip(shrunk * 100.0, 0.0, 100.0))
+
+
+def _weighted_onepos_credit_count(
+    all_dog_near_miss_count: int,
+    long_dog_near_miss_count: int,
+    all_dogs_weight: float,
+    long_dogs_weight: float,
+) -> float:
+    """Return weighted near-miss credit count for upset picks."""
+    all_count = max(0, int(all_dog_near_miss_count))
+    long_count = max(0, min(all_count, int(long_dog_near_miss_count)))
+    non_long_count = max(0, all_count - long_count)
+    all_weight = max(0.0, float(all_dogs_weight))
+    long_weight = max(0.0, float(long_dogs_weight))
+    return float(non_long_count) * all_weight + float(long_count) * long_weight
 
 
 def _passes_robust_save_gate(
@@ -283,6 +343,10 @@ def _passes_robust_save_gate(
         "optimizer_save_long_dog_tiebreak_loss_window",
         0.01,
     )
+    onepos_credit_bump_mult = max(
+        0.0,
+        _safe_float_setting("optimizer_save_onepos_credit_bump_mult", 0.15),
+    )
 
     baseline_loss = float(baseline.get("loss", float("inf")))
     candidate_loss = float(candidate.get("loss", float("inf")))
@@ -312,6 +376,28 @@ def _passes_robust_save_gate(
 
     baseline_winner_pct = float(baseline.get("winner_pct", 0.0))
     candidate_winner_pct = float(candidate.get("winner_pct", 0.0))
+    baseline_winner_pct_raw = float(baseline.get("winner_pct_raw", baseline_winner_pct))
+    candidate_winner_pct_raw = float(
+        candidate.get("winner_pct_raw", candidate_winner_pct)
+    )
+    baseline_winner_pct_credit = float(
+        baseline.get("winner_pct_credit", baseline_winner_pct_raw)
+    )
+    candidate_winner_pct_credit = float(
+        candidate.get("winner_pct_credit", candidate_winner_pct_raw)
+    )
+    baseline_winner_credit_delta = float(
+        baseline.get(
+            "winner_pct_credit_delta",
+            baseline_winner_pct_credit - baseline_winner_pct_raw,
+        )
+    )
+    candidate_winner_credit_delta = float(
+        candidate.get(
+            "winner_pct_credit_delta",
+            candidate_winner_pct_credit - candidate_winner_pct_raw,
+        )
+    )
     favorites_pct = float(candidate.get("favorites_pct", 0.0))
 
     compression_ratio = float(candidate.get("compression_ratio", 0.0))
@@ -337,13 +423,22 @@ def _passes_robust_save_gate(
         relax_lift = max(0.0, shrunk_upset_lift - min_shrunk_upset_lift)
     else:
         relax_lift = 0.0
+    onepos_credit_lift = candidate_winner_credit_delta - baseline_winner_credit_delta
+    onepos_credit_bump_enabled = onepos_credit_bump_mult > 0.0
+    onepos_credit_bump_raw = (
+        max(0.0, onepos_credit_lift) * onepos_credit_bump_mult
+        if onepos_credit_bump_enabled
+        else 0.0
+    )
+    onepos_credit_bump_cap = max(0.0, min(6.0, winner_drop_tol * 4.0))
+    onepos_credit_bump = min(onepos_credit_bump_raw, onepos_credit_bump_cap)
     adaptive_winner_drop_tol = min(
-        winner_drop_tol + relax_lift * 0.35,
-        max(4.0, winner_drop_tol),
+        winner_drop_tol + relax_lift * 0.35 + onepos_credit_bump,
+        max(4.0, winner_drop_tol) + onepos_credit_bump_cap,
     )
     adaptive_favorites_slack = min(
-        favorites_slack + relax_lift * 1.25,
-        max(12.0, favorites_slack),
+        favorites_slack + relax_lift * 1.25 + onepos_credit_bump * 1.25,
+        max(12.0, favorites_slack) + onepos_credit_bump_cap * 1.25,
     )
     winner_guard = candidate_winner_pct >= (baseline_winner_pct - adaptive_winner_drop_tol)
     favorites_guard = candidate_winner_pct >= (favorites_pct - adaptive_favorites_slack)
@@ -525,6 +620,17 @@ def _passes_robust_save_gate(
         "favorites_slack": favorites_slack,
         "adaptive_winner_drop_tol": adaptive_winner_drop_tol,
         "adaptive_favorites_slack": adaptive_favorites_slack,
+        "onepos_credit_bump_mult": onepos_credit_bump_mult,
+        "onepos_credit_bump_enabled": onepos_credit_bump_enabled,
+        "onepos_credit_bump_cap": onepos_credit_bump_cap,
+        "onepos_credit_bump": onepos_credit_bump,
+        "baseline_winner_pct_raw": baseline_winner_pct_raw,
+        "candidate_winner_pct_raw": candidate_winner_pct_raw,
+        "baseline_winner_pct_credit": baseline_winner_pct_credit,
+        "candidate_winner_pct_credit": candidate_winner_pct_credit,
+        "baseline_winner_credit_delta": baseline_winner_credit_delta,
+        "candidate_winner_credit_delta": candidate_winner_credit_delta,
+        "onepos_credit_lift": onepos_credit_lift,
         "upset_relax_lift": relax_lift,
         "compression_floor": compression_floor,
         "min_upset_count": min_upset_count,
@@ -751,6 +857,14 @@ class VectorizedGames:
         self.away_letdown = np.array([float(g.away_letdown) for g in games])
         self.home_road_trip_game = np.array([g.home_road_trip_game for g in games], dtype=float)
         self.away_road_trip_game = np.array([g.away_road_trip_game for g in games], dtype=float)
+        self.home_season_progress = np.array([g.home_season_progress for g in games], dtype=float)
+        self.away_season_progress = np.array([g.away_season_progress for g in games], dtype=float)
+        self.home_tank_signal_live = np.array([g.home_tank_signal_live for g in games], dtype=float)
+        self.away_tank_signal_live = np.array([g.away_tank_signal_live for g in games], dtype=float)
+        self.home_tank_signal_oracle = np.array([g.home_tank_signal_oracle for g in games], dtype=float)
+        self.away_tank_signal_oracle = np.array([g.away_tank_signal_oracle for g in games], dtype=float)
+        self.home_roster_shock = np.array([g.home_roster_shock for g in games], dtype=float)
+        self.away_roster_shock = np.array([g.away_roster_shock for g in games], dtype=float)
         self.home_srs = np.array([g.home_srs for g in games])
         self.away_srs = np.array([g.away_srs for g in games])
         self.home_pythag_wpct = np.array([g.home_pythag_wpct for g in games], dtype=float)
@@ -805,6 +919,10 @@ class VectorizedGames:
         self._mov_diff = self.home_mov_trend - self.away_mov_trend
         self._injury_diff = self.away_injury_vorp - self.home_injury_vorp
         self._road_trip_diff = self.away_road_trip_game - self.home_road_trip_game
+        self._season_progress_diff = self.home_season_progress - self.away_season_progress
+        self._tank_live_diff = self.away_tank_signal_live - self.home_tank_signal_live
+        self._tank_oracle_diff = self.away_tank_signal_oracle - self.home_tank_signal_oracle
+        self._roster_shock_diff = self.away_roster_shock - self.home_roster_shock
         self._srs_diff = self.home_srs - self.away_srs
         self._pythag_diff = self.home_pythag_wpct - self.away_pythag_wpct
         self._home_onoff_signal = self.home_onoff
@@ -874,6 +992,29 @@ class VectorizedGames:
             0.0,
             _safe_float_setting("optimizer_competitive_dog_margin", 7.5),
         )
+        self._onepos_credit_enabled = _safe_bool_setting(
+            "optimizer_onepos_credit_enabled",
+            True,
+        )
+        self._onepos_credit_margin = max(
+            0.0,
+            _safe_float_setting(
+                "optimizer_onepos_credit_margin",
+                ONE_POSSESSION_DOG_MARGIN,
+            ),
+        )
+        self._onepos_credit_all_dogs_weight = max(
+            0.0,
+            _safe_float_setting("optimizer_onepos_credit_all_dogs_weight", 0.5),
+        )
+        self._onepos_credit_long_dogs_weight = max(
+            0.0,
+            _safe_float_setting("optimizer_onepos_credit_long_dogs_weight", 1.0),
+        )
+        self._onepos_credit_affects_winner_pct = _safe_bool_setting(
+            "optimizer_onepos_credit_affects_winner_pct",
+            True,
+        )
         self._long_dog_min_payout = max(
             1.0,
             _safe_float_setting("optimizer_save_long_dog_min_payout", LONG_DOG_MIN_PAYOUT),
@@ -905,6 +1046,13 @@ class VectorizedGames:
             0.0,
             _safe_float_setting("optimizer_objective_onoff_p95_cap", 25.0),
         )
+        self._tanking_feature_mode = str(
+            get_setting("optimizer_tanking_feature_mode", "both")
+        ).strip().lower()
+        if self._tanking_feature_mode not in {"live", "oracle", "both"}:
+            self._tanking_feature_mode = "both"
+        self._tank_use_live = self._tanking_feature_mode in {"live", "both"}
+        self._tank_use_oracle = self._tanking_feature_mode in {"oracle", "both"}
 
     def evaluate(self, w: WeightConfig, include_sharp: bool = False,
                  fast: bool = False) -> Dict[str, float]:
@@ -998,6 +1146,12 @@ class VectorizedGames:
         game_score += (-(self.home_lookahead * w.lookahead_penalty + self.home_letdown * w.letdown_penalty)
                        + (self.away_lookahead * w.lookahead_penalty + self.away_letdown * w.letdown_penalty))
         game_score += self._road_trip_diff * w.road_trip_game_mult
+        game_score += self._season_progress_diff * w.season_progress_mult
+        game_score += self._roster_shock_diff * w.roster_shock_mult
+        if self._tank_use_live:
+            game_score += self._tank_live_diff * w.tank_live_mult
+        if self._tank_use_oracle:
+            game_score += self._tank_oracle_diff * w.tank_oracle_mult
         game_score += self._srs_diff * w.srs_diff_mult
         game_score += self._pythag_diff * w.pythag_diff_mult
         onoff_lambda = max(0.0, float(getattr(w, "onoff_reliability_lambda", 0.0)))
@@ -1045,7 +1199,7 @@ class VectorizedGames:
         correct = ((pred_home_win & actual_home_win)
                     | (pred_away_win & actual_away_win)
                     | (actual_push & (np.abs(game_score) <= 3.0)))
-        winner_pct = float(np.mean(correct)) * 100.0
+        winner_pct_raw = float(np.mean(correct)) * 100.0
 
         # Vegas favorite direction (needed by both favorites_pct and upset detection)
         vegas_fav_home = self.vegas_spread < 0  # negative spread = home favored
@@ -1071,8 +1225,10 @@ class VectorizedGames:
                             | (~model_picks_home & actual_away_win)))
         upset_count = int(np.sum(model_picks_upset))
         upset_rate = float(upset_count) / max(1, self.n) * 100.0
-        upset_accuracy = float(np.sum(upset_correct)) / max(1, upset_count) * 100.0
         upset_correct_count = int(np.sum(upset_correct))
+        upset_accuracy_raw = (
+            float(upset_correct_count) / max(1, upset_count) * 100.0
+        )
         dog_actual_margin = np.where(vegas_fav_home, -self.actual_spread, self.actual_spread)
         competitive_dog = model_picks_upset & (
             dog_actual_margin >= -self._competitive_dog_margin
@@ -1102,6 +1258,63 @@ class VectorizedGames:
         long_dog_onepos_count = int(np.sum(long_dog_onepos))
         long_dog_onepos_rate = (
             float(long_dog_onepos_count) / max(1, long_dog_count) * 100.0
+        )
+        onepos_credit_near_miss = (
+            model_picks_upset
+            & (~upset_correct)
+            & (dog_actual_margin >= -self._onepos_credit_margin)
+        )
+        onepos_credit_near_miss_count = int(np.sum(onepos_credit_near_miss))
+        onepos_credit_near_miss_rate = (
+            float(onepos_credit_near_miss_count) / max(1, upset_count) * 100.0
+        )
+        long_dog_onepos_credit_near_miss = (
+            long_dog_pick
+            & (~upset_correct)
+            & (dog_actual_margin >= -self._onepos_credit_margin)
+        )
+        long_dog_onepos_credit_near_miss_count = int(
+            np.sum(long_dog_onepos_credit_near_miss)
+        )
+        long_dog_onepos_credit_near_miss_rate = (
+            float(long_dog_onepos_credit_near_miss_count) / max(1, long_dog_count) * 100.0
+        )
+        onepos_credit_weighted_count = _weighted_onepos_credit_count(
+            onepos_credit_near_miss_count,
+            long_dog_onepos_credit_near_miss_count,
+            self._onepos_credit_all_dogs_weight,
+            self._onepos_credit_long_dogs_weight,
+        )
+        onepos_credit_weighted_rate = (
+            float(onepos_credit_weighted_count) / max(1, upset_count) * 100.0
+        )
+        upset_accuracy_credit = float(
+            np.clip(
+                upset_accuracy_raw + onepos_credit_weighted_rate,
+                0.0,
+                100.0,
+            )
+        )
+        upset_accuracy_credit_delta = upset_accuracy_credit - upset_accuracy_raw
+        upset_accuracy = (
+            upset_accuracy_credit
+            if self._onepos_credit_enabled
+            else upset_accuracy_raw
+        )
+        winner_pct_credit_delta = (
+            float(onepos_credit_weighted_count) / max(1, self.n) * 100.0
+        )
+        winner_pct_credit = float(
+            np.clip(
+                winner_pct_raw + winner_pct_credit_delta,
+                0.0,
+                100.0,
+            )
+        )
+        winner_pct = (
+            winner_pct_credit
+            if (self._onepos_credit_enabled and self._onepos_credit_affects_winner_pct)
+            else winner_pct_raw
         )
 
         abs_game_score = np.abs(game_score)
@@ -1172,7 +1385,7 @@ class VectorizedGames:
 
         # ML ROI (diagnostic only — not in loss function, skip in fast mode)
         ml_roi = -4.54
-        ml_win_rate = winner_pct
+        ml_win_rate = winner_pct_raw
         ml_bet_count = 0
         ml_roi_lb95 = ml_roi
         spread_mae = 0.0
@@ -1257,9 +1470,15 @@ class VectorizedGames:
 
         return {
             "winner_pct": winner_pct,
+            "winner_pct_raw": winner_pct_raw,
+            "winner_pct_credit": winner_pct_credit,
+            "winner_pct_credit_delta": winner_pct_credit_delta,
             "favorites_pct": favorites_pct,
             "upset_rate": upset_rate,
             "upset_accuracy": upset_accuracy,
+            "upset_accuracy_raw": upset_accuracy_raw,
+            "upset_accuracy_credit": upset_accuracy_credit,
+            "upset_accuracy_credit_delta": upset_accuracy_credit_delta,
             "upset_correct_count": upset_correct_count,
             "upset_count": upset_count,
             "competitive_dog_rate": competitive_dog_rate,
@@ -1273,6 +1492,17 @@ class VectorizedGames:
             "long_dog_onepos_rate": long_dog_onepos_rate,
             "long_dog_min_payout": self._long_dog_min_payout,
             "long_dog_onepos_margin": self._long_dog_onepos_margin,
+            "onepos_credit_enabled": self._onepos_credit_enabled,
+            "onepos_credit_affects_winner_pct": self._onepos_credit_affects_winner_pct,
+            "onepos_credit_margin": self._onepos_credit_margin,
+            "onepos_credit_all_dogs_weight": self._onepos_credit_all_dogs_weight,
+            "onepos_credit_long_dogs_weight": self._onepos_credit_long_dogs_weight,
+            "onepos_credit_all_dogs_near_miss_count": onepos_credit_near_miss_count,
+            "onepos_credit_all_dogs_near_miss_rate": onepos_credit_near_miss_rate,
+            "onepos_credit_long_dogs_near_miss_count": long_dog_onepos_credit_near_miss_count,
+            "onepos_credit_long_dogs_near_miss_rate": long_dog_onepos_credit_near_miss_rate,
+            "onepos_credit_weighted_count": onepos_credit_weighted_count,
+            "onepos_credit_weighted_rate": onepos_credit_weighted_rate,
             "upset_coverage_pct": quality_summary.get("coverage_pct", upset_rate),
             "upset_tier_metrics": quality_summary.get("tier_metrics", {}),
             "upset_roi_by_odds_band": quality_summary.get("roi_by_odds_band", {}),
@@ -1437,6 +1667,350 @@ def _blocked_cycle_tag() -> str:
     return auto_tag
 
 
+def _empty_stage_champion_bank() -> Dict[str, Any]:
+    """Return empty persisted stage-champion structure."""
+    items = {
+        mode: {stage: [] for stage in _stage_champion_stages}
+        for mode in _stage_champion_modes
+    }
+    return {
+        "version": 1,
+        "updated_at": "",
+        "items": items,
+    }
+
+
+def _normalize_stage_champion_bank(data: Any) -> Dict[str, Any]:
+    """Normalize persisted champion-bank payload into expected shape."""
+    bank = _empty_stage_champion_bank()
+    if not isinstance(data, dict):
+        return bank
+    items = data.get("items", {})
+    if not isinstance(items, dict):
+        items = {}
+    for mode in _stage_champion_modes:
+        mode_items = items.get(mode, {})
+        if not isinstance(mode_items, dict):
+            mode_items = {}
+        for stage in _stage_champion_stages:
+            entries = mode_items.get(stage, [])
+            if not isinstance(entries, list):
+                entries = []
+            normalized_entries = []
+            for entry in entries:
+                if isinstance(entry, dict):
+                    weights = entry.get("best_weights")
+                    if isinstance(weights, dict):
+                        normalized_entries.append(dict(entry))
+            bank["items"][mode][stage] = normalized_entries
+    return bank
+
+
+def _load_stage_champion_bank() -> Dict[str, Any]:
+    """Load persistent stage champions from disk."""
+    with _stage_champion_bank_lock:
+        if not os.path.exists(_stage_champion_bank_path):
+            return _empty_stage_champion_bank()
+        try:
+            with open(_stage_champion_bank_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception:
+            logger.debug("Failed loading stage champion bank", exc_info=True)
+            return _empty_stage_champion_bank()
+        return _normalize_stage_champion_bank(payload)
+
+
+def _save_stage_champion_bank(bank: Dict[str, Any]) -> None:
+    """Persist stage champions to disk atomically."""
+    with _stage_champion_bank_lock:
+        normalized = _normalize_stage_champion_bank(bank)
+        normalized["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        os.makedirs(os.path.dirname(_stage_champion_bank_path) or ".", exist_ok=True)
+        tmp_path = _stage_champion_bank_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(normalized, f, indent=2)
+        os.replace(tmp_path, _stage_champion_bank_path)
+
+
+def _stage_champion_weight_hash(stage_name: str, weights: Dict[str, Any]) -> str:
+    """Create stable hash for champion dedupe."""
+    parts = [stage_name]
+    for key in sorted(weights.keys()):
+        try:
+            value = float(weights[key])
+        except Exception:
+            continue
+        if not np.isfinite(value):
+            continue
+        parts.append(f"{key}:{value:.12g}")
+    blob = "|".join(parts)
+    return hashlib.md5(blob.encode("utf-8")).hexdigest()
+
+
+def _sorted_stage_champion_entries(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sort champion entries by objective then val-loss then winner%."""
+    ranked = [dict(entry) for entry in entries if isinstance(entry, dict)]
+    ranked.sort(
+        key=lambda e: (
+            float(e.get("objective_selected_loss", 1.0e12)),
+            float(e.get("best_loss", 1.0e12)),
+            -float(e.get("best_winner_pct", 0.0)),
+        )
+    )
+    return ranked
+
+
+def _persist_stage_champion_candidate(
+    mode_key: str,
+    stage_name: str,
+    candidate: Dict[str, Any],
+    top_k: int,
+) -> Dict[str, Any]:
+    """Upsert stage champion candidate and keep only top_k entries."""
+    mode = str(mode_key or "").strip().lower()
+    stage = str(stage_name or "").strip().lower()
+    if mode not in _stage_champion_modes or stage not in _stage_champion_stages:
+        return {"updated": False, "rank": None, "count": 0}
+    if not isinstance(candidate, dict):
+        return {"updated": False, "rank": None, "count": 0}
+    weights = candidate.get("best_weights")
+    if not isinstance(weights, dict):
+        return {"updated": False, "rank": None, "count": 0}
+
+    try:
+        objective = float(candidate.get("objective_selected_loss", 1.0e12))
+    except Exception:
+        objective = 1.0e12
+    if not np.isfinite(objective):
+        objective = 1.0e12
+    try:
+        val_loss = float(candidate.get("best_loss", 1.0e12))
+    except Exception:
+        val_loss = 1.0e12
+    if not np.isfinite(val_loss):
+        val_loss = 1.0e12
+    try:
+        winner_pct = float(candidate.get("best_winner_pct", 0.0))
+    except Exception:
+        winner_pct = 0.0
+    if not np.isfinite(winner_pct):
+        winner_pct = 0.0
+
+    now_ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    weight_hash = _stage_champion_weight_hash(stage, weights)
+    incoming_entry = {
+        "stage": stage,
+        "stage_id": str(candidate.get("stage_id", "")),
+        "trials": int(max(0, int(candidate.get("trials", 0) or 0))),
+        "objective_selected_loss": objective,
+        "best_loss": val_loss,
+        "best_winner_pct": winner_pct,
+        "best_weights": dict(weights),
+        "weight_hash": weight_hash,
+        "updated_at": now_ts,
+        "created_at": now_ts,
+    }
+
+    bank = _load_stage_champion_bank()
+    entries = list(bank["items"][mode][stage])
+    existing_idx = None
+    for idx, entry in enumerate(entries):
+        if str(entry.get("weight_hash", "")) == weight_hash:
+            existing_idx = idx
+            break
+
+    updated = False
+    if existing_idx is None:
+        entries.append(incoming_entry)
+        updated = True
+    else:
+        existing = dict(entries[existing_idx])
+        existing_created = str(existing.get("created_at", "")) or now_ts
+        old_tuple = (
+            float(existing.get("objective_selected_loss", 1.0e12)),
+            float(existing.get("best_loss", 1.0e12)),
+            -float(existing.get("best_winner_pct", 0.0)),
+        )
+        new_tuple = (objective, val_loss, -winner_pct)
+        if new_tuple < old_tuple:
+            existing.update(incoming_entry)
+            existing["created_at"] = existing_created
+            entries[existing_idx] = existing
+            updated = True
+        else:
+            existing["updated_at"] = now_ts
+            existing["stage_id"] = incoming_entry["stage_id"]
+            existing["trials"] = incoming_entry["trials"]
+            entries[existing_idx] = existing
+            updated = True
+
+    limit = max(1, int(top_k))
+    entries = _sorted_stage_champion_entries(entries)[:limit]
+    bank["items"][mode][stage] = entries
+    if updated:
+        _save_stage_champion_bank(bank)
+
+    rank = None
+    for idx, entry in enumerate(entries, start=1):
+        if str(entry.get("weight_hash", "")) == weight_hash:
+            rank = idx
+            break
+    return {
+        "updated": bool(updated),
+        "rank": rank,
+        "count": len(entries),
+    }
+
+
+def _get_stage_champion_entries(
+    mode_key: str,
+    stage_name: str,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Return top-N persistent champions for mode/stage."""
+    mode = str(mode_key or "").strip().lower()
+    stage = str(stage_name or "").strip().lower()
+    if mode not in _stage_champion_modes or stage not in _stage_champion_stages:
+        return []
+    bank = _load_stage_champion_bank()
+    entries = bank["items"][mode][stage]
+    if not isinstance(entries, list):
+        return []
+    sorted_entries = _sorted_stage_champion_entries(entries)
+    max_items = max(0, int(limit))
+    if max_items <= 0:
+        return []
+    return sorted_entries[:max_items]
+
+
+def _build_stage_champion_seed_trials(
+    optuna_module: Any,
+    *,
+    mode_key: str,
+    stage_name: str,
+    ranges: Dict[str, Tuple[float, float]],
+    baseline_weights: WeightConfig,
+    max_entries: int,
+) -> List[Any]:
+    """Build synthetic completed trials from persistent stage champions."""
+    entries = _get_stage_champion_entries(mode_key, stage_name, max_entries)
+    if not entries:
+        return []
+
+    distributions = {
+        key: optuna_module.distributions.FloatDistribution(float(lo), float(hi))
+        for key, (lo, hi) in ranges.items()
+    }
+    baseline_dict = baseline_weights.to_dict()
+    out = []
+    for entry in entries:
+        weights = entry.get("best_weights", {})
+        if not isinstance(weights, dict):
+            continue
+        params = {}
+        for key, (lo, hi) in ranges.items():
+            base_v = float(baseline_dict.get(key, lo))
+            try:
+                raw_v = float(weights.get(key, base_v))
+            except Exception:
+                raw_v = base_v
+            if not np.isfinite(raw_v):
+                raw_v = base_v
+            params[key] = float(np.clip(raw_v, float(lo), float(hi)))
+        try:
+            trial_value = float(entry.get("objective_selected_loss", 1.0e12))
+        except Exception:
+            trial_value = 1.0e12
+        if not np.isfinite(trial_value):
+            trial_value = 1.0e12
+        try:
+            out.append(
+                optuna_module.trial.create_trial(
+                    params=params,
+                    distributions=distributions,
+                    value=trial_value,
+                    user_attrs={
+                        "seed_source": "stage_champion_bank",
+                        "seed_mode": mode_key,
+                        "seed_stage": stage_name,
+                        "seed_weight_hash": str(entry.get("weight_hash", "")),
+                    },
+                )
+            )
+        except Exception:
+            logger.debug("Failed creating champion seed trial", exc_info=True)
+    return out
+
+
+def clear_stage_champion_bank(reason: str = "") -> bool:
+    """Clear persisted stage champion bank."""
+    try:
+        _save_stage_champion_bank(_empty_stage_champion_bank())
+        if reason:
+            logger.info("Cleared stage champion bank (%s)", reason)
+        else:
+            logger.info("Cleared stage champion bank")
+        return True
+    except Exception:
+        logger.exception("Failed to clear stage champion bank")
+        return False
+
+
+def _blocked_candidate_snapshot(
+    stage_name: str,
+    stage_id: str,
+    trials: int,
+    stage_result: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Normalize a blocked-stage winner into a comparable candidate snapshot."""
+    weights = stage_result.get("best_weights")
+    if not isinstance(weights, dict):
+        return None
+    missing_loss = 1.0e12
+
+    def _safe_metric(value: Any, fallback: float) -> float:
+        try:
+            metric = float(value)
+        except Exception:
+            return float(fallback)
+        if not np.isfinite(metric):
+            return float(fallback)
+        return metric
+
+    selected_objective = _safe_metric(
+        stage_result.get("objective_selected_loss", stage_result.get("objective_loss")),
+        missing_loss,
+    )
+    val_loss = _safe_metric(stage_result.get("best_loss"), missing_loss)
+    winner_pct = _safe_metric(stage_result.get("best_winner_pct"), 0.0)
+    return {
+        "stage": stage_name,
+        "stage_id": stage_id,
+        "trials": int(max(0, trials)),
+        "objective_selected_loss": selected_objective,
+        "best_loss": val_loss,
+        "best_winner_pct": winner_pct,
+        "best_weights": dict(weights),
+    }
+
+
+def _rank_blocked_candidates(
+    candidates: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Rank blocked candidates by objective, then val loss, then winner%."""
+    ranked = [dict(c) for c in candidates if isinstance(c, dict)]
+    ranked.sort(
+        key=lambda c: (
+            float(c.get("objective_selected_loss", 1.0e12)),
+            float(c.get("best_loss", 1.0e12)),
+            -float(c.get("best_winner_pct", 0.0)),
+        )
+    )
+    for idx, candidate in enumerate(ranked, start=1):
+        candidate["rank"] = idx
+    return ranked
+
+
 def optimize_weights(
     games: List[GameInput],
     n_trials: int = 3000,
@@ -1446,6 +2020,8 @@ def optimize_weights(
     *,
     baseline_override: Optional[WeightConfig] = None,
     param_ranges_override: Optional[Dict[str, Tuple[float, float]]] = None,
+    candidate_override: Optional[WeightConfig] = None,
+    champion_bank_stage: Optional[str] = None,
     skip_save: bool = False,
     _internal_blocked: bool = False,
     stage_label: str = "main",
@@ -1457,6 +2033,9 @@ def optimize_weights(
     are only saved when they also improve on the held-out validation set.
 
     Save gate: anti-gaming validation gate blends loss, ROI, and upset lift.
+    candidate_override: optional pre-selected weights to evaluate/promote
+    through the same walk-forward + gate stack without new trial selection.
+    champion_bank_stage: blocked stage key used for persistent champion seeding.
     """
     # Walk-forward split
     sorted_games = sorted(games, key=lambda g: g.game_date)
@@ -1477,6 +2056,22 @@ def optimize_weights(
         and param_ranges_override is None
         and not skip_save
     ):
+        stage_champion_bank_enabled = _safe_bool_setting(
+            "optimizer_stage_champion_bank_enabled",
+            True,
+        )
+        stage_champion_bank_top_k = max(
+            1,
+            _safe_int_setting("optimizer_stage_champion_bank_top_k", 100),
+        )
+        preserve_stage_champions = _safe_bool_setting(
+            "optimizer_blocked_preserve_stage_champions",
+            True,
+        )
+        champion_log_top_k = max(
+            1,
+            _safe_int_setting("optimizer_blocked_champion_log_top_k", 4),
+        )
         baseline_root = baseline_override if baseline_override is not None else get_weight_config()
         active_ranges, active_range_profile = _select_optimizer_ranges(include_sharp)
         ff_keys = {k for k in _FF_FAMILY_KEYS if k in active_ranges}
@@ -1506,9 +2101,15 @@ def optimize_weights(
                 f"onoff={trial_alloc.get('onoff', 0)}, "
                 f"joint_refine={trial_alloc.get('joint_refine', 0)}"
             )
+            callback(
+                "Stage champion bank: "
+                f"{'enabled' if stage_champion_bank_enabled else 'disabled'} "
+                f"(top_k={stage_champion_bank_top_k})"
+            )
 
         stage_current = baseline_root
         stage_summaries: List[Dict[str, Any]] = []
+        stage_candidates: List[Dict[str, Any]] = []
         for stage_name in ("core", "ff", "onoff"):
             this_ranges = stage_ranges.get(stage_name)
             this_trials = int(trial_alloc.get(stage_name, 0))
@@ -1531,6 +2132,7 @@ def optimize_weights(
                 skip_save=True,
                 _internal_blocked=True,
                 stage_label=stage_id,
+                champion_bank_stage=stage_name,
             )
             stage_best = stage_result.get("best_weights")
             if isinstance(stage_best, dict):
@@ -1544,6 +2146,27 @@ def optimize_weights(
                     "best_winner_pct": stage_result.get("best_winner_pct"),
                 }
             )
+            stage_candidate = _blocked_candidate_snapshot(
+                stage_name=stage_name,
+                stage_id=stage_id,
+                trials=this_trials,
+                stage_result=stage_result,
+            )
+            if stage_candidate is not None:
+                stage_candidates.append(stage_candidate)
+                if stage_champion_bank_enabled:
+                    persist_info = _persist_stage_champion_candidate(
+                        mode_key=mode_prefix,
+                        stage_name=stage_name,
+                        candidate=stage_candidate,
+                        top_k=stage_champion_bank_top_k,
+                    )
+                    if callback and bool(persist_info.get("updated", False)):
+                        callback(
+                            f"[blocked] bank update {stage_name}: "
+                            f"rank #{persist_info.get('rank', '-')}, "
+                            f"kept {persist_info.get('count', 0)}/{stage_champion_bank_top_k}"
+                        )
 
         radius_fraction = float(
             np.clip(
@@ -1564,7 +2187,8 @@ def optimize_weights(
                 f"[blocked:joint_refine] trust-region radius={radius_fraction:.2f}, "
                 f"params={len(joint_ranges)}, trials={joint_trials}"
             )
-        final_result = optimize_weights(
+        joint_skip_save = bool(preserve_stage_champions)
+        joint_result = optimize_weights(
             games,
             n_trials=joint_trials,
             include_sharp=include_sharp,
@@ -1572,10 +2196,100 @@ def optimize_weights(
             is_cancelled=is_cancelled,
             baseline_override=baseline_root,
             param_ranges_override=joint_ranges,
-            skip_save=False,
+            skip_save=joint_skip_save,
             _internal_blocked=True,
             stage_label=joint_id,
+            champion_bank_stage="joint_refine",
         )
+        joint_candidate = _blocked_candidate_snapshot(
+            stage_name="joint_refine",
+            stage_id=joint_id,
+            trials=joint_trials,
+            stage_result=joint_result,
+        )
+        if joint_candidate is not None:
+            stage_candidates.append(joint_candidate)
+            if stage_champion_bank_enabled:
+                persist_info = _persist_stage_champion_candidate(
+                    mode_key=mode_prefix,
+                    stage_name="joint_refine",
+                    candidate=joint_candidate,
+                    top_k=stage_champion_bank_top_k,
+                )
+                if callback and bool(persist_info.get("updated", False)):
+                    callback(
+                        "[blocked] bank update joint_refine: "
+                        f"rank #{persist_info.get('rank', '-')}, "
+                        f"kept {persist_info.get('count', 0)}/{stage_champion_bank_top_k}"
+                    )
+
+        ranked_candidates = _rank_blocked_candidates(stage_candidates)
+        promoted_stage = "joint_refine"
+        final_result = joint_result
+
+        if callback and ranked_candidates:
+            callback(
+                f"[blocked] candidate playoff: {len(ranked_candidates)} stage champions retained"
+            )
+            for candidate in ranked_candidates[:champion_log_top_k]:
+                callback(
+                    f"  [blocked] #{int(candidate.get('rank', 0))} "
+                    f"{candidate.get('stage', 'n/a')} "
+                    f"objective={float(candidate.get('objective_selected_loss', 1.0e12)):.3f}, "
+                    f"val_loss={float(candidate.get('best_loss', 1.0e12)):.3f}, "
+                    f"winner={float(candidate.get('best_winner_pct', 0.0)):.1f}%"
+                )
+
+        if preserve_stage_champions and ranked_candidates:
+            champion = ranked_candidates[0]
+            champion_weights = champion.get("best_weights")
+            if isinstance(champion_weights, dict):
+                promoted_stage = str(champion.get("stage", "joint_refine"))
+                if callback:
+                    callback(
+                        "[blocked] promoting champion from "
+                        f"{promoted_stage} pathway through save gate"
+                    )
+                final_result = optimize_weights(
+                    games,
+                    n_trials=0,
+                    include_sharp=include_sharp,
+                    callback=callback,
+                    is_cancelled=is_cancelled,
+                    baseline_override=baseline_root,
+                    candidate_override=WeightConfig.from_dict(champion_weights),
+                    skip_save=False,
+                    _internal_blocked=True,
+                    stage_label=(
+                        f"{mode_prefix}_{cycle_tag}_champion"
+                        if cycle_tag
+                        else f"{mode_prefix}_champion"
+                    ),
+                    champion_bank_stage=promoted_stage,
+                )
+            elif callback:
+                callback(
+                    "[blocked] champion candidate missing weights; falling back to joint_refine result"
+                )
+        elif callback and preserve_stage_champions:
+            callback("[blocked] no valid stage champions found; using joint_refine outcome")
+        elif callback and not preserve_stage_champions:
+            callback("[blocked] cross-path playoff disabled; joint_refine controls promotion")
+
+        ranked_candidate_summary = [
+            {
+                "rank": int(candidate.get("rank", idx + 1)),
+                "stage": candidate.get("stage"),
+                "stage_id": candidate.get("stage_id"),
+                "trials": int(candidate.get("trials", 0)),
+                "objective_selected_loss": float(
+                    candidate.get("objective_selected_loss", 1.0e12)
+                ),
+                "best_loss": float(candidate.get("best_loss", 1.0e12)),
+                "best_winner_pct": float(candidate.get("best_winner_pct", 0.0)),
+            }
+            for idx, candidate in enumerate(ranked_candidates)
+        ]
         final_result["blocked_pathways"] = {
             "enabled": True,
             "mode": tuning_mode,
@@ -1587,6 +2301,14 @@ def optimize_weights(
             "ff_params": sorted(ff_keys),
             "onoff_params": sorted(onoff_keys),
             "core_param_count": len(core_keys),
+            "cross_path_playoff_enabled": bool(preserve_stage_champions),
+            "champion_log_top_k": champion_log_top_k,
+            "joint_skip_save": joint_skip_save,
+            "stage_champion_bank_enabled": bool(stage_champion_bank_enabled),
+            "stage_champion_bank_top_k": stage_champion_bank_top_k,
+            "promotion_source_stage": promoted_stage,
+            "ranked_candidates": ranked_candidate_summary,
+            "ranked_candidates_with_weights": ranked_candidates,
         }
         return final_result
 
@@ -1714,6 +2436,24 @@ def optimize_weights(
         baseline_cv_score = float(baseline_train["loss"])
         baseline_cv_mean = baseline_cv_score
         baseline_cv_worst = baseline_cv_score
+    objective_track = _normalize_objective_track(
+        get_setting("optimizer_objective_primary_track", "dual_track")
+    )
+    objective_dual_live_weight = float(
+        np.clip(
+            _safe_float_setting("optimizer_objective_dual_live_weight", 0.70),
+            0.0,
+            1.0,
+        )
+    )
+    baseline_live_objective = float(baseline_cv_score)
+    baseline_oracle_objective = float(baseline_all.get("loss", baseline_live_objective))
+    baseline_selected_objective = _compose_objective_loss(
+        baseline_live_objective,
+        baseline_oracle_objective,
+        objective_track,
+        objective_dual_live_weight,
+    )
 
     ml_underdog_gate_enabled = (
         (not skip_save)
@@ -1799,6 +2539,14 @@ def optimize_weights(
             )
         else:
             callback("Objective rolling-CV: disabled (falling back to train loss objective)")
+        callback(
+            "Objective track mode: "
+            f"{objective_track} "
+            f"(baseline selected={baseline_selected_objective:.3f}, "
+            f"live={baseline_live_objective:.3f}, "
+            f"oracle={baseline_oracle_objective:.3f}, "
+            f"dual_live_weight={objective_dual_live_weight:.2f})"
+        )
         if ml_underdog_gate_enabled:
             callback(
                 "ML underdog promotion gate: enabled "
@@ -1815,8 +2563,11 @@ def optimize_weights(
             f"all={baseline_all['loss']:.3f})"
         )
 
-    best_w = baseline_w
-    best_objective_loss = baseline_cv_score if rolling_cv_enabled else baseline_train["loss"]
+    provided_candidate = candidate_override
+    best_w = provided_candidate if provided_candidate is not None else baseline_w
+    best_objective_loss = baseline_selected_objective
+    best_live_objective_loss = baseline_live_objective
+    best_oracle_objective_loss = baseline_oracle_objective
     best_train_loss = baseline_train["loss"]
     last_saved_w = [baseline_w]
     min_weight_delta = _safe_float_setting("optimizer_save_min_weight_delta", 1e-4)
@@ -1832,6 +2583,17 @@ def optimize_weights(
             f"Optimizer search ranges: {range_profile} ({len(ranges)} params)"
             f" [stage={stage_label}]"
         )
+    champion_bank_mode_key = "sharp" if include_sharp else "fundamentals"
+    champion_bank_stage_key = str(champion_bank_stage or "").strip().lower()
+    stage_champion_seed_enabled = (
+        champion_bank_stage_key in _stage_champion_stages
+        and _safe_bool_setting("optimizer_stage_champion_bank_enabled", True)
+        and _safe_bool_setting("optimizer_stage_champion_bank_seed_enabled", True)
+    )
+    stage_champion_seed_max = max(
+        0,
+        _safe_int_setting("optimizer_stage_champion_bank_seed_max", 100),
+    )
     deterministic = _safe_bool_setting("optimizer_deterministic", False)
     deterministic_seed = _safe_int_setting("optimizer_deterministic_seed", 42)
     objective_l2_prior_mult = max(
@@ -1855,10 +2617,10 @@ def optimize_weights(
 
             w = WeightConfig.from_dict({**baseline_w.to_dict(), **params})
             train_result = vg_train.evaluate(w, include_sharp=include_sharp, fast=True)
-            objective_loss = float(train_result["loss"])
-            rolling_cv_score = objective_loss
-            rolling_cv_mean_loss = objective_loss
-            rolling_cv_worst_loss = objective_loss
+            live_objective_loss = float(train_result["loss"])
+            rolling_cv_score = live_objective_loss
+            rolling_cv_mean_loss = live_objective_loss
+            rolling_cv_worst_loss = live_objective_loss
             rolling_cv_mean_winner = float(train_result.get("winner_pct", 0.0))
             rolling_cv_worst_winner = rolling_cv_mean_winner
             if rolling_cv_enabled and rolling_cv_val_windows:
@@ -1880,7 +2642,7 @@ def optimize_weights(
                 )
                 rolling_cv_mean_winner = float(np.mean(fold_winners)) if fold_winners else 0.0
                 rolling_cv_worst_winner = float(np.min(fold_winners)) if fold_winners else 0.0
-                objective_loss = rolling_cv_score
+                live_objective_loss = rolling_cv_score
             overfit_penalty = 0.0
             l2_prior_penalty = 0.0
             probe_loss_delta_mean = 0.0
@@ -1918,7 +2680,7 @@ def optimize_weights(
                     (probe_loss_delta_mean + 0.5 * probe_loss_delta_max) * val_probe_loss_mult
                     + probe_winner_drop_mean * val_probe_winner_drop_mult
                 )
-                objective_loss += overfit_penalty
+                live_objective_loss += overfit_penalty
             if objective_l2_prior_mult > 0.0 and ranges:
                 sq_sum = 0.0
                 count = 0
@@ -1930,7 +2692,15 @@ def optimize_weights(
                     count += 1
                 if count > 0:
                     l2_prior_penalty = objective_l2_prior_mult * (sq_sum / float(count))
-                    objective_loss += l2_prior_penalty
+                    live_objective_loss += l2_prior_penalty
+            oracle_result = vg_all.evaluate(w, include_sharp=include_sharp, fast=True)
+            oracle_objective_loss = float(oracle_result.get("loss", 0.0))
+            objective_loss = _compose_objective_loss(
+                live_objective_loss,
+                oracle_objective_loss,
+                objective_track,
+                objective_dual_live_weight,
+            )
             trial.set_user_attr(
                 "result",
                 {
@@ -1953,6 +2723,16 @@ def optimize_weights(
                     "mean_winner_pct": rolling_cv_mean_winner,
                     "worst_winner_pct": rolling_cv_worst_winner,
                     "worst_mult": rolling_cv_worst_fold_mult,
+                },
+            )
+            trial.set_user_attr(
+                "objective_tracks",
+                {
+                    "track": objective_track,
+                    "dual_live_weight": objective_dual_live_weight,
+                    "selected_loss": objective_loss,
+                    "live_loss": live_objective_loss,
+                    "oracle_loss": oracle_objective_loss,
                 },
             )
             if vg_val_probes:
@@ -2001,8 +2781,40 @@ def optimize_weights(
             study = _study_cache[study_name]
             prior_trials = len([t for t in study.trials
                                 if t.state == optuna.trial.TrialState.COMPLETE])
+            loaded_champs = 0
+            if (
+                stage_champion_seed_enabled
+                and stage_champion_seed_max > 0
+                and n_trials > 0
+            ):
+                champion_seed_trials = _build_stage_champion_seed_trials(
+                    optuna_module=optuna,
+                    mode_key=champion_bank_mode_key,
+                    stage_name=champion_bank_stage_key,
+                    ranges=ranges,
+                    baseline_weights=baseline_w,
+                    max_entries=stage_champion_seed_max,
+                )
+                if champion_seed_trials:
+                    existing_seed_hashes = {
+                        str((t.user_attrs or {}).get("seed_weight_hash", ""))
+                        for t in study.trials
+                        if isinstance(getattr(t, "user_attrs", None), dict)
+                        and str((t.user_attrs or {}).get("seed_source", "")) == "stage_champion_bank"
+                        and str((t.user_attrs or {}).get("seed_mode", "")) == champion_bank_mode_key
+                        and str((t.user_attrs or {}).get("seed_stage", "")) == champion_bank_stage_key
+                    }
+                    unique_seed_trials = [
+                        t
+                        for t in champion_seed_trials
+                        if str((t.user_attrs or {}).get("seed_weight_hash", "")) not in existing_seed_hashes
+                    ]
+                    if unique_seed_trials:
+                        study.add_trials(unique_seed_trials)
+                        loaded_champs = len(unique_seed_trials)
             if callback:
                 callback(f"Study '{study_name}': {prior_trials} trials in memory, "
+                         f"loaded {loaded_champs} persistent stage-champion seeds, "
                          f"adding {n_trials} more")
         else:
             # First call: load from disk, then cache in memory.
@@ -2080,20 +2892,38 @@ def optimize_weights(
                 except KeyError:
                     pass
 
+            champion_seed_trials = []
+            if (
+                stage_champion_seed_enabled
+                and stage_champion_seed_max > 0
+                and n_trials > 0
+            ):
+                champion_seed_trials = _build_stage_champion_seed_trials(
+                    optuna_module=optuna,
+                    mode_key=champion_bank_mode_key,
+                    stage_name=champion_bank_stage_key,
+                    ranges=ranges,
+                    baseline_weights=baseline_w,
+                    max_entries=stage_champion_seed_max,
+                )
+
             study = optuna.create_study(
                 study_name=study_name,
                 direction="minimize",
                 sampler=sampler,
             )
-            if seed_trials:
-                study.add_trials(seed_trials)
+            all_seed_trials = list(seed_trials) + list(champion_seed_trials)
+            if all_seed_trials:
+                study.add_trials(all_seed_trials)
 
             if reuse_study_cache:
                 _study_cache[study_name] = study
             if callback:
                 loaded = len(seed_trials)
+                loaded_champs = len(champion_seed_trials)
                 callback(f"Study '{study_name}': {prior_trials} prior trials on disk, "
-                         f"loaded {loaded} seed trials for CMA-ES (IPOP), "
+                         f"loaded {loaded} disk seed trials + {loaded_champs} "
+                         "persistent stage-champion seeds for CMA-ES (IPOP), "
                          f"adding {n_trials} more")
 
         # Log interval from config
@@ -2208,9 +3038,22 @@ def optimize_weights(
                         probe_delta_max = float(
                             val_probe_meta.get("loss_delta_max", 0.0) or 0.0
                         )
+                    objective_tracks = trial.user_attrs.get("objective_tracks", {})
+                    track_name = objective_track
+                    live_loss = float(res.get("loss", 0.0))
+                    oracle_loss = live_loss
+                    if isinstance(objective_tracks, dict):
+                        track_name = str(objective_tracks.get("track", track_name) or track_name)
+                        live_loss = float(objective_tracks.get("live_loss", live_loss) or live_loss)
+                        oracle_loss = float(
+                            objective_tracks.get("oracle_loss", oracle_loss) or oracle_loss
+                        )
                     callback(
                         f"Trial {trial.number}/{n_trials}: objective={trial.value:.3f} "
                         f"(train_loss={res.get('loss', 0.0):.3f}, "
+                        f"track={track_name}, "
+                        f"live_obj={live_loss:.3f}, "
+                        f"oracle_obj={oracle_loss:.3f}, "
                         f"cv={'on' if cv_enabled else 'off'}, "
                         f"cv_score={cv_score:.3f}, "
                         f"cv_mean={cv_mean:.3f}, "
@@ -2285,7 +3128,11 @@ def optimize_weights(
         completed.sort(key=lambda t: t.value)
         candidates = completed[:top_n]
 
-        if candidates and candidates[0].value < best_objective_loss:
+        if (
+            provided_candidate is None
+            and candidates
+            and candidates[0].value < best_objective_loss
+        ):
             best_candidate_objective = float("inf")
             best_candidate_val_loss = float("inf")
             chosen_rank = 0
@@ -2297,9 +3144,9 @@ def optimize_weights(
                     {**baseline_w.to_dict(), **trial.params})
                 cand_val = vg_val.evaluate(cand_w, include_sharp=include_sharp)
                 cand_val_loss = float(cand_val["loss"])
-                cand_objective = float(trial.value)
-                cand_cv_mean = cand_objective
-                cand_cv_worst = cand_objective
+                cand_live_objective = float(trial.user_attrs.get("result", {}).get("loss", trial.value))
+                cand_cv_mean = cand_live_objective
+                cand_cv_worst = cand_live_objective
                 if rolling_cv_enabled and rolling_cv_val_windows:
                     cand_fold_losses = []
                     for vg_fold_val in rolling_cv_val_windows:
@@ -2309,16 +3156,27 @@ def optimize_weights(
                             fast=True,
                         )
                         cand_fold_losses.append(float(fold_result.get("loss", 0.0)))
-                    cand_objective, cand_cv_mean, cand_cv_worst = _rolling_cv_objective_loss(
+                    cand_live_objective, cand_cv_mean, cand_cv_worst = _rolling_cv_objective_loss(
                         cand_fold_losses,
                         rolling_cv_worst_fold_mult,
                     )
+                cand_oracle_objective = float(
+                    vg_all.evaluate(cand_w, include_sharp=include_sharp, fast=True).get("loss", 0.0)
+                )
+                cand_objective = _compose_objective_loss(
+                    cand_live_objective,
+                    cand_oracle_objective,
+                    objective_track,
+                    objective_dual_live_weight,
+                )
 
                 if callback and emit_stage_details and rank < 5:
                     tr = trial.user_attrs.get("result", {})
                     callback(
                         f"  #{rank + 1} objective={cand_objective:.3f} "
-                        f"(cv mean={cand_cv_mean:.3f}, cv worst={cand_cv_worst:.3f}) "
+                        f"(track={objective_track}, live={cand_live_objective:.3f}, "
+                        f"oracle={cand_oracle_objective:.3f}, blend_w={objective_dual_live_weight:.2f}, "
+                        f"cv mean={cand_cv_mean:.3f}, cv worst={cand_cv_worst:.3f}) "
                         f"train loss={trial.value:.3f} "
                         f"(Winner={tr.get('winner_pct', 0):.1f}%) "
                         f"-> val loss={cand_val_loss:.3f} "
@@ -2335,6 +3193,8 @@ def optimize_weights(
                     best_candidate_val_loss = cand_val_loss
                     best_w = cand_w
                     best_objective_loss = cand_objective
+                    best_live_objective_loss = cand_live_objective
+                    best_oracle_objective_loss = cand_oracle_objective
                     best_train_loss = float(
                         trial.user_attrs.get("result", {}).get("loss", trial.value)
                     )
@@ -2358,18 +3218,39 @@ def optimize_weights(
                 params[key] = random.uniform(lo, hi)
             w = WeightConfig.from_dict({**baseline_w.to_dict(), **params})
             result = vg_train.evaluate(w, include_sharp=include_sharp, fast=True)
-            if result["loss"] < best_objective_loss:
+            live_objective = float(result.get("loss", 0.0))
+            oracle_objective = float(
+                vg_all.evaluate(w, include_sharp=include_sharp, fast=True).get("loss", 0.0)
+            )
+            selected_objective = _compose_objective_loss(
+                live_objective,
+                oracle_objective,
+                objective_track,
+                objective_dual_live_weight,
+            )
+            if selected_objective < best_objective_loss:
                 best_w = w
-                best_objective_loss = result["loss"]
-                best_train_loss = result["loss"]
+                best_objective_loss = selected_objective
+                best_live_objective_loss = live_objective
+                best_oracle_objective_loss = oracle_objective
+                best_train_loss = live_objective
             if callback and (i + 1) % 300 == 0:
                 callback(f"Random trial {i + 1}/{n_trials}: "
-                         f"best_loss={best_train_loss:.3f}")
+                         f"best_objective={best_objective_loss:.3f}")
+
+    if provided_candidate is not None:
+        best_w = provided_candidate
+        if callback and emit_stage_details:
+            callback(
+                f"[stage:{stage_label}] candidate override supplied "
+                "(search results bypassed)"
+            )
 
     # Walk-forward validation
     best_train_full = vg_train.evaluate(best_w, include_sharp=include_sharp)
     best_val = vg_val.evaluate(best_w, include_sharp=include_sharp)
     best_all = vg_all.evaluate(best_w, include_sharp=include_sharp)
+    best_train_loss = float(best_train_full.get("loss", best_train_loss))
     candidate_cv_score: Optional[float] = None
     candidate_cv_mean: Optional[float] = None
     candidate_cv_worst: Optional[float] = None
@@ -2386,6 +3267,21 @@ def optimize_weights(
             candidate_cv_fold_losses,
             rolling_cv_worst_fold_mult,
         )
+    candidate_live_objective = float(
+        candidate_cv_score
+        if rolling_cv_enabled and candidate_cv_score is not None
+        else best_train_full["loss"]
+    )
+    candidate_oracle_objective = float(best_all.get("loss", candidate_live_objective))
+    candidate_selected_objective = _compose_objective_loss(
+        candidate_live_objective,
+        candidate_oracle_objective,
+        objective_track,
+        objective_dual_live_weight,
+    )
+    best_live_objective_loss = candidate_live_objective
+    best_oracle_objective_loss = candidate_oracle_objective
+    best_objective_loss = candidate_selected_objective
 
     if callback and emit_stage_details:
         callback("-- Walk-forward results --")
@@ -2414,6 +3310,13 @@ def optimize_weights(
                  f"LongDog1P={best_all.get('long_dog_onepos_rate', 0.0):.1f}%, "
                  f"Loss={best_all['loss']:.3f}")
         callback(f"    {best_all.get('hit_rate_quality_observation', '')}")
+        callback(
+            "Objective tracks (candidate): "
+            f"selected={best_objective_loss:.3f} "
+            f"(mode={objective_track}, live={best_live_objective_loss:.3f}, "
+            f"oracle={best_oracle_objective_loss:.3f}, "
+            f"dual_live_weight={objective_dual_live_weight:.2f})"
+        )
 
     # Save gate: robust anti-gaming guardrails on validation
     baseline_winner_pct = baseline_val.get("winner_pct", 0)
@@ -2434,6 +3337,14 @@ def optimize_weights(
             "candidate_cv_score": candidate_cv_score if rolling_cv_enabled else None,
             "candidate_cv_mean_loss": candidate_cv_mean if rolling_cv_enabled else None,
             "candidate_cv_worst_loss": candidate_cv_worst if rolling_cv_enabled else None,
+            "objective_track": objective_track,
+            "objective_dual_live_weight": objective_dual_live_weight,
+            "baseline_live_objective_loss": baseline_live_objective,
+            "baseline_oracle_objective_loss": baseline_oracle_objective,
+            "baseline_selected_objective_loss": baseline_selected_objective,
+            "candidate_live_objective_loss": candidate_live_objective,
+            "candidate_oracle_objective_loss": candidate_oracle_objective,
+            "candidate_selected_objective_loss": candidate_selected_objective,
             "candidate_only": True,
         }
     else:
@@ -2453,6 +3364,14 @@ def optimize_weights(
         save_details["candidate_cv_score"] = candidate_cv_score if rolling_cv_enabled else None
         save_details["candidate_cv_mean_loss"] = candidate_cv_mean if rolling_cv_enabled else None
         save_details["candidate_cv_worst_loss"] = candidate_cv_worst if rolling_cv_enabled else None
+        save_details["objective_track"] = objective_track
+        save_details["objective_dual_live_weight"] = objective_dual_live_weight
+        save_details["baseline_live_objective_loss"] = baseline_live_objective
+        save_details["baseline_oracle_objective_loss"] = baseline_oracle_objective
+        save_details["baseline_selected_objective_loss"] = baseline_selected_objective
+        save_details["candidate_live_objective_loss"] = candidate_live_objective
+        save_details["candidate_oracle_objective_loss"] = candidate_oracle_objective
+        save_details["candidate_selected_objective_loss"] = candidate_selected_objective
 
     ml_gate_result: Dict[str, Any] = {
         "enabled": bool(ml_underdog_gate_enabled),
@@ -2628,6 +3547,11 @@ def optimize_weights(
         "trial_train_loss": best_train_loss,
         "objective_loss": best_objective_loss,
         "objective_mode": "rolling_cv" if rolling_cv_enabled else "train_loss",
+        "objective_track": objective_track,
+        "objective_dual_live_weight": objective_dual_live_weight,
+        "objective_live_loss": best_live_objective_loss,
+        "objective_oracle_loss": best_oracle_objective_loss,
+        "objective_selected_loss": best_objective_loss,
         "rolling_cv_enabled": rolling_cv_enabled,
         "rolling_cv_fold_count": len(rolling_cv_val_windows),
         "ml_underdog_gate": ml_gate_result,

@@ -17,6 +17,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from src.database import db
+from src.config import get as get_setting
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,14 @@ _SAVE_GATE_DETAIL_EXPORT_KEYS = (
     "rolling_cv_fold_count",
     "baseline_cv_score",
     "candidate_cv_score",
+    "objective_track",
+    "objective_dual_live_weight",
+    "baseline_live_objective_loss",
+    "baseline_oracle_objective_loss",
+    "baseline_selected_objective_loss",
+    "candidate_live_objective_loss",
+    "candidate_oracle_objective_loss",
+    "candidate_selected_objective_loss",
     "ml_underdog_gate_enabled",
     "ml_underdog_gate_applied",
     "ml_underdog_gate_passed",
@@ -147,6 +156,29 @@ def _extract_save_gate_state(step_result: Any) -> Optional[Dict[str, Any]]:
                 snapshot[key] = val
 
     return snapshot or None
+
+
+def _maybe_clear_stage_champion_bank_on_full_promotion(
+    *,
+    fundamentals_saved: bool,
+    sharp_saved: bool,
+    emit: Callable[[str], None],
+):
+    """Optionally clear persisted stage champions after full dual-mode promotion."""
+    if not (bool(fundamentals_saved) and bool(sharp_saved)):
+        return
+    if not bool(get_setting("optimizer_stage_champion_bank_enabled", True)):
+        return
+    if not bool(get_setting("optimizer_stage_champion_bank_clear_on_full_promotion", True)):
+        return
+    try:
+        from src.analytics.optimizer import clear_stage_champion_bank
+
+        cleared = clear_stage_champion_bank(reason="full_fundamentals+sharp_promotion")
+        if cleared:
+            emit("  Stage champion bank cleared after full fundamentals+sharp promotion.")
+    except Exception as exc:
+        logger.debug("Failed to clear stage champion bank: %s", exc, exc_info=True)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -643,6 +675,11 @@ def run_overnight(
         (pass1_summary["fundamentals"] or {}).get("saved", False)
         or (pass1_summary["sharp"] or {}).get("saved", False)
     )
+    _maybe_clear_stage_champion_bank_on_full_promotion(
+        fundamentals_saved=bool((pass1_summary["fundamentals"] or {}).get("saved", False)),
+        sharp_saved=bool((pass1_summary["sharp"] or {}).get("saved", False)),
+        emit=emit,
+    )
     save_gate_passes.append(pass1_summary)
     for model_name, gate in (
         ("fundamentals", pass1_summary.get("fundamentals")),
@@ -745,6 +782,11 @@ def run_overnight(
                     "fundamentals": fund_gate,
                     "sharp": sharp_gate,
                 }
+            )
+            _maybe_clear_stage_champion_bank_on_full_promotion(
+                fundamentals_saved=fund_saved,
+                sharp_saved=sharp_saved,
+                emit=emit,
             )
 
             if time_left() <= 0 and not is_cancelled():

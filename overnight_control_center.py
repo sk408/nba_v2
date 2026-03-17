@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -53,7 +54,7 @@ from src.bootstrap import bootstrap, setup_logging, shutdown
 from src.config import get as get_setting
 from src.config import invalidate_cache, load_settings, save_settings
 from src.ui.theme import apply_card_shadow, setup_theme
-from overnight import RichOvernightConsole
+from overnight import RichOvernightConsole, configure_overnight_file_logging
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,47 @@ GREEN = "#00E676"
 AMBER = "#FFB300"
 RED = "#FF5252"
 MUTED = "#94a3b8"
+
+_ONOFF_FAILED_TEAM_RE = re.compile(r"On/off failed for team_id=(\d+)", re.IGNORECASE)
+_ONOFF_FETCH_START_RE = re.compile(r"Fetching player on/off data", re.IGNORECASE)
+
+
+def _dedupe_ordered_team_ids(team_ids: list[int]) -> list[int]:
+    seen = set()
+    ordered: list[int] = []
+    for team_id in team_ids:
+        if team_id in seen:
+            continue
+        seen.add(team_id)
+        ordered.append(team_id)
+    return ordered
+
+
+def _extract_latest_failed_onoff_team_ids(log_text: str) -> list[int]:
+    """Extract failed on/off team ids from the latest player-impact fetch block."""
+    lines = log_text.splitlines()
+    start_idx = -1
+    for idx, line in enumerate(lines):
+        if _ONOFF_FETCH_START_RE.search(line):
+            start_idx = idx
+
+    def _extract(lines_slice: list[str]) -> list[int]:
+        ids: list[int] = []
+        for line in lines_slice:
+            match = _ONOFF_FAILED_TEAM_RE.search(line)
+            if not match:
+                continue
+            try:
+                ids.append(int(match.group(1)))
+            except (TypeError, ValueError):
+                continue
+        return _dedupe_ordered_team_ids(ids)
+
+    if start_idx >= 0:
+        latest_ids = _extract(lines[start_idx:])
+        if latest_ids:
+            return latest_ids
+    return _extract(lines)
 
 
 @dataclass
@@ -100,6 +142,71 @@ class _OvernightWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class _OnOffRepairWorker(QObject):
+    """Background on/off repair sync worker."""
+
+    progress = Signal(str)
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, team_ids: list[int]):
+        super().__init__()
+        self._team_ids = [int(tid) for tid in team_ids if int(tid) > 0]
+
+    def run(self):
+        try:
+            from src.data.sync_service import sync_player_impact_for_teams
+            from src.database import db
+
+            if not self._team_ids:
+                raise ValueError("No valid team IDs provided for on/off repair.")
+
+            self.progress.emit(
+                "Repairing player on/off for team IDs: "
+                + ", ".join(str(tid) for tid in self._team_ids)
+            )
+            sync_player_impact_for_teams(
+                team_ids=self._team_ids,
+                callback=lambda msg: self.progress.emit(msg),
+                force=True,
+            )
+
+            placeholders = ",".join(["?"] * len(self._team_ids))
+            stats = db.fetch_all(
+                f"""SELECT
+                        team_id,
+                        COUNT(*) AS n_players,
+                        SUM(
+                            CASE
+                                WHEN COALESCE(on_court_off_rating, 0) != 0
+                                  OR COALESCE(on_court_def_rating, 0) != 0
+                                  OR COALESCE(on_court_net_rating, 0) != 0
+                                  OR COALESCE(off_court_off_rating, 0) != 0
+                                  OR COALESCE(off_court_def_rating, 0) != 0
+                                  OR COALESCE(off_court_net_rating, 0) != 0
+                                  OR COALESCE(net_rating_diff, 0) != 0
+                                  OR COALESCE(on_court_minutes, 0) != 0
+                                THEN 1 ELSE 0
+                            END
+                        ) AS n_nonzero,
+                        MAX(last_synced_at) AS last_synced_at
+                    FROM player_impact
+                    WHERE team_id IN ({placeholders})
+                    GROUP BY team_id
+                    ORDER BY team_id""",
+                tuple(self._team_ids),
+            )
+            self.finished.emit(
+                {
+                    "team_ids": list(self._team_ids),
+                    "stats": stats,
+                }
+            )
+        except Exception as exc:  # pragma: no cover - defensive UI path
+            logger.error("On/off repair worker failed: %s", exc, exc_info=True)
+            self.failed.emit(str(exc))
+
+
 class OvernightControlCenter(QMainWindow):
     """Dedicated UI for configuring and running overnight sessions."""
 
@@ -111,7 +218,12 @@ class OvernightControlCenter(QMainWindow):
         self._bindings: Dict[str, _Binding] = {}
         self._worker: Optional[_OvernightWorker] = None
         self._thread: Optional[QThread] = None
+        self._repair_worker: Optional[_OnOffRepairWorker] = None
+        self._repair_thread: Optional[QThread] = None
+        self._repair_running = False
         self._progress_parser: Optional[RichOvernightConsole] = None
+        self._blocked_playoff: Dict[str, Dict[str, Any]] = {}
+        self._blocked_playoff_mode_context: str = "fundamentals"
         self._running = False
         self._close_after_cancel = False
         self._run_start_ts = 0.0
@@ -217,6 +329,16 @@ class OvernightControlCenter(QMainWindow):
         )
         form.addRow(self._label("Start State"), self._reset_weights_cb)
 
+        self._repair_team_ids_input = QLineEdit()
+        self._repair_team_ids_input.setPlaceholderText(
+            "Optional CSV team IDs (blank = parse latest failed IDs from data/overnight.log)"
+        )
+        self._repair_team_ids_input.setToolTip(
+            "Enter comma/space-separated team IDs to repair explicitly. "
+            "Leave blank to auto-detect failed team IDs from overnight.log."
+        )
+        form.addRow(self._label("Repair Team IDs"), self._repair_team_ids_input)
+
         self._status_lbl = QLabel("Idle")
         self._status_lbl.setStyleSheet(f"color: {GREEN}; font-weight: 700;")
         form.addRow(self._label("Status"), self._status_lbl)
@@ -244,6 +366,11 @@ class OvernightControlCenter(QMainWindow):
         self._reload_btn.setProperty("class", "outline")
         self._reload_btn.clicked.connect(self._load_current_settings)
         row.addWidget(self._reload_btn)
+
+        self._repair_onoff_btn = QPushButton("REPAIR ON/OFF TEAMS")
+        self._repair_onoff_btn.setProperty("class", "outline")
+        self._repair_onoff_btn.clicked.connect(self._on_repair_onoff_clicked)
+        row.addWidget(self._repair_onoff_btn)
 
         row.addStretch()
         box.layout().addLayout(row)
@@ -456,6 +583,54 @@ class OvernightControlCenter(QMainWindow):
             "Verbose Stage Logging",
             "When off, skip-save blocked stages emit compact logs only.",
         )
+        self._add_bool(
+            form,
+            "optimizer_blocked_preserve_stage_champions",
+            "Cross-Path Champion Playoff",
+            "Keep stage winners (core/ff/onoff/joint) and promote the best objective champion.",
+        )
+        self._add_int(
+            form,
+            "optimizer_blocked_champion_log_top_k",
+            "Champion Leaderboard Size",
+            1,
+            10,
+            "How many top blocked candidates to print in playoff logs.",
+        )
+        self._add_bool(
+            form,
+            "optimizer_stage_champion_bank_enabled",
+            "Persistent Stage Champion Bank",
+            "Persist top stage champions across runs (per mode/stage) and reuse them.",
+        )
+        self._add_int(
+            form,
+            "optimizer_stage_champion_bank_top_k",
+            "Champion Bank Size (Per Stage)",
+            10,
+            500,
+            "Max persistent champions to keep for each stage (core/ff/onoff/joint).",
+        )
+        self._add_bool(
+            form,
+            "optimizer_stage_champion_bank_seed_enabled",
+            "Seed Trials From Champion Bank",
+            "Inject persistent stage champions as CMA-ES warm-start trials.",
+        )
+        self._add_int(
+            form,
+            "optimizer_stage_champion_bank_seed_max",
+            "Champion Seed Max",
+            0,
+            500,
+            "Maximum persisted champions per stage to inject as trial seeds (0 disables).",
+        )
+        self._add_bool(
+            form,
+            "optimizer_stage_champion_bank_clear_on_full_promotion",
+            "Clear Bank On Full Promotion",
+            "Reset persistent stage champions when both fundamentals and sharp promote in a pass.",
+        )
 
         box.layout().addLayout(form)
         return box
@@ -475,6 +650,38 @@ class OvernightControlCenter(QMainWindow):
             0.05,
             2,
             "Objective reward multiplier for upset accuracy x rate.",
+        )
+        self._add_choice(
+            form,
+            "optimizer_objective_primary_track",
+            "Primary Objective Track",
+            [
+                ("dual_track", "Dual Track (live + oracle blend)"),
+                ("live", "Live Only (walk-forward / rolling-CV)"),
+                ("oracle", "Oracle Only (hindsight all-games)"),
+            ],
+            "Select which objective track drives optimizer trial ranking.",
+        )
+        self._add_float(
+            form,
+            "optimizer_objective_dual_live_weight",
+            "Dual Track Live Weight",
+            0.0,
+            1.0,
+            0.05,
+            2,
+            "Blend weight for live track when primary track is dual_track (oracle uses 1-live).",
+        )
+        self._add_choice(
+            form,
+            "optimizer_tanking_feature_mode",
+            "Tanking Feature Mode",
+            [
+                ("both", "Both (live + oracle tank signals)"),
+                ("live", "Live tank signal only"),
+                ("oracle", "Oracle tank signal only"),
+            ],
+            "Controls which tanking signal channels are active in prediction/optimization scoring.",
         )
         self._add_bool(
             form,
@@ -752,6 +959,58 @@ class OvernightControlCenter(QMainWindow):
         )
         self._add_bool(
             form,
+            "optimizer_onepos_credit_enabled",
+            "Enable 1P Near-Miss Credit",
+            "Enable weighted one-possession near-miss credit for upset scoring.",
+        )
+        self._add_bool(
+            form,
+            "optimizer_onepos_credit_affects_winner_pct",
+            "1P Credit Affects Winner%",
+            "When disabled, one-possession credit does not modify winner%.",
+        )
+        self._add_float(
+            form,
+            "optimizer_onepos_credit_margin",
+            "1P Credit Margin (pts)",
+            0.0,
+            20.0,
+            0.5,
+            1,
+            "Maximum underdog loss margin counted as near-miss credit.",
+        )
+        self._add_float(
+            form,
+            "optimizer_onepos_credit_all_dogs_weight",
+            "All-Dog Credit Weight",
+            0.0,
+            2.0,
+            0.05,
+            2,
+            "Near-miss credit weight for non-long underdog picks.",
+        )
+        self._add_float(
+            form,
+            "optimizer_onepos_credit_long_dogs_weight",
+            "Long-Dog Credit Weight",
+            0.0,
+            2.0,
+            0.05,
+            2,
+            "Near-miss credit weight for long underdog picks.",
+        )
+        self._add_float(
+            form,
+            "optimizer_save_onepos_credit_bump_mult",
+            "1P Credit Guard Bump Mult",
+            0.0,
+            2.0,
+            0.01,
+            2,
+            "Multiplier converting one-possession credit lift into save-guard tolerance bump.",
+        )
+        self._add_bool(
+            form,
             "optimizer_save_use_long_dog_tiebreak_gate",
             "Use Long-Dog Tiebreak Gate",
             "Require long-dog one-possession quality lift near tie scenarios.",
@@ -880,6 +1139,45 @@ class OvernightControlCenter(QMainWindow):
         self._passes_tbl.setMinimumHeight(180)
         self._passes_tbl.setMaximumHeight(260)
         box.layout().addWidget(self._passes_tbl)
+
+        self._playoff_lbl = QLabel("Blocked playoff leaderboard: waiting for stage champions.")
+        self._playoff_lbl.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
+        self._playoff_lbl.setWordWrap(True)
+        box.layout().addWidget(self._playoff_lbl)
+
+        playoff_controls = QHBoxLayout()
+        playoff_controls.setSpacing(8)
+        self._playoff_current_mode_only_cb = QCheckBox("Show current mode only")
+        self._playoff_current_mode_only_cb.setChecked(False)
+        self._playoff_current_mode_only_cb.setToolTip(
+            "When enabled, leaderboard shows only the currently optimizing mode "
+            "(Fundamentals or Sharp)."
+        )
+        self._playoff_current_mode_only_cb.toggled.connect(
+            lambda _checked: self._refresh_blocked_playoff_table()
+        )
+        playoff_controls.addWidget(self._playoff_current_mode_only_cb)
+        playoff_controls.addStretch()
+        box.layout().addLayout(playoff_controls)
+
+        self._playoff_tbl = QTableWidget(0, 7)
+        self._playoff_tbl.setHorizontalHeaderLabels(
+            ["Mode", "Pass", "Rank", "Stage", "Objective", "Val Loss", "Winner%"]
+        )
+        self._playoff_tbl.verticalHeader().setVisible(False)
+        self._playoff_tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._playoff_tbl.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self._playoff_tbl.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._playoff_tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._playoff_tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._playoff_tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._playoff_tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self._playoff_tbl.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self._playoff_tbl.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self._playoff_tbl.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        self._playoff_tbl.setMinimumHeight(120)
+        self._playoff_tbl.setMaximumHeight(180)
+        box.layout().addWidget(self._playoff_tbl)
 
         self._best_lbl = QLabel("Best: -")
         self._best_lbl.setStyleSheet("color: #22c55e; font-weight: 700;")
@@ -1022,18 +1320,280 @@ class OvernightControlCenter(QMainWindow):
         font.setBold(bool(bold))
         item.setFont(font)
 
+    @staticmethod
+    def _mode_short_label(mode: str) -> str:
+        return "Fund" if mode == "fundamentals" else "Sharp"
+
+    def _ensure_blocked_playoff_state(self, mode: str) -> Dict[str, Any]:
+        existing = self._blocked_playoff.get(mode)
+        if isinstance(existing, dict):
+            return existing
+        state = {
+            "pass": 0,
+            "retained": 0,
+            "rows": {},
+            "promoted_stage": "",
+            "status": "idle",
+        }
+        self._blocked_playoff[mode] = state
+        return state
+
+    def _parse_blocked_playoff_message(self, msg: str):
+        stripped = msg.strip()
+        if not stripped:
+            return
+
+        parser = self._progress_parser
+        active_mode = None
+        if parser is not None:
+            active_mode = getattr(parser, "_active_opt_target", None)
+        lower = stripped.lower()
+        if "optimizing fundamentals" in lower:
+            active_mode = "fundamentals"
+        elif "optimizing sharp" in lower:
+            active_mode = "sharp"
+
+        if active_mode in ("fundamentals", "sharp"):
+            self._blocked_playoff_mode_context = active_mode
+        mode = (
+            active_mode
+            if active_mode in ("fundamentals", "sharp")
+            else self._blocked_playoff_mode_context
+        )
+        if mode not in ("fundamentals", "sharp"):
+            return
+
+        current_pass = int(parser.current_pass) if parser is not None and parser.current_pass > 0 else 0
+        leaderboard_match = re.search(
+            r"\[blocked\]\s+candidate playoff:\s*(\d+)\s+stage champions retained",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if leaderboard_match:
+            state = self._ensure_blocked_playoff_state(mode)
+            state["pass"] = current_pass
+            state["retained"] = int(leaderboard_match.group(1))
+            state["rows"] = {}
+            state["promoted_stage"] = ""
+            state["status"] = "leaderboard"
+            return
+
+        row_match = re.search(
+            r"\[blocked\]\s+#(\d+)\s+([A-Za-z_]+)\s+objective=([+\-]?\d+(?:\.\d+)?),\s*"
+            r"val_loss=([+\-]?\d+(?:\.\d+)?),\s*winner=([+\-]?\d+(?:\.\d+)?)%",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if row_match:
+            state = self._ensure_blocked_playoff_state(mode)
+            rank = int(row_match.group(1))
+            rows = state.get("rows", {})
+            if not isinstance(rows, dict):
+                rows = {}
+            rows[rank] = {
+                "rank": rank,
+                "stage": row_match.group(2),
+                "objective": float(row_match.group(3)),
+                "val_loss": float(row_match.group(4)),
+                "winner_pct": float(row_match.group(5)),
+            }
+            state["rows"] = rows
+            state["pass"] = current_pass
+            state["status"] = "leaderboard"
+            return
+
+        promote_match = re.search(
+            r"\[blocked\]\s+promoting champion from\s+([A-Za-z_]+)\s+pathway",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if promote_match:
+            state = self._ensure_blocked_playoff_state(mode)
+            state["pass"] = current_pass
+            state["promoted_stage"] = str(promote_match.group(1))
+            state["status"] = "promoting"
+            return
+
+        if "[blocked] no valid stage champions found" in lower:
+            state = self._ensure_blocked_playoff_state(mode)
+            state["pass"] = current_pass
+            state["status"] = "fallback"
+            return
+
+        if "[blocked] cross-path playoff disabled" in lower:
+            state = self._ensure_blocked_playoff_state(mode)
+            state["pass"] = current_pass
+            state["status"] = "disabled"
+            state["promoted_stage"] = "joint_refine"
+            return
+
+    def _refresh_blocked_playoff_table(self):
+        parser = self._progress_parser
+        if parser is not None:
+            parser_mode = getattr(parser, "_active_opt_target", None)
+            if parser_mode in ("fundamentals", "sharp"):
+                self._blocked_playoff_mode_context = parser_mode
+
+        show_current_only = bool(
+            getattr(self, "_playoff_current_mode_only_cb", None)
+            and self._playoff_current_mode_only_cb.isChecked()
+        )
+        selected_modes = ["fundamentals", "sharp"]
+        if (
+            show_current_only
+            and self._blocked_playoff_mode_context in ("fundamentals", "sharp")
+        ):
+            selected_modes = [self._blocked_playoff_mode_context]
+
+        entries: list[tuple[str, Dict[str, Any], Dict[str, Any]]] = []
+        mode_states: list[tuple[str, Dict[str, Any]]] = []
+        for mode in selected_modes:
+            state = self._blocked_playoff.get(mode)
+            if not isinstance(state, dict):
+                continue
+            mode_states.append((mode, state))
+            rows = state.get("rows", {})
+            if not isinstance(rows, dict):
+                continue
+            for rank in sorted(rows.keys()):
+                row = rows.get(rank)
+                if isinstance(row, dict):
+                    entries.append((mode, state, row))
+
+        if not mode_states:
+            if (
+                show_current_only
+                and self._blocked_playoff_mode_context in ("fundamentals", "sharp")
+            ):
+                self._playoff_lbl.setText(
+                    "Blocked playoff leaderboard "
+                    f"({self._mode_short_label(self._blocked_playoff_mode_context)} only): "
+                    "waiting for stage champions."
+                )
+            else:
+                self._playoff_lbl.setText(
+                    "Blocked playoff leaderboard: waiting for stage champions."
+                )
+            self._playoff_tbl.setRowCount(0)
+            return
+
+        status_parts = []
+        for mode, state in mode_states:
+            label = self._mode_short_label(mode)
+            status = str(state.get("status", "idle"))
+            retained = int(state.get("retained", 0) or 0)
+            promoted = str(state.get("promoted_stage", "") or "").strip()
+            if status == "disabled":
+                status_parts.append(f"{label}: playoff disabled")
+            elif promoted:
+                status_parts.append(f"{label}: promoting {promoted}")
+            elif retained > 0:
+                status_parts.append(f"{label}: {retained} champions ranked")
+            elif status == "fallback":
+                status_parts.append(f"{label}: fallback to joint_refine")
+            else:
+                status_parts.append(f"{label}: awaiting leaderboard")
+        title_prefix = "Blocked playoff"
+        if (
+            show_current_only
+            and self._blocked_playoff_mode_context in ("fundamentals", "sharp")
+        ):
+            title_prefix += f" ({self._mode_short_label(self._blocked_playoff_mode_context)} only)"
+        self._playoff_lbl.setText(title_prefix + ": " + " | ".join(status_parts))
+
+        if not entries:
+            self._playoff_tbl.setRowCount(0)
+            return
+
+        entries = entries[:14]
+        self._playoff_tbl.setRowCount(len(entries))
+        for idx, (mode, state, row) in enumerate(entries):
+            rank = int(row.get("rank", 0) or 0)
+            stage = str(row.get("stage", ""))
+            objective = float(row.get("objective", 0.0) or 0.0)
+            val_loss = float(row.get("val_loss", 0.0) or 0.0)
+            winner_pct = float(row.get("winner_pct", 0.0) or 0.0)
+            pass_num = int(state.get("pass", 0) or 0)
+            promoted_stage = str(state.get("promoted_stage", "") or "").strip()
+            is_promoted = bool(promoted_stage) and promoted_stage == stage
+
+            mode_color = QColor("#cbd5e1") if mode == "fundamentals" else QColor("#9ec5ff")
+            rank_color = QColor(GREEN if rank == 1 else "#cbd5e1")
+            stage_color = QColor(GREEN if is_promoted else "#cbd5e1")
+
+            self._set_table_cell(
+                self._playoff_tbl,
+                idx,
+                0,
+                self._mode_short_label(mode),
+                color=mode_color,
+                bold=(rank == 1),
+            )
+            self._set_table_cell(
+                self._playoff_tbl,
+                idx,
+                1,
+                str(pass_num) if pass_num > 0 else "-",
+                color=QColor("#94a3b8"),
+            )
+            self._set_table_cell(
+                self._playoff_tbl,
+                idx,
+                2,
+                f"#{rank}" if rank > 0 else "-",
+                color=rank_color,
+                bold=(rank == 1),
+            )
+            self._set_table_cell(
+                self._playoff_tbl,
+                idx,
+                3,
+                f"{stage}{' *' if is_promoted else ''}",
+                color=stage_color,
+                bold=is_promoted,
+            )
+            self._set_table_cell(
+                self._playoff_tbl,
+                idx,
+                4,
+                f"{objective:.3f}",
+                color=QColor("#cbd5e1"),
+            )
+            self._set_table_cell(
+                self._playoff_tbl,
+                idx,
+                5,
+                f"{val_loss:.3f}",
+                color=QColor("#cbd5e1"),
+            )
+            self._set_table_cell(
+                self._playoff_tbl,
+                idx,
+                6,
+                f"{winner_pct:.1f}%",
+                color=QColor("#cbd5e1"),
+            )
+
     def _reset_progress_dashboard(self, max_hours: float):
         self._progress_parser = RichOvernightConsole(max_hours=max_hours)
+        self._blocked_playoff = {}
+        self._blocked_playoff_mode_context = "fundamentals"
         self._progress_parser.start_time = time.time()
         self._refresh_progress_dashboard()
 
     def _clear_progress_dashboard(self):
         self._progress_parser = None
+        self._blocked_playoff = {}
+        self._blocked_playoff_mode_context = "fundamentals"
         self._progress_pass_lbl.setText("Pass: -")
         self._progress_phase_lbl.setText("Phase: Idle")
         self._progress_activity_lbl.setText("Activity: -")
         self._progress_bar.setValue(0)
         self._progress_meta_lbl.setText("No active progress yet.")
+        self._playoff_lbl.setText(
+            "Blocked playoff leaderboard: waiting for stage champions."
+        )
+        self._playoff_tbl.setRowCount(0)
         self._passes_tbl.setRowCount(0)
         self._best_lbl.setText("Best: -")
         for row in range(self._steps_tbl.rowCount()):
@@ -1200,6 +1760,7 @@ class OvernightControlCenter(QMainWindow):
             )
         else:
             self._best_lbl.setText("Best: -")
+        self._refresh_blocked_playoff_table()
 
     @staticmethod
     def _gate_ui_text(
@@ -1362,12 +1923,133 @@ class OvernightControlCenter(QMainWindow):
     # Run/cancel lifecycle
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _parse_team_ids_csv(raw: str) -> list[int]:
+        if not raw:
+            return []
+        parts = re.split(r"[,\s]+", raw.strip())
+        parsed: list[int] = []
+        for part in parts:
+            if not part:
+                continue
+            try:
+                value = int(part)
+            except ValueError:
+                continue
+            if value > 0:
+                parsed.append(value)
+        return _dedupe_ordered_team_ids(parsed)
+
+    def _get_failed_onoff_team_ids_from_log(self) -> list[int]:
+        log_path = Path("data") / "overnight.log"
+        if not log_path.exists():
+            return []
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception as exc:
+            logger.debug("Could not read overnight log for failed on/off IDs: %s", exc)
+            return []
+        return _extract_latest_failed_onoff_team_ids(log_text)
+
+    def _on_repair_onoff_clicked(self):
+        if self._running or self._repair_running:
+            return
+
+        explicit_ids = self._parse_team_ids_csv(self._repair_team_ids_input.text())
+        team_ids = explicit_ids if explicit_ids else self._get_failed_onoff_team_ids_from_log()
+
+        if not team_ids:
+            QMessageBox.information(
+                self,
+                "Repair On/Off Teams",
+                "No team IDs provided and no failed on/off team IDs were found in data/overnight.log.",
+            )
+            self._append_log(
+                "Repair skipped: no explicit team IDs and no failed on/off team IDs found in overnight.log."
+            )
+            return
+
+        self._set_repair_running(True)
+        self._append_log(
+            "Starting on/off repair sync for team IDs: "
+            + ", ".join(str(tid) for tid in team_ids)
+        )
+
+        self._repair_worker = _OnOffRepairWorker(team_ids=team_ids)
+        self._repair_thread = QThread(self)
+        self._repair_worker.moveToThread(self._repair_thread)
+
+        self._repair_thread.started.connect(self._repair_worker.run)
+        self._repair_worker.progress.connect(self._on_repair_progress)
+        self._repair_worker.finished.connect(self._on_repair_finished)
+        self._repair_worker.failed.connect(self._on_repair_failed)
+        self._repair_worker.finished.connect(self._repair_thread.quit)
+        self._repair_worker.failed.connect(lambda _msg: self._repair_thread.quit())
+        self._repair_worker.finished.connect(self._repair_worker.deleteLater)
+        self._repair_thread.finished.connect(self._repair_thread.deleteLater)
+        self._repair_thread.start()
+
+    def _on_repair_progress(self, msg: str):
+        self._append_log(f"[repair] {msg}")
+
+    def _on_repair_finished(self, result: object):
+        self._set_repair_running(False)
+        summary = "On/off repair sync complete."
+        if isinstance(result, dict):
+            stats = result.get("stats", [])
+            if isinstance(stats, list) and stats:
+                formatted = []
+                for row in stats:
+                    try:
+                        tid = int(row.get("team_id"))
+                        n_nonzero = int(row.get("n_nonzero") or 0)
+                        n_players = int(row.get("n_players") or 0)
+                    except Exception:
+                        continue
+                    formatted.append(f"{tid}: {n_nonzero}/{n_players} non-zero")
+                if formatted:
+                    summary += " " + " | ".join(formatted)
+        self._append_log(summary)
+        self._repair_worker = None
+        self._repair_thread = None
+        QMessageBox.information(self, "Repair Complete", summary)
+
+    def _on_repair_failed(self, message: str):
+        self._set_repair_running(False)
+        self._append_log(f"On/off repair failed: {message}")
+        self._repair_worker = None
+        self._repair_thread = None
+        QMessageBox.critical(self, "Repair Failed", message)
+
+    def _set_repair_running(self, running: bool):
+        self._repair_running = running
+        busy = self._running or self._repair_running
+        self._run_btn.setEnabled(not busy)
+        self._reload_btn.setEnabled(not busy)
+        self._cancel_btn.setEnabled(self._running)
+        self._hours_spin.setEnabled(not busy)
+        self._reset_weights_cb.setEnabled(not busy)
+        self._repair_team_ids_input.setEnabled(not busy)
+        self._repair_onoff_btn.setEnabled(not busy)
+        for binding in self._bindings.values():
+            binding.widget.setEnabled(not busy)
+        self._advanced_json.setEnabled(not busy)
+
+        if running and not self._running:
+            self._status_lbl.setText("Repairing On/Off...")
+            self._status_lbl.setStyleSheet(f"color: {AMBER}; font-weight: 700;")
+        elif not self._running:
+            self._status_lbl.setText("Idle")
+            self._status_lbl.setStyleSheet(f"color: {GREEN}; font-weight: 700;")
+
     def _on_run_clicked(self):
-        if self._running:
+        if self._running or self._repair_running:
             return
 
         try:
             self._apply_settings()
+            # Reuse the exact overnight.py file logger wiring per run.
+            configure_overnight_file_logging()
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid Settings", str(exc))
             return
@@ -1412,6 +2094,7 @@ class OvernightControlCenter(QMainWindow):
     def _on_worker_progress(self, msg: str):
         if self._progress_parser is not None:
             self._progress_parser.callback(msg)
+            self._parse_blocked_playoff_message(msg)
             self._refresh_progress_dashboard()
         self._append_log(msg)
 
@@ -1446,16 +2129,19 @@ class OvernightControlCenter(QMainWindow):
 
     def _set_running(self, running: bool):
         self._running = running
-        self._run_btn.setEnabled(not running)
-        self._reload_btn.setEnabled(not running)
-        self._cancel_btn.setEnabled(running)
-        self._hours_spin.setEnabled(not running)
-        self._reset_weights_cb.setEnabled(not running)
+        busy = self._running or self._repair_running
+        self._run_btn.setEnabled(not busy)
+        self._reload_btn.setEnabled(not busy)
+        self._cancel_btn.setEnabled(self._running)
+        self._hours_spin.setEnabled(not busy)
+        self._reset_weights_cb.setEnabled(not busy)
+        self._repair_team_ids_input.setEnabled(not busy)
+        self._repair_onoff_btn.setEnabled(not busy)
 
         # Disable all setting controls while running.
         for binding in self._bindings.values():
-            binding.widget.setEnabled(not running)
-        self._advanced_json.setEnabled(not running)
+            binding.widget.setEnabled(not busy)
+        self._advanced_json.setEnabled(not busy)
 
         if running:
             self._status_lbl.setText("Running")
@@ -1537,6 +2223,14 @@ class OvernightControlCenter(QMainWindow):
             self._on_cancel_clicked()
             self._close_after_cancel = True
             self._append_log("Waiting for cancellation to finish before closing...")
+            event.ignore()
+            return
+        if self._repair_running:
+            QMessageBox.information(
+                self,
+                "Repair Running",
+                "On/off repair is still in progress. Please wait for completion before closing.",
+            )
             event.ignore()
             return
         super().closeEvent(event)

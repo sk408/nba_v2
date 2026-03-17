@@ -116,6 +116,14 @@ _DEFAULT_REPLACEMENT_FT_PCT = 78.0
 _RETURN_DISCOUNT_PER_GAME = 0.03
 _RETURN_DISCOUNT_FLOOR = 0.85
 _ROSTER_CHANGE_HIGH_IMPACT_MPG = 20.0
+_SEASON_GAME_COUNT = 82.0
+_TANK_LIVE_START_PROGRESS = 0.55
+_TANK_ORACLE_START_PROGRESS = 0.60
+_TANK_LIVE_WIN_PCT_CUTOFF = 0.45
+_TANK_ORACLE_W_PCT_CUTOFF = 0.42
+_ROSTER_SHOCK_RECENT_GAMES = 3
+_ROSTER_SHOCK_BASELINE_GAMES = 10
+_ROSTER_SHOCK_CORE_SHARE = 0.08
 
 STAT_COLS = [
     "points", "rebounds", "assists", "minutes", "steals", "blocks",
@@ -653,6 +661,230 @@ def get_team_matchup_stats(team_id: int, opponent_team_id: int,
 
 
 # ──────────────────── V2.1 Feature Computation ────────────────────
+
+def _normalize_season_for_date(game_date: str, season: Optional[str]) -> str:
+    """Resolve season, inferring from game_date when not explicitly provided."""
+    if season:
+        return season
+    try:
+        year = int(game_date[:4])
+        month = int(game_date[5:7])
+        if month >= 7:
+            return f"{year}-{str(year + 1)[2:]}"
+        return f"{year - 1}-{str(year)[2:]}"
+    except Exception:
+        from src.config import get_season
+        return get_season()
+
+
+def _count_team_games_to_date(team_id: int, game_date: str, season: str) -> int:
+    """Return count of distinct games for team before game_date in season."""
+    row = db.fetch_one(
+        """
+        SELECT COUNT(*) AS gp
+        FROM (
+            SELECT DISTINCT COALESCE(NULLIF(ps.game_id, ''), ps.game_date) AS game_key
+            FROM player_stats ps
+            WHERE ps.team_id = ? AND ps.season = ? AND ps.game_date < ?
+        )
+        """,
+        (team_id, season, game_date),
+    )
+    return int((row or {}).get("gp") or 0)
+
+
+def _team_win_pct_to_date(team_id: int, game_date: str, season: str) -> float:
+    """Return win% for games before game_date (0.5 fallback when no games)."""
+    row = db.fetch_one(
+        """
+        SELECT
+            SUM(CASE WHEN gl.win_loss = 'W' THEN 1 ELSE 0 END) AS wins,
+            COUNT(*) AS games
+        FROM (
+            SELECT
+                COALESCE(NULLIF(ps.game_id, ''), ps.game_date) AS game_key,
+                MAX(ps.win_loss) AS win_loss
+            FROM player_stats ps
+            WHERE ps.team_id = ? AND ps.season = ? AND ps.game_date < ?
+            GROUP BY game_key
+        ) gl
+        """,
+        (team_id, season, game_date),
+    )
+    games = int((row or {}).get("games") or 0)
+    if games <= 0:
+        return 0.5
+    wins = int((row or {}).get("wins") or 0)
+    return float(np.clip(wins / max(1, games), 0.0, 1.0))
+
+
+def _window_minutes_by_player(team_id: int, season: str, game_dates: List[str]) -> Dict[int, float]:
+    """Return summed minutes by player for provided game dates."""
+    if not game_dates:
+        return {}
+    placeholders = ",".join("?" for _ in game_dates)
+    rows = db.fetch_all(
+        f"""
+        SELECT ps.player_id, COALESCE(SUM(ps.minutes), 0.0) AS minutes_sum
+        FROM player_stats ps
+        WHERE ps.team_id = ? AND ps.season = ? AND ps.game_date IN ({placeholders})
+        GROUP BY ps.player_id
+        """,
+        (team_id, season, *game_dates),
+    )
+    return {
+        int(r["player_id"]): float(r.get("minutes_sum") or 0.0)
+        for r in rows
+        if r.get("player_id") is not None
+    }
+
+
+def compute_season_progress(team_id: int, game_date: str, season: Optional[str] = None) -> float:
+    """Return normalized season progress [0, 1] for games completed pre-tip."""
+    season_key = _normalize_season_for_date(game_date, season)
+    gp = _count_team_games_to_date(team_id, game_date, season_key)
+    return float(np.clip(gp / _SEASON_GAME_COUNT, 0.0, 1.0))
+
+
+def compute_roster_shock(
+    team_id: int,
+    game_date: str,
+    season: Optional[str] = None,
+) -> float:
+    """Estimate roster/trade shock from recent rotation churn (0=stable, 1=high shock)."""
+    season_key = _normalize_season_for_date(game_date, season)
+    date_rows = db.fetch_all(
+        """
+        SELECT DISTINCT ps.game_date
+        FROM player_stats ps
+        WHERE ps.team_id = ? AND ps.season = ? AND ps.game_date < ?
+        ORDER BY ps.game_date DESC
+        LIMIT ?
+        """,
+        (
+            team_id,
+            season_key,
+            game_date,
+            _ROSTER_SHOCK_RECENT_GAMES + _ROSTER_SHOCK_BASELINE_GAMES + 2,
+        ),
+    )
+    dates = [str(r.get("game_date") or "") for r in date_rows if r.get("game_date")]
+    if len(dates) <= _ROSTER_SHOCK_RECENT_GAMES:
+        return 0.0
+
+    recent_dates = dates[:_ROSTER_SHOCK_RECENT_GAMES]
+    baseline_dates = dates[
+        _ROSTER_SHOCK_RECENT_GAMES:
+        _ROSTER_SHOCK_RECENT_GAMES + _ROSTER_SHOCK_BASELINE_GAMES
+    ]
+    if not baseline_dates:
+        return 0.0
+
+    recent_minutes = _window_minutes_by_player(team_id, season_key, recent_dates)
+    baseline_minutes = _window_minutes_by_player(team_id, season_key, baseline_dates)
+
+    baseline_total = float(sum(baseline_minutes.values()))
+    recent_total = float(sum(recent_minutes.values()))
+    if baseline_total <= 0.0 or recent_total <= 0.0:
+        return 0.0
+
+    baseline_share = {
+        pid: mins / baseline_total
+        for pid, mins in baseline_minutes.items()
+        if mins > 0.0
+    }
+    recent_share = {
+        pid: mins / recent_total
+        for pid, mins in recent_minutes.items()
+        if mins > 0.0
+    }
+
+    core_players = {
+        pid for pid, share in baseline_share.items() if share >= _ROSTER_SHOCK_CORE_SHARE
+    }
+    if not core_players:
+        return 0.0
+
+    outgoing_shock = 0.0
+    for pid in core_players:
+        prev_share = baseline_share.get(pid, 0.0)
+        now_share = recent_share.get(pid, 0.0)
+        if now_share < (0.25 * prev_share):
+            outgoing_shock += prev_share
+
+    incoming_shock = 0.0
+    for pid, share in recent_share.items():
+        if pid in core_players:
+            continue
+        if share >= _ROSTER_SHOCK_CORE_SHARE:
+            incoming_shock += share
+
+    shock = outgoing_shock + 0.60 * incoming_shock
+    return float(np.clip(shock, 0.0, 1.0))
+
+
+def compute_tanking_signal(
+    team_id: int,
+    game_date: str,
+    season: Optional[str] = None,
+    mode: str = "live",
+) -> float:
+    """Estimate tanking pressure (0=none, 1=high) in live or oracle mode."""
+    season_key = _normalize_season_for_date(game_date, season)
+    progress = compute_season_progress(team_id, game_date, season=season_key)
+    mode_key = str(mode or "live").strip().lower()
+
+    if mode_key == "oracle":
+        row = db.fetch_one(
+            "SELECT w_pct FROM team_metrics WHERE team_id = ? AND season = ?",
+            (team_id, season_key),
+        )
+        final_wpct = float((row or {}).get("w_pct") or 0.5)
+        late_gate = float(
+            np.clip(
+                (progress - _TANK_ORACLE_START_PROGRESS)
+                / max(1e-6, 1.0 - _TANK_ORACLE_START_PROGRESS),
+                0.0,
+                1.0,
+            )
+        )
+        oracle_distress = max(
+            0.0,
+            (_TANK_ORACLE_W_PCT_CUTOFF - final_wpct) / max(1e-6, _TANK_ORACLE_W_PCT_CUTOFF),
+        )
+        return float(np.clip(late_gate * oracle_distress, 0.0, 1.0))
+
+    # Default: live/casual-to-date signal only.
+    games_played = _count_team_games_to_date(team_id, game_date, season_key)
+    if games_played < 10:
+        return 0.0
+
+    win_pct = _team_win_pct_to_date(team_id, game_date, season_key)
+    momentum = compute_momentum(team_id, game_date, season=season_key)
+    streak = float((momentum or {}).get("streak", 0.0) or 0.0)
+    loss_streak = max(0.0, -streak) / 10.0
+    roster_churn = compute_roster_shock(team_id, game_date, season=season_key)
+
+    late_gate = float(
+        np.clip(
+            (progress - _TANK_LIVE_START_PROGRESS)
+            / max(1e-6, 1.0 - _TANK_LIVE_START_PROGRESS),
+            0.0,
+            1.0,
+        )
+    )
+    low_record_pressure = max(
+        0.0,
+        (_TANK_LIVE_WIN_PCT_CUTOFF - win_pct) / max(1e-6, _TANK_LIVE_WIN_PCT_CUTOFF),
+    )
+
+    signal = late_gate * (
+        0.55 * low_record_pressure
+        + 0.30 * loss_streak
+        + 0.15 * roster_churn
+    )
+    return float(np.clip(signal, 0.0, 1.0))
+
 
 def compute_travel(team_id: int, game_date: str, opponent_team_id: int,
                    is_home: int) -> Dict[str, Any]:

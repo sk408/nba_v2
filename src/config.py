@@ -54,6 +54,9 @@ _DEFAULTS: Dict[str, Any] = {
     "nba_api_min_interval_seconds": 1.6,
     "nba_api_on_off_timeout_seconds": 12.0,
     "nba_api_on_off_retries": 1,
+    "nba_api_on_off_team_retry_attempts": 1,
+    "nba_api_on_off_failure_backoff_base_seconds": 2.1,
+    "nba_api_on_off_failure_backoff_step_seconds": 0.5,
     "nba_api_on_off_abort_after_failures": 0,  # 0 = disabled
     "optimizer_log_interval": 300,
     "optimizer_deterministic": False,
@@ -85,6 +88,14 @@ _DEFAULTS: Dict[str, Any] = {
     "optimizer_objective_onoff_p95_cap": 25.0,
     # Optional prior pull toward current champion to discourage gratuitous drift.
     "optimizer_objective_l2_prior_mult": 0.02,
+    # Objective track selection:
+    # - live: walk-forward / rolling-CV only
+    # - oracle: full-history hindsight objective
+    # - dual_track: weighted blend of live + oracle losses
+    "optimizer_objective_primary_track": "dual_track",
+    "optimizer_objective_dual_live_weight": 0.70,
+    # Tanking signal feature mode for model score adjustments.
+    "optimizer_tanking_feature_mode": "both",  # "live", "oracle", "both"
     # Underdog confidence calibration for tiering/frontier analytics.
     # Uses raw model edge to avoid confidence saturation at 100.
     "underdog_confidence_use_edge_logistic": True,
@@ -102,8 +113,21 @@ _DEFAULTS: Dict[str, Any] = {
     "optimizer_blocked_min_stage_trials": 250,
     "optimizer_blocked_joint_radius_fraction": 0.18,
     "optimizer_blocked_stage_verbose": False,
+    "optimizer_blocked_preserve_stage_champions": True,
+    "optimizer_blocked_champion_log_top_k": 4,
+    "optimizer_stage_champion_bank_enabled": True,
+    "optimizer_stage_champion_bank_top_k": 100,
+    "optimizer_stage_champion_bank_seed_enabled": True,
+    "optimizer_stage_champion_bank_seed_max": 100,
+    "optimizer_stage_champion_bank_clear_on_full_promotion": True,
     # Diagnostic threshold: dog pick counted "competitive" if it loses by <= this margin
     "optimizer_competitive_dog_margin": 7.5,
+    # One-possession underdog near-miss credit (objective diagnostics + scoring).
+    "optimizer_onepos_credit_enabled": True,
+    "optimizer_onepos_credit_margin": 3.0,
+    "optimizer_onepos_credit_all_dogs_weight": 0.5,
+    "optimizer_onepos_credit_long_dogs_weight": 1.0,
+    "optimizer_onepos_credit_affects_winner_pct": True,
     # Moneyline filter for optimizer ROI diagnostics (1.50 == risk 100 to return 150 total)
     "optimizer_min_ml_payout": 1.50,
     # On/off signal shaping (feature engineering, not hard clamps)
@@ -114,6 +138,8 @@ _DEFAULTS: Dict[str, Any] = {
     "optimizer_save_min_weight_delta": 0.0001,
     "optimizer_save_max_winner_drop": 0.35,
     "optimizer_save_favorites_slack": 0.25,
+    # Additive guard bump from one-possession credit lift (0 disables bump).
+    "optimizer_save_onepos_credit_bump_mult": 0.15,
     "optimizer_save_compression_floor": 0.55,
     "optimizer_save_min_upset_count": 0,  # 0 = auto from validation sample size
     "optimizer_save_min_upset_rate": 8.0,

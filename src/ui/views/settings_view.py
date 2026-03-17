@@ -116,22 +116,25 @@ class SettingsView(QWidget):
         # ---- Section 2: Upset Bonus Multiplier ----
         self._build_upset_bonus(layout)
 
-        # ---- Section 3: Optimizer Save Gate ----
+        # ---- Section 3: Objective Track & Tanking Mode ----
+        self._build_objective_track_section(layout)
+
+        # ---- Section 4: Optimizer Save Gate ----
         self._build_optimizer_save_gate(layout)
 
-        # ---- Section 4: Sync & Performance ----
+        # ---- Section 5: Sync & Performance ----
         self._build_sync_performance(layout)
 
-        # ---- Section 5: Theme ----
+        # ---- Section 6: Theme ----
         self._build_theme_section(layout)
 
-        # ---- Section 5b: Timezone ----
+        # ---- Section 6b: Timezone ----
         self._build_timezone_section(layout)
 
-        # ---- Section 6: Coordinate Descent ----
+        # ---- Section 7: Coordinate Descent ----
         self._build_cd_section(layout)
 
-        # ---- Section 7: Weight Management ----
+        # ---- Section 8: Weight Management ----
         self._build_weight_management(layout)
 
         layout.addStretch()
@@ -230,6 +233,89 @@ class SettingsView(QWidget):
         apply_card_shadow(group)
         parent_layout.addWidget(group)
 
+    def _build_objective_track_section(self, parent_layout: QVBoxLayout):
+        """Build objective-track and tanking-mode controls."""
+        group = QGroupBox("Objective Track & Tanking Mode")
+        gl = QGridLayout(group)
+        gl.setSpacing(10)
+        gl.setContentsMargins(16, 20, 16, 16)
+
+        desc = QLabel(
+            "Choose which optimizer objective track is primary. "
+            "Dual track blends live walk-forward robustness with oracle hindsight diagnostics. "
+            "Also controls which tanking signal mode is active in scoring."
+        )
+        desc.setProperty("class", "text-secondary")
+        desc.setWordWrap(True)
+        gl.addWidget(desc, 0, 0, 1, 4)
+
+        label_style = f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 600;"
+
+        track_lbl = QLabel("Primary Objective Track")
+        track_lbl.setStyleSheet(label_style)
+        gl.addWidget(track_lbl, 1, 0)
+
+        self._objective_track_combo = QComboBox()
+        self._objective_track_combo.setMinimumWidth(280)
+        self._objective_track_combo.addItem("Dual Track (live + oracle blend)", "dual_track")
+        self._objective_track_combo.addItem("Live Only (walk-forward / rolling-CV)", "live")
+        self._objective_track_combo.addItem("Oracle Only (hindsight all-games)", "oracle")
+        self._objective_track_combo.setToolTip(
+            "Primary objective used for optimizer trial ranking and candidate selection."
+        )
+        self._objective_track_combo.currentIndexChanged.connect(
+            self._on_objective_track_changed
+        )
+        gl.addWidget(self._objective_track_combo, 1, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
+
+        dual_w_lbl = QLabel("Dual Track Live Weight")
+        dual_w_lbl.setStyleSheet(label_style)
+        gl.addWidget(dual_w_lbl, 2, 0)
+
+        self._objective_dual_live_weight_spin = QDoubleSpinBox()
+        self._objective_dual_live_weight_spin.setRange(0.0, 1.0)
+        self._objective_dual_live_weight_spin.setDecimals(2)
+        self._objective_dual_live_weight_spin.setSingleStep(0.05)
+        self._objective_dual_live_weight_spin.setFixedWidth(120)
+        self._objective_dual_live_weight_spin.setToolTip(
+            "Weight on live objective when Primary Objective Track is Dual Track. "
+            "Oracle weight is (1 - live weight)."
+        )
+        self._objective_dual_live_weight_spin.valueChanged.connect(
+            self._on_objective_dual_live_weight_changed
+        )
+        gl.addWidget(
+            self._objective_dual_live_weight_spin,
+            2,
+            1,
+            alignment=Qt.AlignmentFlag.AlignLeft,
+        )
+
+        tank_lbl = QLabel("Tanking Feature Mode")
+        tank_lbl.setStyleSheet(label_style)
+        gl.addWidget(tank_lbl, 3, 0)
+
+        self._tanking_feature_mode_combo = QComboBox()
+        self._tanking_feature_mode_combo.setMinimumWidth(280)
+        self._tanking_feature_mode_combo.addItem("Both (live + oracle tank signals)", "both")
+        self._tanking_feature_mode_combo.addItem("Live tank signal only", "live")
+        self._tanking_feature_mode_combo.addItem("Oracle tank signal only", "oracle")
+        self._tanking_feature_mode_combo.setToolTip(
+            "Controls which tanking signal channels are used in prediction and optimizer scoring."
+        )
+        self._tanking_feature_mode_combo.currentIndexChanged.connect(
+            self._on_tanking_feature_mode_changed
+        )
+        gl.addWidget(self._tanking_feature_mode_combo, 3, 1, 1, 3, Qt.AlignmentFlag.AlignLeft)
+
+        gl.setColumnStretch(0, 0)
+        gl.setColumnStretch(1, 0)
+        gl.setColumnStretch(2, 1)
+        gl.setColumnStretch(3, 1)
+
+        apply_card_shadow(group)
+        parent_layout.addWidget(group)
+
     def _build_optimizer_save_gate(self, parent_layout: QVBoxLayout):
         """Build anti-gaming optimizer save gate controls."""
         group = QGroupBox("Optimizer Save Gate (Anti-Gaming)")
@@ -240,12 +326,43 @@ class SettingsView(QWidget):
         desc = QLabel(
             "Controls when optimized weights are allowed to save. "
             "The gate uses validation loss plus upset-lift quality. "
+            "One-possession near-miss credit can feed objective scoring and guard tolerance. "
             "ROI can be optionally enabled as an additional hard gate, "
             "and long-dog one-possession quality can be used as a near-loss tiebreak."
         )
         desc.setProperty("class", "text-secondary")
         desc.setWordWrap(True)
         gl.addWidget(desc, 0, 0, 1, 4)
+
+        self._sg_onepos_credit_enabled_chk = QCheckBox(
+            "Enable one-possession near-miss credit"
+        )
+        self._sg_onepos_credit_enabled_chk.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 600;"
+        )
+        self._sg_onepos_credit_enabled_chk.setToolTip(
+            "Enables weighted one-possession underdog near-miss credit diagnostics "
+            "and objective scoring."
+        )
+        self._sg_onepos_credit_enabled_chk.toggled.connect(
+            self._on_onepos_credit_toggled
+        )
+        gl.addWidget(self._sg_onepos_credit_enabled_chk, 1, 0, 1, 4)
+
+        self._sg_onepos_affects_winner_chk = QCheckBox(
+            "Count one-possession credit toward winner%"
+        )
+        self._sg_onepos_affects_winner_chk.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 600;"
+        )
+        self._sg_onepos_affects_winner_chk.setToolTip(
+            "When enabled, one-possession credit also increases winner% scoring. "
+            "When disabled, winner% stays raw while upset credit still applies."
+        )
+        self._sg_onepos_affects_winner_chk.toggled.connect(
+            self._on_onepos_affects_winner_toggled
+        )
+        gl.addWidget(self._sg_onepos_affects_winner_chk, 2, 0, 1, 4)
 
         self._sg_use_roi_gate_chk = QCheckBox("Use ROI as hard save gate")
         self._sg_use_roi_gate_chk.setStyleSheet(
@@ -255,7 +372,7 @@ class SettingsView(QWidget):
             "When disabled, ROI is diagnostic-only and does not block saves."
         )
         self._sg_use_roi_gate_chk.toggled.connect(self._on_roi_gate_toggled)
-        gl.addWidget(self._sg_use_roi_gate_chk, 1, 0, 1, 4)
+        gl.addWidget(self._sg_use_roi_gate_chk, 3, 0, 1, 4)
 
         self._sg_use_long_dog_tiebreak_chk = QCheckBox(
             "Enable long-dog one-possession tiebreak"
@@ -269,12 +386,12 @@ class SettingsView(QWidget):
         self._sg_use_long_dog_tiebreak_chk.toggled.connect(
             self._on_long_dog_tiebreak_toggled
         )
-        gl.addWidget(self._sg_use_long_dog_tiebreak_chk, 2, 0, 1, 4)
+        gl.addWidget(self._sg_use_long_dog_tiebreak_chk, 4, 0, 1, 4)
 
         auto_note = QLabel("Count fields: set to 0 for auto thresholds by validation sample size.")
         auto_note.setProperty("class", "muted")
         auto_note.setWordWrap(True)
-        gl.addWidget(auto_note, 3, 0, 1, 4)
+        gl.addWidget(auto_note, 5, 0, 1, 4)
 
         label_style = f"color: {TEXT_PRIMARY}; font-size: 12px; font-weight: 600;"
 
@@ -329,6 +446,22 @@ class SettingsView(QWidget):
         self._sg_min_weight_delta_spin = _double_spin(
             0.0, 0.01, 0.0001, 4, "optimizer_save_min_weight_delta",
             tooltip="Minimum max per-parameter weight delta required to save.",
+        )
+        self._sg_onepos_credit_margin_spin = _double_spin(
+            0.0, 20.0, 0.5, 1, "optimizer_onepos_credit_margin", " pts",
+            "Maximum loss margin (points) for one-possession near-miss credit.",
+        )
+        self._sg_onepos_credit_all_weight_spin = _double_spin(
+            0.0, 2.0, 0.05, 2, "optimizer_onepos_credit_all_dogs_weight", "x",
+            "Partial near-miss credit weight for non-long underdog picks.",
+        )
+        self._sg_onepos_credit_long_weight_spin = _double_spin(
+            0.0, 2.0, 0.05, 2, "optimizer_onepos_credit_long_dogs_weight", "x",
+            "Near-miss credit weight for long underdog picks.",
+        )
+        self._sg_onepos_credit_bump_mult_spin = _double_spin(
+            0.0, 2.0, 0.01, 2, "optimizer_save_onepos_credit_bump_mult", "x",
+            "Additive winner/favorites guard bump multiplier from one-possession credit lift.",
         )
         self._sg_compression_floor_spin = _double_spin(
             0.1, 2.0, 0.01, 2, "optimizer_save_compression_floor",
@@ -416,7 +549,32 @@ class SettingsView(QWidget):
             ("Min Shrunk Upset Lift", self._sg_min_shrunk_upset_lift_spin, "Min ROI Lift", self._sg_min_roi_lift_spin),
         ]
 
-        row_idx = 4
+        row_idx = 6
+        onepos_pairs = [
+            (
+                "1P Credit Margin",
+                self._sg_onepos_credit_margin_spin,
+                "All-Dog Credit Weight",
+                self._sg_onepos_credit_all_weight_spin,
+            ),
+            (
+                "Long-Dog Credit Weight",
+                self._sg_onepos_credit_long_weight_spin,
+                "1P Credit Bump Mult",
+                self._sg_onepos_credit_bump_mult_spin,
+            ),
+        ]
+        for left_name, left_widget, right_name, right_widget in onepos_pairs:
+            left_lbl = QLabel(left_name)
+            left_lbl.setStyleSheet(label_style)
+            right_lbl = QLabel(right_name)
+            right_lbl.setStyleSheet(label_style)
+            gl.addWidget(left_lbl, row_idx, 0)
+            gl.addWidget(left_widget, row_idx, 1, alignment=Qt.AlignmentFlag.AlignLeft)
+            gl.addWidget(right_lbl, row_idx, 2)
+            gl.addWidget(right_widget, row_idx, 3, alignment=Qt.AlignmentFlag.AlignLeft)
+            row_idx += 1
+
         for left_name, left_widget, right_name, right_widget in pairs:
             left_lbl = QLabel(left_name)
             left_lbl.setStyleSheet(label_style)
@@ -860,6 +1018,22 @@ class SettingsView(QWidget):
         for widget in long_dog_widgets:
             widget.setEnabled(bool(enabled))
 
+    def _set_onepos_credit_controls_enabled(self, enabled: bool):
+        """Enable/disable one-possession credit controls."""
+        onepos_widgets = (
+            self._sg_onepos_affects_winner_chk,
+            self._sg_onepos_credit_margin_spin,
+            self._sg_onepos_credit_all_weight_spin,
+            self._sg_onepos_credit_long_weight_spin,
+            self._sg_onepos_credit_bump_mult_spin,
+        )
+        for widget in onepos_widgets:
+            widget.setEnabled(bool(enabled))
+
+    def _set_dual_live_weight_enabled(self, enabled: bool):
+        """Enable/disable dual-track live weight control."""
+        self._objective_dual_live_weight_spin.setEnabled(bool(enabled))
+
     def _load_current_settings(self):
         """Read config values and populate all controls."""
         try:
@@ -894,12 +1068,46 @@ class SettingsView(QWidget):
         self._upset_max_lbl.setText(f"{upset_max:.1f}")
         self._upset_value_lbl.setText(f"{upset_val:.2f}")
 
+        objective_track = str(
+            get("optimizer_objective_primary_track", "dual_track") or "dual_track"
+        ).strip().lower()
+        if objective_track not in {"dual_track", "live", "oracle"}:
+            objective_track = "dual_track"
+        track_idx = self._objective_track_combo.findData(objective_track)
+        self._objective_track_combo.blockSignals(True)
+        self._objective_track_combo.setCurrentIndex(max(0, track_idx))
+        self._objective_track_combo.blockSignals(False)
+
+        try:
+            dual_live_w = float(get("optimizer_objective_dual_live_weight", 0.70))
+        except (TypeError, ValueError):
+            dual_live_w = 0.70
+        dual_live_w = min(1.0, max(0.0, dual_live_w))
+        self._objective_dual_live_weight_spin.blockSignals(True)
+        self._objective_dual_live_weight_spin.setValue(dual_live_w)
+        self._objective_dual_live_weight_spin.blockSignals(False)
+
+        tank_mode = str(
+            get("optimizer_tanking_feature_mode", "both") or "both"
+        ).strip().lower()
+        if tank_mode not in {"both", "live", "oracle"}:
+            tank_mode = "both"
+        tank_idx = self._tanking_feature_mode_combo.findData(tank_mode)
+        self._tanking_feature_mode_combo.blockSignals(True)
+        self._tanking_feature_mode_combo.setCurrentIndex(max(0, tank_idx))
+        self._tanking_feature_mode_combo.blockSignals(False)
+        self._set_dual_live_weight_enabled(objective_track == "dual_track")
+
         # Optimizer save gate
         gate_float_bindings = [
             (self._sg_loss_margin_spin, "optimizer_save_loss_margin", 0.01),
             (self._sg_min_weight_delta_spin, "optimizer_save_min_weight_delta", 0.0001),
             (self._sg_max_winner_drop_spin, "optimizer_save_max_winner_drop", 0.35),
             (self._sg_favorites_slack_spin, "optimizer_save_favorites_slack", 0.25),
+            (self._sg_onepos_credit_margin_spin, "optimizer_onepos_credit_margin", 3.0),
+            (self._sg_onepos_credit_all_weight_spin, "optimizer_onepos_credit_all_dogs_weight", 0.5),
+            (self._sg_onepos_credit_long_weight_spin, "optimizer_onepos_credit_long_dogs_weight", 1.0),
+            (self._sg_onepos_credit_bump_mult_spin, "optimizer_save_onepos_credit_bump_mult", 0.15),
             (self._sg_min_ml_payout_spin, "optimizer_min_ml_payout", 1.50),
             (self._sg_compression_floor_spin, "optimizer_save_compression_floor", 0.55),
             (self._sg_min_upset_rate_spin, "optimizer_save_min_upset_rate", 8.0),
@@ -946,6 +1154,21 @@ class SettingsView(QWidget):
         self._sg_use_roi_gate_chk.setChecked(roi_gate_enabled)
         self._sg_use_roi_gate_chk.blockSignals(False)
         self._set_roi_controls_enabled(roi_gate_enabled)
+        onepos_credit_enabled = self._to_bool(
+            get("optimizer_onepos_credit_enabled", True),
+            True,
+        )
+        self._sg_onepos_credit_enabled_chk.blockSignals(True)
+        self._sg_onepos_credit_enabled_chk.setChecked(onepos_credit_enabled)
+        self._sg_onepos_credit_enabled_chk.blockSignals(False)
+        onepos_affects_winner = self._to_bool(
+            get("optimizer_onepos_credit_affects_winner_pct", True),
+            True,
+        )
+        self._sg_onepos_affects_winner_chk.blockSignals(True)
+        self._sg_onepos_affects_winner_chk.setChecked(onepos_affects_winner)
+        self._sg_onepos_affects_winner_chk.blockSignals(False)
+        self._set_onepos_credit_controls_enabled(onepos_credit_enabled)
         long_dog_gate_enabled = self._to_bool(
             get("optimizer_save_use_long_dog_tiebreak_gate", True),
             True,
@@ -1029,6 +1252,45 @@ class SettingsView(QWidget):
         self._upset_value_lbl.setText(f"{float_val:.2f}")
         set_value("upset_bonus_mult", float_val)
 
+    def _on_objective_track_changed(self, index: int):
+        """Persist primary objective track selection."""
+        from src.config import set_value
+
+        track = str(self._objective_track_combo.itemData(index) or "dual_track")
+        if track not in {"dual_track", "live", "oracle"}:
+            track = "dual_track"
+        set_value("optimizer_objective_primary_track", track)
+        self._set_dual_live_weight_enabled(track == "dual_track")
+
+        label = {
+            "dual_track": "Dual Track",
+            "live": "Live Only",
+            "oracle": "Oracle Only",
+        }.get(track, track)
+        self._notify(f"Objective track: {label}")
+
+    def _on_objective_dual_live_weight_changed(self, value: float):
+        """Persist dual-track live blend weight."""
+        from src.config import set_value
+
+        set_value("optimizer_objective_dual_live_weight", float(value))
+
+    def _on_tanking_feature_mode_changed(self, index: int):
+        """Persist tanking feature mode."""
+        from src.config import set_value
+
+        mode = str(self._tanking_feature_mode_combo.itemData(index) or "both")
+        if mode not in {"both", "live", "oracle"}:
+            mode = "both"
+        set_value("optimizer_tanking_feature_mode", mode)
+
+        label = {
+            "both": "Both (live + oracle)",
+            "live": "Live only",
+            "oracle": "Oracle only",
+        }.get(mode, mode)
+        self._notify(f"Tanking feature mode: {label}")
+
     def _on_gate_float_changed(self, key: str, value: float):
         """Persist float-based optimizer save gate settings."""
         from src.config import set_value
@@ -1038,6 +1300,15 @@ class SettingsView(QWidget):
         """Toggle ROI hard-gate mode and ROI control availability."""
         self._on_gate_bool_changed("optimizer_save_use_roi_gate", checked)
         self._set_roi_controls_enabled(checked)
+
+    def _on_onepos_credit_toggled(self, checked: bool):
+        """Toggle one-possession credit and related controls."""
+        self._on_gate_bool_changed("optimizer_onepos_credit_enabled", checked)
+        self._set_onepos_credit_controls_enabled(checked)
+
+    def _on_onepos_affects_winner_toggled(self, checked: bool):
+        """Toggle whether one-possession credit affects winner%."""
+        self._on_gate_bool_changed("optimizer_onepos_credit_affects_winner_pct", checked)
 
     def _on_long_dog_tiebreak_toggled(self, checked: bool):
         """Toggle long-dog tiebreak mode and control availability."""

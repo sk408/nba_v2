@@ -57,6 +57,23 @@ def _get_last_game_date() -> str:
     return row["d"] if row and row["d"] else ""
 
 
+def _normalize_team_id_scope(team_ids: Optional[list[int]]) -> Optional[list[int]]:
+    """Normalize an optional team-id list into a sorted unique scope."""
+    if team_ids is None:
+        return None
+    normalized = []
+    for team_id in team_ids:
+        try:
+            value = int(team_id)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            normalized.append(value)
+    if not normalized:
+        return []
+    return sorted(set(normalized))
+
+
 def clear_sync_cache():
     """Delete all freshness metadata so next sync re-fetches everything.
 
@@ -492,11 +509,22 @@ def _update_misc_stats(season, now, callback):
         )
 
 
-def sync_player_impact(callback: Optional[Callable] = None, force: bool = False):
+def sync_player_impact(
+    callback: Optional[Callable] = None,
+    force: bool = False,
+    team_ids: Optional[list[int]] = None,
+):
     """Step 6: Sync player impact (estimated metrics + on/off)."""
+    scoped_team_ids = _normalize_team_id_scope(team_ids)
     meta = _get_sync_meta("player_impact")
     current_gc = _get_game_count()
-    if not force and _is_fresh("player_impact", 168) and meta.get("game_count_at_sync", 0) == current_gc:
+    should_check_freshness = scoped_team_ids is None
+    if (
+        should_check_freshness
+        and not force
+        and _is_fresh("player_impact", 168)
+        and meta.get("game_count_at_sync", 0) == current_gc
+    ):
         if callback:
             callback("Player impact is fresh, skipping...")
         return
@@ -510,19 +538,57 @@ def sync_player_impact(callback: Optional[Callable] = None, force: bool = False)
     est_map = {int(r.get("PLAYER_ID", 0)): r for r in est}
 
     if callback:
-        callback("Fetching player on/off data per team...")
-    team_rows = db.fetch_all("SELECT team_id FROM teams")
+        if scoped_team_ids is None:
+            callback("Fetching player on/off data per team...")
+        elif not scoped_team_ids:
+            callback("No valid team IDs supplied for targeted player impact sync; skipping...")
+            return
+        else:
+            callback(
+                f"Fetching player on/off data for {len(scoped_team_ids)} selected team(s)..."
+            )
+
+    if scoped_team_ids is None:
+        team_rows = db.fetch_all("SELECT team_id FROM teams")
+    else:
+        placeholders = ",".join(["?"] * len(scoped_team_ids))
+        team_rows = db.fetch_all(
+            f"SELECT team_id FROM teams WHERE team_id IN ({placeholders})",
+            tuple(scoped_team_ids),
+        )
+        found_team_ids = {int(row["team_id"]) for row in team_rows}
+        missing_team_ids = [tid for tid in scoped_team_ids if tid not in found_team_ids]
+        if callback and missing_team_ids:
+            callback(f"Skipping unknown team_id(s): {', '.join(str(tid) for tid in missing_team_ids)}")
+
     on_off_map = {}
     on_off_consecutive_failures = 0
     on_off_failures = 0
+    preserve_on_off_team_ids = set()
+    team_retry_attempts = int(get_setting("nba_api_on_off_team_retry_attempts", 1) or 1)
+    team_retry_attempts = max(0, min(5, team_retry_attempts))
+    on_off_failure_backoff_base = float(
+        get_setting("nba_api_on_off_failure_backoff_base_seconds", 2.1) or 2.1
+    )
+    on_off_failure_backoff_step = float(
+        get_setting("nba_api_on_off_failure_backoff_step_seconds", 0.5) or 0.5
+    )
+    on_off_failure_backoff_base = max(0.0, on_off_failure_backoff_base)
+    on_off_failure_backoff_step = max(0.0, on_off_failure_backoff_step)
     max_on_off_failures = int(get_setting("nba_api_on_off_abort_after_failures", 0))
     abort_on_off_loop = max_on_off_failures > 0
+    abort_loop_triggered = False
     for i, trow in enumerate(team_rows):
         tid = trow["team_id"]
         if callback:
             callback(f"On/off: {i + 1}/{len(team_rows)} teams (team_id={tid})...")
-        data = nba_fetcher.fetch_player_on_off(tid)
-        if not data.get("_ok", True):
+        data = {"on": [], "off": [], "_ok": False}
+        for attempt in range(team_retry_attempts + 1):
+            data = nba_fetcher.fetch_player_on_off(tid)
+            if data.get("_ok", True):
+                on_off_consecutive_failures = 0
+                break
+
             on_off_failures += 1
             on_off_consecutive_failures += 1
             if callback:
@@ -530,6 +596,7 @@ def sync_player_impact(callback: Optional[Callable] = None, force: bool = False)
                     f"On/off failed for team_id={tid} "
                     f"({on_off_consecutive_failures} consecutive failures; likely timeout/rate-limit pressure)"
                 )
+
             if abort_on_off_loop and on_off_consecutive_failures >= max_on_off_failures:
                 logger.warning(
                     "Stopping on/off team loop after %d consecutive failures (configured threshold=%d).",
@@ -541,15 +608,36 @@ def sync_player_impact(callback: Optional[Callable] = None, force: bool = False)
                         "On/off timeout/rate-limit streak threshold reached; "
                         "stopping remaining team on/off fetches for this sync."
                     )
+                abort_loop_triggered = True
                 break
+
+            has_retry = attempt < team_retry_attempts
+            if has_retry:
+                backoff_seconds = on_off_failure_backoff_base + (
+                    on_off_failure_backoff_step * max(0, on_off_consecutive_failures - 1)
+                )
+                if callback:
+                    callback(
+                        f"Retrying team_id={tid} on/off fetch in {backoff_seconds:.1f}s "
+                        f"(retry {attempt + 1}/{team_retry_attempts})"
+                    )
+                time.sleep(backoff_seconds)
+
+        if abort_loop_triggered:
+            preserve_on_off_team_ids.add(tid)
+            for pending in team_rows[i + 1:]:
+                preserve_on_off_team_ids.add(pending["team_id"])
+            break
+        if not data.get("_ok", True):
+            preserve_on_off_team_ids.add(tid)
             continue
-        on_off_consecutive_failures = 0
+
         for rec in data.get("on", []):
             pid = int(rec.get("VS_PLAYER_ID", rec.get("PLAYER_ID", 0)))
-            on_off_map.setdefault(pid, {})["on"] = rec
+            on_off_map.setdefault((pid, tid), {})["on"] = rec
         for rec in data.get("off", []):
             pid = int(rec.get("VS_PLAYER_ID", rec.get("PLAYER_ID", 0)))
-            on_off_map.setdefault(pid, {}).setdefault("off", rec)
+            on_off_map.setdefault((pid, tid), {}).setdefault("off", rec)
 
     if callback and on_off_failures:
         callback(
@@ -557,24 +645,64 @@ def sync_player_impact(callback: Optional[Callable] = None, force: bool = False)
             "continuing with available data."
         )
 
-    players = db.fetch_all("SELECT player_id, team_id FROM players")
+    preserved_on_off_by_player_team = {}
+    if preserve_on_off_team_ids:
+        placeholders = ",".join(["?"] * len(preserve_on_off_team_ids))
+        rows = db.fetch_all(
+            f"""SELECT player_id, team_id,
+                       on_court_off_rating, on_court_def_rating, on_court_net_rating,
+                       off_court_off_rating, off_court_def_rating, off_court_net_rating,
+                       net_rating_diff, on_court_minutes
+                FROM player_impact
+                WHERE season=? AND team_id IN ({placeholders})""",
+            (season, *sorted(preserve_on_off_team_ids)),
+        )
+        for row in rows:
+            preserved_on_off_by_player_team[(row["player_id"], row["team_id"])] = row
+
+    if scoped_team_ids is None:
+        players = db.fetch_all("SELECT player_id, team_id FROM players")
+    elif team_rows:
+        active_scope = sorted({int(row["team_id"]) for row in team_rows})
+        placeholders = ",".join(["?"] * len(active_scope))
+        players = db.fetch_all(
+            f"SELECT player_id, team_id FROM players WHERE team_id IN ({placeholders})",
+            tuple(active_scope),
+        )
+    else:
+        players = []
     batch = []
     for p in players:
         pid = p["player_id"]
         tid = p["team_id"]
         e = est_map.get(pid, {})
-        oo = on_off_map.get(pid, {})
+        oo = on_off_map.get((pid, tid), {})
         on_data = oo.get("on", {})
         off_data = oo.get("off", {})
 
-        on_off_r = float(on_data.get("OFF_RATING", 0) or 0)
-        on_def_r = float(on_data.get("DEF_RATING", 0) or 0)
-        on_net = float(on_data.get("NET_RATING", 0) or 0)
-        off_off_r = float(off_data.get("OFF_RATING", 0) or 0)
-        off_def_r = float(off_data.get("DEF_RATING", 0) or 0)
-        off_net = float(off_data.get("NET_RATING", 0) or 0)
-        net_diff = on_net - off_net
-        on_min = float(on_data.get("MIN", 0) or 0)
+        preserved_on_off = (
+            preserved_on_off_by_player_team.get((pid, tid))
+            if tid in preserve_on_off_team_ids
+            else None
+        )
+        if preserved_on_off is not None:
+            on_off_r = float(preserved_on_off["on_court_off_rating"] or 0)
+            on_def_r = float(preserved_on_off["on_court_def_rating"] or 0)
+            on_net = float(preserved_on_off["on_court_net_rating"] or 0)
+            off_off_r = float(preserved_on_off["off_court_off_rating"] or 0)
+            off_def_r = float(preserved_on_off["off_court_def_rating"] or 0)
+            off_net = float(preserved_on_off["off_court_net_rating"] or 0)
+            net_diff = float(preserved_on_off["net_rating_diff"] or 0)
+            on_min = float(preserved_on_off["on_court_minutes"] or 0)
+        else:
+            on_off_r = float(on_data.get("OFF_RATING", 0) or 0)
+            on_def_r = float(on_data.get("DEF_RATING", 0) or 0)
+            on_net = float(on_data.get("NET_RATING", 0) or 0)
+            off_off_r = float(off_data.get("OFF_RATING", 0) or 0)
+            off_def_r = float(off_data.get("DEF_RATING", 0) or 0)
+            off_net = float(off_data.get("NET_RATING", 0) or 0)
+            net_diff = on_net - off_net
+            on_min = float(on_data.get("MIN", 0) or 0)
 
         batch.append((
             pid, tid, season,
@@ -623,15 +751,30 @@ def sync_player_impact(callback: Optional[Callable] = None, force: bool = False)
             batch,
         )
 
-    _set_sync_meta("player_impact", current_gc, _get_last_game_date())
+    if should_check_freshness:
+        _set_sync_meta("player_impact", current_gc, _get_last_game_date())
     if callback:
-        callback("Player impact sync complete")
+        if scoped_team_ids is None:
+            callback("Player impact sync complete")
+        else:
+            callback(
+                f"Player impact targeted sync complete ({len(team_rows)} team(s) processed)"
+            )
+
+
+def sync_player_impact_for_teams(
+    team_ids: list[int],
+    callback: Optional[Callable] = None,
+    force: bool = True,
+):
+    """Targeted repair sync for player impact on specific teams."""
+    sync_player_impact(callback=callback, force=force, team_ids=team_ids)
 
 
 def sync_historical_odds(callback: Optional[Callable] = None, force: bool = False):
-    """Step 7: Sync Vegas odds for recent games."""
-    from src.data.odds_sync import backfill_odds
-    
+    """Step 7: Sync Vegas odds for recent games + upcoming (today/tomorrow)."""
+    from src.data.odds_sync import backfill_odds, sync_upcoming_odds
+
     meta = _get_sync_meta("odds_sync")
     current_gc = _get_game_count()
     if not force and _is_fresh("odds_sync", 24) and meta.get("game_count_at_sync", 0) == current_gc:

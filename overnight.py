@@ -1,6 +1,7 @@
 """CLI to run the overnight optimization loop with rich TUI and graceful shutdown."""
 
 import logging
+import os
 import re
 import signal
 import sys
@@ -45,6 +46,40 @@ def _install_signal_handler(tui: "RichOvernightConsole | None" = None):
             tui.stopping = True
 
     signal.signal(signal.SIGINT, _handle_sigint)
+
+
+def configure_overnight_file_logging(log_path: str = os.path.join("data", "overnight.log")) -> logging.FileHandler:
+    """Mirror overnight CLI file logging configuration for reuse in UI entrypoints."""
+    os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+
+    file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s")
+    )
+
+    root_logger = logging.getLogger()
+    target_path = os.path.abspath(log_path)
+
+    # Keep behavior aligned with overnight.py: remove console stream handlers.
+    # Also remove any existing handler targeting the same overnight log file
+    # so repeated runs in a long-lived GUI session do not duplicate writes.
+    for handler in root_logger.handlers[:]:
+        if isinstance(handler, logging.StreamHandler) and not isinstance(
+            handler, logging.FileHandler
+        ):
+            root_logger.removeHandler(handler)
+            continue
+        if isinstance(handler, logging.FileHandler):
+            base_filename = getattr(handler, "baseFilename", "")
+            if base_filename and os.path.abspath(base_filename) == target_path:
+                root_logger.removeHandler(handler)
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+
+    root_logger.addHandler(file_handler)
+    return file_handler
 
 
 # ── Rich TUI Console ─────────────────────────────────────────
@@ -796,20 +831,8 @@ def main():
         # Redirect logging and stdout so only the rich Live display is visible.
         # Logging goes to data/overnight.log; stdout is silenced.
         import io
-        import os
 
-        log_path = os.path.join("data", "overnight.log")
-        os.makedirs("data", exist_ok=True)
-        file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
-        file_handler.setFormatter(
-            logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s  %(message)s")
-        )
-        root_logger = logging.getLogger()
-        # Replace console handlers with file handler
-        for h in root_logger.handlers[:]:
-            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
-                root_logger.removeHandler(h)
-        root_logger.addHandler(file_handler)
+        configure_overnight_file_logging()
 
         # Silence stray print() calls by redirecting stdout.
         # Give Rich the real stdout before we swap it out.

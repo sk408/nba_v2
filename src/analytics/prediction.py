@@ -130,6 +130,15 @@ class GameInput:
     away_letdown: bool = False
     home_road_trip_game: int = 0
     away_road_trip_game: int = 0
+    # Season phase + regime features
+    home_season_progress: float = 0.0
+    away_season_progress: float = 0.0
+    home_tank_signal_live: float = 0.0
+    away_tank_signal_live: float = 0.0
+    home_tank_signal_oracle: float = 0.0
+    away_tank_signal_oracle: float = 0.0
+    home_roster_shock: float = 0.0
+    away_roster_shock: float = 0.0
     # SRS / Pythagorean
     home_srs: float = 0.0
     away_srs: float = 0.0
@@ -182,6 +191,17 @@ class Prediction:
     calibrated_away_pts: Optional[float] = None
     score_calibrated: bool = False
     score_calibration_mode: str = ""
+
+
+def _resolve_tanking_feature_mode() -> str:
+    """Return validated tanking feature mode: live, oracle, or both."""
+    try:
+        cfg = get_config()
+        mode = str(cfg.get("optimizer_tanking_feature_mode", "both") or "both")
+    except Exception:
+        mode = "both"
+    mode = mode.strip().lower()
+    return mode if mode in {"live", "oracle", "both"} else "both"
 
 
 # ──────────────────────────────────────────────────────────────
@@ -362,17 +382,46 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
     game_score += road_trip_adj
     pred.adjustments["road_trip_game"] = road_trip_adj
 
-    # 25. SRS differential
+    # 25. Season progress differential (late-season asymmetry and cadence)
+    season_progress_adj = (
+        game.home_season_progress - game.away_season_progress
+    ) * w.season_progress_mult
+    game_score += season_progress_adj
+    pred.adjustments["season_progress"] = season_progress_adj
+
+    # 26. Roster/trade shock (higher churn is penalized)
+    roster_shock_adj = (
+        game.away_roster_shock - game.home_roster_shock
+    ) * w.roster_shock_mult
+    game_score += roster_shock_adj
+    pred.adjustments["roster_shock"] = roster_shock_adj
+
+    # 27. Tanking pressure (configurable live/oracle/both)
+    tank_mode = _resolve_tanking_feature_mode()
+    if tank_mode in {"live", "both"}:
+        tank_live_adj = (
+            game.away_tank_signal_live - game.home_tank_signal_live
+        ) * w.tank_live_mult
+        game_score += tank_live_adj
+        pred.adjustments["tank_live"] = tank_live_adj
+    if tank_mode in {"oracle", "both"}:
+        tank_oracle_adj = (
+            game.away_tank_signal_oracle - game.home_tank_signal_oracle
+        ) * w.tank_oracle_mult
+        game_score += tank_oracle_adj
+        pred.adjustments["tank_oracle"] = tank_oracle_adj
+
+    # 28. SRS differential
     srs_adj = (game.home_srs - game.away_srs) * w.srs_diff_mult
     game_score += srs_adj
     pred.adjustments["srs"] = srs_adj
 
-    # 26. Pythagorean differential
+    # 29. Pythagorean differential
     pythag_adj = (game.home_pythag_wpct - game.away_pythag_wpct) * w.pythag_diff_mult
     game_score += pythag_adj
     pred.adjustments["pythag"] = pythag_adj
 
-    # 27. Player On/Off impact (reliability-aware z-scored team signal)
+    # 30. Player On/Off impact (reliability-aware z-scored team signal)
     onoff_lambda = max(0.0, float(getattr(w, "onoff_reliability_lambda", 0.0)))
     home_rel = max(0.0, float(game.home_onoff_reliability))
     away_rel = max(0.0, float(game.away_onoff_reliability))
@@ -382,13 +431,13 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
     game_score += onoff_adj
     pred.adjustments["onoff_impact"] = onoff_adj
 
-    # 28. 3PT luck regression (hot team regresses down, cold team regresses up)
+    # 31. 3PT luck regression (hot team regresses down, cold team regresses up)
     # Negative because positive luck = overperforming = expect regression down
     fg3_luck_adj = -(game.home_fg3_luck - game.away_fg3_luck) * w.fg3_luck_mult
     game_score += fg3_luck_adj
     pred.adjustments["fg3_luck"] = fg3_luck_adj
 
-    # 29. Process stats matchup (paint scoring vs paint defense, etc.)
+    # 32. Process stats matchup (paint scoring vs paint defense, etc.)
     # Each component: (team's scoring - opponent's allowed) normalized by league avg
     hp, ap = game.home_process, game.away_process
     if hp and ap:
@@ -841,7 +890,15 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
 
     # ── V2.1 features ──
     from src.analytics.elo import get_team_elo
-    from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots, compute_fg3_luck
+    from src.analytics.stats_engine import (
+        compute_travel,
+        compute_momentum,
+        compute_schedule_spots,
+        compute_fg3_luck,
+        compute_season_progress,
+        compute_tanking_signal,
+        compute_roster_shock,
+    )
 
     _home_travel = compute_travel(home_team_id, game_date, away_team_id, is_home=True)
     _away_travel = compute_travel(away_team_id, game_date, home_team_id, is_home=False)
@@ -849,6 +906,51 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
     _away_momentum = compute_momentum(away_team_id, game_date, season=game_season)
     _home_sched = compute_schedule_spots(home_team_id, game_date, away_team_id, season=game_season)
     _away_sched = compute_schedule_spots(away_team_id, game_date, home_team_id, season=game_season)
+    feature_date = as_of_date or game_date
+    _home_season_progress = compute_season_progress(
+        home_team_id,
+        feature_date,
+        season=game_season,
+    )
+    _away_season_progress = compute_season_progress(
+        away_team_id,
+        feature_date,
+        season=game_season,
+    )
+    _home_tank_live = compute_tanking_signal(
+        home_team_id,
+        feature_date,
+        season=game_season,
+        mode="live",
+    )
+    _away_tank_live = compute_tanking_signal(
+        away_team_id,
+        feature_date,
+        season=game_season,
+        mode="live",
+    )
+    _home_tank_oracle = compute_tanking_signal(
+        home_team_id,
+        feature_date,
+        season=game_season,
+        mode="oracle",
+    )
+    _away_tank_oracle = compute_tanking_signal(
+        away_team_id,
+        feature_date,
+        season=game_season,
+        mode="oracle",
+    )
+    _home_roster_shock = compute_roster_shock(
+        home_team_id,
+        feature_date,
+        season=game_season,
+    )
+    _away_roster_shock = compute_roster_shock(
+        away_team_id,
+        feature_date,
+        season=game_season,
+    )
 
     # On/Off impact (season z-scored + reliability payloads)
     _onoff_signal_map = _get_onoff_team_signals_for_season(game_season)
@@ -970,6 +1072,14 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
         away_letdown=_away_sched["letdown"],
         home_road_trip_game=_home_sched["road_trip_game"],
         away_road_trip_game=_away_sched["road_trip_game"],
+        home_season_progress=_home_season_progress,
+        away_season_progress=_away_season_progress,
+        home_tank_signal_live=_home_tank_live,
+        away_tank_signal_live=_away_tank_live,
+        home_tank_signal_oracle=_home_tank_oracle,
+        away_tank_signal_oracle=_away_tank_oracle,
+        home_roster_shock=_home_roster_shock,
+        away_roster_shock=_away_roster_shock,
         # SRS
         home_srs=hm.get("srs", 0.0) or 0.0,
         away_srs=am.get("srs", 0.0) or 0.0,
@@ -1759,7 +1869,15 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
         }
 
         # ── V2.1 features ──
-        from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots, compute_fg3_luck
+        from src.analytics.stats_engine import (
+            compute_travel,
+            compute_momentum,
+            compute_schedule_spots,
+            compute_fg3_luck,
+            compute_season_progress,
+            compute_tanking_signal,
+            compute_roster_shock,
+        )
 
         _home_travel = compute_travel(htid, gdate, atid, is_home=True)
         _away_travel = compute_travel(atid, gdate, htid, is_home=False)
@@ -1767,6 +1885,50 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
         _away_momentum = compute_momentum(atid, gdate, season=game_season)
         _home_sched = compute_schedule_spots(htid, gdate, atid, season=game_season)
         _away_sched = compute_schedule_spots(atid, gdate, htid, season=game_season)
+        _home_season_progress = compute_season_progress(
+            htid,
+            gdate,
+            season=game_season,
+        )
+        _away_season_progress = compute_season_progress(
+            atid,
+            gdate,
+            season=game_season,
+        )
+        _home_tank_live = compute_tanking_signal(
+            htid,
+            gdate,
+            season=game_season,
+            mode="live",
+        )
+        _away_tank_live = compute_tanking_signal(
+            atid,
+            gdate,
+            season=game_season,
+            mode="live",
+        )
+        _home_tank_oracle = compute_tanking_signal(
+            htid,
+            gdate,
+            season=game_season,
+            mode="oracle",
+        )
+        _away_tank_oracle = compute_tanking_signal(
+            atid,
+            gdate,
+            season=game_season,
+            mode="oracle",
+        )
+        _home_roster_shock = compute_roster_shock(
+            htid,
+            gdate,
+            season=game_season,
+        )
+        _away_roster_shock = compute_roster_shock(
+            atid,
+            gdate,
+            season=game_season,
+        )
 
         # On/Off impact (from pre-built cache)
         _home_onoff_payload = _onoff_cache.get(
@@ -1856,6 +2018,14 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
             away_letdown=_away_sched["letdown"],
             home_road_trip_game=_home_sched["road_trip_game"],
             away_road_trip_game=_away_sched["road_trip_game"],
+            home_season_progress=_home_season_progress,
+            away_season_progress=_away_season_progress,
+            home_tank_signal_live=_home_tank_live,
+            away_tank_signal_live=_away_tank_live,
+            home_tank_signal_oracle=_home_tank_oracle,
+            away_tank_signal_oracle=_away_tank_oracle,
+            home_roster_shock=_home_roster_shock,
+            away_roster_shock=_away_roster_shock,
             # SRS
             home_srs=hm.get("srs", 0.0) or 0.0,
             away_srs=am.get("srs", 0.0) or 0.0,
