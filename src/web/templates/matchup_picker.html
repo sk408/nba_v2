@@ -4,16 +4,20 @@
 {% block content %}
 <div class="page-header">
     <h1 class="page-title">Matchup Predictions</h1>
-    <span class="page-subtitle">{{ selected_date }} &mdash; Select a game</span>
+    <span class="page-subtitle">Select a game</span>
 </div>
 
-<div class="date-strip">
+<nav class="date-strip" aria-label="Game dates">
     {% for d in dates %}
-    <a href="/matchup?date={{ d.value }}" class="date-chip{% if d.is_active %} active{% endif %}">
-        {{ d.label }}
+    <a href="/matchup?date={{ d.value }}"
+       class="date-chip{% if d.is_active %} active{% endif %}{% if d.is_today %} today{% endif %}"
+       {% if d.is_active %}aria-current="date"{% endif %}>
+        <span class="date-chip__day">{{ d.day_name }}</span>
+        <span class="date-chip__num">{{ d.day_num }}</span>
+        <span class="date-chip__month">{{ d.month }}</span>
     </a>
     {% endfor %}
-</div>
+</nav>
 
 {% if games %}
 <div class="game-grid">

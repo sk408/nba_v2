@@ -1,15 +1,102 @@
 import logging
+import threading
 import time
 from datetime import datetime
-from typing import Optional, Callable
+from typing import Optional, Callable, Dict
 from src.database import db
 from src.data.http_client import get_json, HttpClientError
 
 logger = logging.getLogger(__name__)
 
+# ── Live score-gated odds refresh ──
+_live_score_tracker: Dict[str, int] = {}   # "HOME-AWAY" → combined score at last AN fetch
+_live_last_an_fetch: float = 0.0            # global timestamp of last AN fetch
+_live_fetch_in_progress: bool = False       # guard against concurrent fetches
+_live_tracker_lock = threading.Lock()
+_LIVE_MIN_INTERVAL_SEC = 30                 # global minimum between AN fetches
+_LIVE_SCORE_DELTA_DEFAULT = 8               # combined pts change to trigger refresh
+_LIVE_SCORE_DELTA_LATE = 4                  # 4Q/OT threshold (lines move faster)
+
 _ACTIONNETWORK_BLOCK_COOLDOWN_SEC = 5 * 60
 _actionnetwork_blocked_until = 0.0
 _actionnetwork_last_block_log = 0.0
+
+
+def maybe_refresh_live_odds(
+    home_abbr: str,
+    away_abbr: str,
+    home_score: int,
+    away_score: int,
+    status_state: str,
+    period: int,
+    game_date: str,
+) -> Optional[dict]:
+    """Conditionally refresh AN odds when live-game score changes enough.
+
+    Returns {"fetched": bool, "reason": str} or None if not live.
+    """
+    global _live_last_an_fetch, _live_fetch_in_progress
+
+    if status_state != "in":
+        return None
+
+    key = f"{home_abbr}-{away_abbr}"
+    combined = int(home_score or 0) + int(away_score or 0)
+    threshold = _LIVE_SCORE_DELTA_LATE if period >= 4 else _LIVE_SCORE_DELTA_DEFAULT
+
+    with _live_tracker_lock:
+        prev = _live_score_tracker.get(key)
+        now = time.time()
+
+        # First time seeing this game live → fetch immediately
+        if prev is None:
+            reason = "first_live"
+        elif abs(combined - prev) >= threshold:
+            reason = f"score_delta={abs(combined - prev)}"
+        else:
+            return {"fetched": False, "reason": "below_threshold"}
+
+        # Don't stack fetches — if one is already in flight, just seed and wait
+        if _live_fetch_in_progress:
+            if reason == "first_live":
+                _live_score_tracker[key] = combined
+            return {"fetched": False, "reason": "fetch_in_progress"}
+
+        # Enforce global minimum interval
+        if now - _live_last_an_fetch < _LIVE_MIN_INTERVAL_SEC:
+            if reason == "first_live":
+                # AN already fetched recently (has this game's odds) — just seed tracker
+                _live_score_tracker[key] = combined
+                return {"fetched": False, "reason": "first_live_cached"}
+            return {"fetched": False, "reason": "cooldown"}
+
+        _live_score_tracker[key] = combined
+        _live_last_an_fetch = now
+        _live_fetch_in_progress = True
+
+    # Do the actual fetch outside the lock
+    try:
+        saved = sync_odds_for_date(game_date, invalidate_cache=False)
+        logger.info(
+            "Live odds refresh (%s): %s, saved %d games",
+            key, reason, saved,
+        )
+        return {"fetched": True, "reason": reason}
+    except Exception as e:
+        logger.warning("Live odds refresh failed (%s): %s", key, e)
+        return {"fetched": False, "reason": f"error: {e}"}
+    finally:
+        with _live_tracker_lock:
+            _live_fetch_in_progress = False
+
+
+def reset_live_score_tracker():
+    """Clear the live score tracker (e.g. on new day / app restart)."""
+    global _live_last_an_fetch, _live_fetch_in_progress
+    with _live_tracker_lock:
+        _live_score_tracker.clear()
+        _live_last_an_fetch = 0.0
+        _live_fetch_in_progress = False
 
 
 def _is_actionnetwork_403(exc: Exception) -> bool:
@@ -345,12 +432,13 @@ def sync_odds_for_date(
 
             db.execute("""
                 INSERT INTO game_odds (
-                    game_date, home_team_id, away_team_id, spread, over_under, 
+                    game_date, home_team_id, away_team_id, spread, over_under,
                     home_moneyline, away_moneyline, fetched_at, provider,
                     spread_home_public, spread_away_public, spread_home_money, spread_away_money,
-                    ml_home_public, ml_away_public, ml_home_money, ml_away_money
+                    ml_home_public, ml_away_public, ml_home_money, ml_away_money,
+                    opening_spread
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'actionnetwork', ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'actionnetwork', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(game_date, home_team_id, away_team_id) DO UPDATE SET
                     spread=excluded.spread,
                     over_under=excluded.over_under,
@@ -365,10 +453,13 @@ def sync_odds_for_date(
                     ml_home_money=excluded.ml_home_money,
                     ml_away_money=excluded.ml_away_money,
                     fetched_at=excluded.fetched_at,
-                    provider=excluded.provider
+                    provider=excluded.provider,
+                    opening_spread=COALESCE(opening_spread, excluded.opening_spread),
+                    spread_movement=CASE WHEN opening_spread IS NOT NULL THEN excluded.spread - opening_spread ELSE NULL END
             """, (game_date, home_id, away_id, spread, ou, home_ml, away_ml, now,
                   spread_home_public, spread_away_public, spread_home_money, spread_away_money,
-                  ml_home_public, ml_away_public, ml_home_money, ml_away_money))
+                  ml_home_public, ml_away_public, ml_home_money, ml_away_money,
+                  spread))
             
             saved_count += 1
         except Exception as e:
@@ -391,6 +482,54 @@ def sync_odds_for_date(
             logger.info(f"Skipped {game_date} - Action Network had no odds for these {games_with_no_odds} historical games.")
 
     return saved_count
+
+def sync_odds_forward(
+    callback: Optional[Callable] = None,
+    max_days: int = 21,
+) -> tuple:
+    """Walk forward from today syncing odds until data runs out.
+
+    Stops after 2 consecutive dates with 0 games saved.
+    Returns (total_saved, last_date_synced).
+    """
+    from datetime import timedelta
+    from src.utils.timezone_utils import nba_today
+
+    today = datetime.strptime(nba_today(), "%Y-%m-%d")
+    total_saved = 0
+    consecutive_empty = 0
+    last_date = nba_today()
+
+    for day_offset in range(max_days):
+        d = today + timedelta(days=day_offset)
+        date_str = d.strftime("%Y-%m-%d")
+        try:
+            saved = sync_odds_for_date(date_str, callback=callback, invalidate_cache=False)
+            total_saved += saved
+            if saved > 0:
+                consecutive_empty = 0
+                last_date = date_str
+            else:
+                consecutive_empty += 1
+            if consecutive_empty >= 2 and day_offset >= 1:
+                break
+        except Exception as e:
+            logger.error("sync_odds_forward error for %s: %s", date_str, e)
+            consecutive_empty += 1
+            if consecutive_empty >= 2 and day_offset >= 1:
+                break
+        if day_offset > 0:
+            time.sleep(0.5)
+
+    if total_saved > 0:
+        try:
+            from src.analytics.cache_registry import invalidate_for_event
+            invalidate_for_event("post_odds_sync")
+        except Exception as e:
+            logger.debug("Forward sync cache invalidation failed: %s", e)
+
+    return total_saved, last_date
+
 
 def backfill_odds(callback: Optional[Callable] = None, force: bool = False) -> int:
     """Backfill odds for all historical games that have player_stats but no odds.

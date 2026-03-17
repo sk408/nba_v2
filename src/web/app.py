@@ -419,9 +419,12 @@ def matchup_picker():
         d = today_dt + timedelta(days=i)
         val = d.strftime("%Y-%m-%d")
         dates.append({
-            "label": d.strftime("%a %-m/%d") if os.name != "nt" else d.strftime("%a %#m/%d"),
+            "day_name": "TODAY" if i == 0 else d.strftime("%a").upper(),
+            "day_num": str(d.day),
+            "month": d.strftime("%b").upper(),
             "value": val,
             "is_active": val == selected_date,
+            "is_today": i == 0,
         })
 
     # Merge ESPN scoreboard + NBA CDN schedule for selected date
@@ -738,52 +741,30 @@ def api_sync_odds_today():
 
     def _run_odds_sync():
         global _sync_running, _sync_status
-        today = nba_today()
 
         try:
-            from src.data.odds_sync import sync_odds_for_date
+            from src.data.odds_sync import sync_odds_forward
 
-            missing_before = _count_missing_odds_for_today(today)
-            if missing_before is not None:
-                _sync_status = (
-                    f"Odds-only sync running for {today} "
-                    f"({missing_before} missing matchup(s) detected)..."
-                )
-            else:
-                _sync_status = f"Odds-only sync running for {today}..."
+            _sync_status = "Syncing odds forward from today..."
 
-            saved_count = sync_odds_for_date(
-                today,
-                callback=lambda msg: _update_sync_status(msg),
-            )
-            missing_after = _count_missing_odds_for_today(today)
+            def _odds_cb(msg):
+                _update_sync_status(msg)
 
-            if missing_before is not None and missing_after is not None:
-                filled = max(0, missing_before - missing_after)
-                if filled > 0:
+            total_saved, last_date = sync_odds_forward(callback=_odds_cb)
+
+            today = nba_today()
+            if total_saved > 0:
+                if last_date != today:
                     _sync_status = (
-                        f"Odds sync complete. Filled {filled} missing matchup(s) for {today}."
-                    )
-                elif missing_after == 0:
-                    _sync_status = (
-                        f"Odds sync complete. Today's matchups already have odds for {today}."
-                    )
-                elif saved_count > 0:
-                    _sync_status = (
-                        f"Odds sync complete. Updated {saved_count} game(s); "
-                        f"{missing_after} matchup(s) still missing."
+                        f"Odds sync complete. Synced {total_saved} game(s) "
+                        f"(today through {last_date})."
                     )
                 else:
-                    _sync_status = (
-                        f"Odds sync complete. No new odds returned for {today}; "
-                        f"{missing_after} matchup(s) still missing."
-                    )
-            elif saved_count > 0:
-                _sync_status = f"Odds sync complete. Updated {saved_count} game(s) for {today}."
+                    _sync_status = f"Odds sync complete. Updated {total_saved} game(s) for {today}."
             else:
-                _sync_status = f"Odds sync complete. No new odds returned for {today}."
+                _sync_status = f"Odds sync complete. No new odds available."
         except Exception as e:
-            logger.error("Background odds-only sync error: %s", e, exc_info=True)
+            logger.error("Background odds sync error: %s", e, exc_info=True)
             _sync_status = "Odds sync failed. See server logs."
         finally:
             with _sync_lock:
@@ -845,21 +826,20 @@ def api_gamecast_games():
 @app.route("/api/gamecast/<game_id>")
 def api_gamecast_data(game_id):
     """Full game data for gamecast (summary, boxscore, plays, odds)."""
-    from src.data.gamecast import fetch_espn_game_summary, get_actionnetwork_odds
+    from src.data.gamecast import fetch_espn_game_summary
     from src.utils.team_mapper import normalize_espn_abbr
     try:
         summary = fetch_espn_game_summary(game_id)
         if not summary:
             return jsonify({"error": "No data available"}), 404
-        result = _parse_game_summary(summary, game_id, normalize_espn_abbr,
-                                     get_actionnetwork_odds)
+        result = _parse_game_summary(summary, game_id, normalize_espn_abbr)
         return jsonify(result)
     except Exception as e:
         logger.error("Gamecast data error for %s: %s", game_id, e, exc_info=True)
         return _json_error("Unable to load gamecast data right now.", 500)
 
 
-def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
+def _parse_game_summary(summary, game_id, normalize_abbr):
     """Parse ESPN game summary into clean JSON for gamecast."""
 
     def _as_int(value, default=0):
@@ -1128,21 +1108,65 @@ def _parse_game_summary(summary, game_id, normalize_abbr, get_an_odds):
                 "scoreValue": _as_int(item.get("scoreValue", 0), 0),
             })
 
-    # ── Odds (try Action Network, fallback to ESPN pickcenter) ──
+    # ── Live odds refresh (score-gated) ──
     home_abbr = result["header"]["home"].get("abbr", "")
     away_abbr = result["header"]["away"].get("abbr", "")
+    _status_state = result["header"]["status"].get("state", "")
+    if _status_state == "in" and home_abbr and away_abbr:
+        try:
+            from src.data.odds_sync import maybe_refresh_live_odds
+            _h_score = result["header"]["home"].get("score", 0)
+            _a_score = result["header"]["away"].get("score", 0)
+            _period = result["header"]["status"].get("period", 0)
+            maybe_refresh_live_odds(
+                home_abbr, away_abbr, _h_score, _a_score,
+                _status_state, _period, game_date_for_context,
+            )
+        except Exception:
+            logger.debug("Live odds refresh failed in gamecast", exc_info=True)
+
+    # ── Odds (DB first, fallback to ESPN pickcenter) ──
+    # Use synced DB odds to avoid hitting ActionNetwork API on every poll.
     if home_abbr and away_abbr:
         try:
-            an_odds = get_an_odds(home_abbr, away_abbr)
-            if an_odds:
-                result["odds"] = an_odds
+            from src.database import db as _db
+            h_id = abbr_to_id.get(home_abbr.upper())
+            a_id = abbr_to_id.get(away_abbr.upper())
+            if h_id and a_id:
+                _odds_row = _db.fetch_one(
+                    """SELECT spread, over_under, home_moneyline, away_moneyline,
+                              spread_home_public, spread_away_public,
+                              spread_home_money, spread_away_money,
+                              ml_home_public, ml_away_public,
+                              ml_home_money, ml_away_money,
+                              opening_spread, spread_movement,
+                              provider, fetched_at
+                       FROM game_odds
+                       WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?""",
+                    (game_date_for_context, h_id, a_id),
+                )
+                if _odds_row and (_odds_row.get("spread") is not None or _odds_row.get("over_under") is not None):
+                    _sp = _odds_row["spread"]
+                    result["odds"] = {
+                        "spread": f"{_sp:+.1f}" if _sp is not None else "N/A",
+                        "over_under": _odds_row.get("over_under"),
+                        "home_moneyline": _odds_row.get("home_moneyline"),
+                        "away_moneyline": _odds_row.get("away_moneyline"),
+                        "provider": _odds_row.get("provider") or "DB",
+                        "fetched_at": _odds_row.get("fetched_at"),
+                        "spread_home_public": _odds_row.get("spread_home_public"),
+                        "spread_away_public": _odds_row.get("spread_away_public"),
+                        "spread_home_money": _odds_row.get("spread_home_money"),
+                        "spread_away_money": _odds_row.get("spread_away_money"),
+                        "ml_home_public": _odds_row.get("ml_home_public"),
+                        "ml_away_public": _odds_row.get("ml_away_public"),
+                        "ml_home_money": _odds_row.get("ml_home_money"),
+                        "ml_away_money": _odds_row.get("ml_away_money"),
+                        "opening_spread": _odds_row.get("opening_spread"),
+                        "spread_movement": _odds_row.get("spread_movement"),
+                    }
         except Exception:
-            logger.debug(
-                "ActionNetwork odds parse failed for %s vs %s",
-                home_abbr,
-                away_abbr,
-                exc_info=True,
-            )
+            logger.debug("DB odds lookup failed for gamecast", exc_info=True)
     if not result["odds"]:
         pickcenter = summary.get("pickcenter", [])
         if pickcenter:

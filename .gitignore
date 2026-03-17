@@ -16,3 +16,7 @@ data/score_calibration.json
 .worktrees/
 DEPLOYMENT.md
 deploy/
+node_modules/
+tools/lightpanda-node/*_endpoints*.json
+tools/lightpanda-node/*_report.json
+tools/lightpanda-node/[0-9]*

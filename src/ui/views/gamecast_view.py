@@ -137,7 +137,7 @@ _cache = _GameCache()
 def _fetch_and_parse(game_id: str) -> dict:
     """Network call + parse -- runs off main thread."""
     from src.data.gamecast import (
-        fetch_espn_game_summary, normalize_espn_abbr, get_actionnetwork_odds,
+        fetch_espn_game_summary, normalize_espn_abbr,
     )
 
     summary = {}
@@ -163,16 +163,67 @@ def _fetch_and_parse(game_id: str) -> dict:
     home_abbr = normalize_espn_abbr(home_c.get("team", {}).get("abbreviation", ""))
     away_abbr = normalize_espn_abbr(away_c.get("team", {}).get("abbreviation", ""))
 
+    # Live odds refresh (score-gated) — only fetches AN when score changes enough
+    if status_state == "in" and home_abbr and away_abbr:
+        try:
+            from src.data.odds_sync import maybe_refresh_live_odds
+            _h_score = int(home_c.get("score", 0) or 0)
+            _a_score = int(away_c.get("score", 0) or 0)
+            _period = int(comp.get("status", {}).get("period", 0) or 0)
+            _game_date = str(comp.get("date", "") or "")[:10]
+            if _game_date:
+                maybe_refresh_live_odds(
+                    home_abbr, away_abbr, _h_score, _a_score,
+                    status_state, _period, _game_date,
+                )
+        except Exception:
+            logger.debug("Live odds refresh failed in desktop gamecast", exc_info=True)
+
+    # Use DB-stored odds (from sync) to avoid hitting ActionNetwork on every poll
     odds = {}
     try:
-        odds = get_actionnetwork_odds(home_abbr, away_abbr)
+        from src.database import db as _db
+        from src.analytics.stats_engine import get_team_abbreviations
+        from src.utils.timezone_utils import nba_today
+        _id_to_abbr = get_team_abbreviations() or {}
+        _abbr_to_id = {v: k for k, v in _id_to_abbr.items()}
+        _h_id = _abbr_to_id.get(home_abbr)
+        _a_id = _abbr_to_id.get(away_abbr)
+        if _h_id and _a_id:
+            _odds_row = _db.fetch_one(
+                """SELECT spread, over_under, home_moneyline, away_moneyline,
+                          spread_home_public, spread_away_public,
+                          spread_home_money, spread_away_money,
+                          ml_home_public, ml_away_public,
+                          ml_home_money, ml_away_money,
+                          opening_spread, spread_movement,
+                          provider, fetched_at
+                   FROM game_odds
+                   WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?""",
+                (nba_today(), _h_id, _a_id),
+            )
+            if _odds_row and (_odds_row.get("spread") is not None or _odds_row.get("over_under") is not None):
+                _sp = _odds_row["spread"]
+                odds = {
+                    "spread": f"{_sp:+.1f}" if _sp is not None else "",
+                    "over_under": _odds_row.get("over_under"),
+                    "home_moneyline": _odds_row.get("home_moneyline"),
+                    "away_moneyline": _odds_row.get("away_moneyline"),
+                    "provider": _odds_row.get("provider") or "DB",
+                    "fetched_at": _odds_row.get("fetched_at"),
+                    "spread_home_public": _odds_row.get("spread_home_public"),
+                    "spread_away_public": _odds_row.get("spread_away_public"),
+                    "spread_home_money": _odds_row.get("spread_home_money"),
+                    "spread_away_money": _odds_row.get("spread_away_money"),
+                    "ml_home_public": _odds_row.get("ml_home_public"),
+                    "ml_away_public": _odds_row.get("ml_away_public"),
+                    "ml_home_money": _odds_row.get("ml_home_money"),
+                    "ml_away_money": _odds_row.get("ml_away_money"),
+                    "opening_spread": _odds_row.get("opening_spread"),
+                    "spread_movement": _odds_row.get("spread_movement"),
+                }
     except Exception:
-        logger.debug(
-            "ActionNetwork odds lookup failed for %s vs %s",
-            home_abbr,
-            away_abbr,
-            exc_info=True,
-        )
+        logger.debug("DB odds lookup failed for %s vs %s", home_abbr, away_abbr, exc_info=True)
 
     if not odds or not odds.get("spread"):
         pickcenter = summary.get("pickcenter", [])

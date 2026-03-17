@@ -167,6 +167,8 @@ class Prediction:
     is_dog_pick: bool = False
     is_value_zone: bool = False
     dog_payout: float = 0.0
+    # Odds freshness (ISO timestamp from game_odds.fetched_at)
+    odds_fetched_at: Optional[str] = None
     # Post-prediction score calibration (display-only by default)
     calibrated_spread: Optional[float] = None
     calibrated_total: Optional[float] = None
@@ -704,15 +706,17 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
     vegas_spread = 0.0
     vegas_home_ml = 0
     vegas_away_ml = 0
+    odds_fetched_at = None
     try:
         odds = db.fetch_one(
-            "SELECT spread, home_moneyline, away_moneyline FROM game_odds "
+            "SELECT spread, home_moneyline, away_moneyline, fetched_at FROM game_odds "
             "WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?",
             (game_date, home_team_id, away_team_id))
         if odds and odds["spread"] is not None:
             vegas_spread = odds["spread"]
             vegas_home_ml = odds.get("home_moneyline") or 0
             vegas_away_ml = odds.get("away_moneyline") or 0
+            odds_fetched_at = odds.get("fetched_at")
     except Exception:
         logger.debug("historical Vegas lines unavailable", exc_info=True)
 
@@ -895,6 +899,7 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
             else:
                 pred.dog_payout = 1.0 + dog_ml / 100.0
 
+    pred.odds_fetched_at = odds_fetched_at
     return pred
 
 

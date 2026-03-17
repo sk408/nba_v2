@@ -262,6 +262,7 @@ class InfoPanelWidget(QWidget):
         self._odds_home_ml = self.odds_card.add_row("Home ML", "\u2014")
         self._odds_away_ml = self.odds_card.add_row("Away ML", "\u2014")
         self._odds_provider = self.odds_card.add_row("Source", "\u2014", "#64748b")
+        self._odds_age = self.odds_card.add_row("Updated", "\u2014", "#64748b")
         self._cards_layout.addWidget(self.odds_card)
 
         # Sharp Money card
@@ -370,11 +371,60 @@ class InfoPanelWidget(QWidget):
             f"color: #22c55e; font-size: 13px; font-weight: 700;"
         )
 
+    @staticmethod
+    def _time_ago(iso_str: str) -> tuple:
+        """Return (label, color) for an ISO timestamp age."""
+        if not iso_str:
+            return "---", "#64748b"
+        try:
+            from datetime import datetime
+            diff = (datetime.now() - datetime.fromisoformat(iso_str)).total_seconds()
+            if diff < 60:
+                label = "<1m"
+            elif diff < 3600:
+                label = f"{int(diff // 60)}m ago"
+            elif diff < 86400:
+                label = f"{int(diff // 3600)}h ago"
+            elif diff < 604800:
+                label = f"{int(diff // 86400)}d ago"
+            else:
+                label = f"{int(diff // 604800)}w ago"
+            if diff < 3600:
+                color = "#00e676"
+            elif diff < 86400:
+                color = "#94a3b8"
+            elif diff < 604800:
+                color = "#ffb300"
+            else:
+                color = "#ff5252"
+            return label, color
+        except Exception:
+            return "---", "#64748b"
+
     def update_odds(self, odds: Dict):
         """Update live odds and sharp money display."""
         if not odds:
             return
-        self._odds_spread.setText(str(odds.get("spread", "---")))
+        spread_text = str(odds.get("spread", "---"))
+        move = odds.get("spread_movement")
+        if move is not None:
+            mv = abs(move)
+            if mv >= 1.5:
+                arrow = "\u2191" if move > 0 else "\u2193"
+                spread_text += f" {arrow}{mv:.1f}"
+                color = "#ff5252" if mv >= 3.0 else "#ffb300"
+                self._odds_spread.setStyleSheet(
+                    f"color: {color}; font-size: 13px; font-weight: 700;"
+                )
+            else:
+                self._odds_spread.setStyleSheet(
+                    "color: #e2e8f0; font-size: 13px; font-weight: 500;"
+                )
+        else:
+            self._odds_spread.setStyleSheet(
+                "color: #e2e8f0; font-size: 13px; font-weight: 500;"
+            )
+        self._odds_spread.setText(spread_text)
         ou = odds.get("over_under")
         self._odds_ou.setText(f"{ou}" if ou else "---")
         home_ml = odds.get("home_moneyline")
@@ -382,6 +432,10 @@ class InfoPanelWidget(QWidget):
         self._odds_home_ml.setText(f"{home_ml:+d}" if home_ml else "---")
         self._odds_away_ml.setText(f"{away_ml:+d}" if away_ml else "---")
         self._odds_provider.setText(odds.get("provider", "---"))
+
+        age_label, age_color = self._time_ago(odds.get("fetched_at"))
+        self._odds_age.setText(age_label)
+        self._odds_age.setStyleSheet(f"color: {age_color}; font-size: 13px; font-weight: 500;")
 
         # Sharp money
         sp_pub = odds.get("spread_home_public")

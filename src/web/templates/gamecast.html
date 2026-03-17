@@ -669,12 +669,34 @@ const GC = {
             return;
         }
         const ml = (v) => v == null ? 'N/A' : (v > 0 ? '+' + v : '' + v);
+        let ageHtml = '';
+        if (o.fetched_at) {
+            const diff = (Date.now() - new Date(o.fetched_at).getTime()) / 1000;
+            let label;
+            if (diff < 60) label = '<1m';
+            else if (diff < 3600) label = Math.floor(diff / 60) + 'm';
+            else if (diff < 86400) label = Math.floor(diff / 3600) + 'h';
+            else if (diff < 604800) label = Math.floor(diff / 86400) + 'd';
+            else label = Math.floor(diff / 604800) + 'w';
+            const h = diff / 3600;
+            const cls = h < 1 ? 'age-fresh' : h < 24 ? '' : h < 168 ? 'age-stale' : 'age-old';
+            ageHtml = `<span class="gc-odds-age ${cls}">${label}</span>`;
+        }
+        let moveHtml = '';
+        if (o.spread_movement != null) {
+            const mv = Math.abs(o.spread_movement);
+            if (mv >= 1.5) {
+                const arrow = o.spread_movement > 0 ? '\u2191' : '\u2193';
+                const cls = mv >= 3.0 ? 'gc-move-big' : 'gc-move';
+                moveHtml = ` <span class="${cls}">${arrow}${mv.toFixed(1)}</span>`;
+            }
+        }
         el.innerHTML = `
-            <div class="gc-odds-row"><span>Spread</span><span class="gc-odds-val">${o.spread || 'N/A'}</span></div>
+            <div class="gc-odds-row"><span>Spread</span><span class="gc-odds-val">${o.spread || 'N/A'}${moveHtml}</span></div>
             <div class="gc-odds-row"><span>O/U</span><span class="gc-odds-val">${o.over_under ?? 'N/A'}</span></div>
             <div class="gc-odds-row"><span>Home ML</span><span class="gc-odds-val">${ml(o.home_moneyline)}</span></div>
             <div class="gc-odds-row"><span>Away ML</span><span class="gc-odds-val">${ml(o.away_moneyline)}</span></div>
-            ${o.provider ? '<div class="gc-odds-prov">' + o.provider + '</div>' : ''}
+            ${o.provider ? '<div class="gc-odds-prov">' + o.provider + ageHtml + '</div>' : ''}
         `;
     },
 

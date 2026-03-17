@@ -1,0 +1,56 @@
+---
+description: Run Claude CLI prompts in parallel with explicit dangerous-flag approval
+alwaysApply: true
+---
+
+# Claude CLI Subagent Execution
+
+Use Claude CLI when asked to delegate independent tasks through prompt execution. The prompts should define a specific scope of execution.
+
+## Default Command
+
+- Safe default (no dangerous flag):
+  - `claude -p "<prompt here>"`
+- PowerShell-safe quoting example:
+  - `claude -p 'Summarize TODO items in src/analytics/pipeline.py'`
+
+## Parallel Runs
+
+When tasks are independent, run prompts concurrently and keep each result separate.
+
+```powershell
+$jobs = @(
+  Start-Job -ScriptBlock { claude -p 'Task A prompt' },
+  Start-Job -ScriptBlock { claude -p 'Task B prompt' },
+  Start-Job -ScriptBlock { claude -p 'Task C prompt' }
+)
+
+$jobs | Wait-Job | Out-Null
+$results = $jobs | ForEach-Object { Receive-Job -Job $_ }
+$jobs | Remove-Job
+$results
+```
+
+Use one prompt per independent task, then synthesize the combined results.
+
+## Permission Gate For Dangerous Flag
+
+Never add `--dangerously-skip-permissions` by default.
+
+Before using it, ask the user exactly this:
+
+`Do you want me to add --dangerously-skip-permissions for this Claude CLI run? I will not use it unless you explicitly approve.`
+
+Gate behavior:
+
+1. Ask for explicit approval first.
+2. If the user says **yes**, append `--dangerously-skip-permissions`.
+3. If the user says **no** or does not answer clearly, run without the flag.
+4. For parallel jobs, apply the same approved decision consistently to each `claude -p` command in that batch.
+
+## Examples
+
+- Safe:
+  - `claude -p "Audit src/web/app.py for error-handling gaps."`
+- Approved dangerous:
+  - `claude -p "Run the full automation sequence for today's slate." --dangerously-skip-permissions`

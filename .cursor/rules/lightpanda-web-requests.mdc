@@ -1,0 +1,19 @@
+description: Use Node Lightpanda helper for web/API discovery
+alwaysApply: true
+---
+
+# Lightpanda Node-First Requests
+
+Use the Node helper workflow for external web requests when the task involves API discovery, network tracing, or dynamic pages.
+
+- Primary commands:
+  - PowerShell: `.\discover_endpoints_lightpanda.ps1 -Url "<url>"`
+  - CMD: `discover_endpoints_lightpanda.bat "<url>"`
+- The helper:
+  - Uses Puppeteer over Lightpanda CDP.
+  - Starts a dedicated Lightpanda container on port `9223`.
+  - Captures network endpoints for API discovery.
+- Fall back to non-browser tools only when:
+  - Lightpanda/node workflow is unavailable, or
+  - The target is static documentation that does not require JS/network inspection.
+- When reporting API findings, include endpoint URL, method, key params/body fields, and auth clues if visible.

@@ -125,6 +125,7 @@
 <div class="panel collapsible" id="sharp-panel">
     <button class="panel-header" onclick="togglePanel('sharp-panel')">
         <span class="panel-title">Sharp Money Indicators</span>
+        {% if fund.odds_fetched_at %}<span class="odds-age" data-fetched="{{ fund.odds_fetched_at }}"></span>{% endif %}
         <span class="panel-chevron">&#9660;</span>
     </button>
     <div class="panel-body">
@@ -202,6 +203,7 @@
 <div class="panel">
     <div class="panel-header static">
         <span class="panel-title">Vegas Reference</span>
+        {% if fund.odds_fetched_at %}<span class="odds-age" data-fetched="{{ fund.odds_fetched_at }}"></span>{% endif %}
     </div>
     <div class="panel-body">
         <div class="vegas-grid">
@@ -244,6 +246,29 @@
 
 {% block scripts %}
 <script>
+    function timeAgo(iso) {
+        if (!iso) return '';
+        const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+        if (diff < 60) return '<1m';
+        if (diff < 3600) return Math.floor(diff / 60) + 'm';
+        if (diff < 86400) return Math.floor(diff / 3600) + 'h';
+        if (diff < 604800) return Math.floor(diff / 86400) + 'd';
+        return Math.floor(diff / 604800) + 'w';
+    }
+    function ageClass(iso) {
+        if (!iso) return '';
+        const h = (Date.now() - new Date(iso).getTime()) / 3600000;
+        if (h < 1) return 'age-fresh';
+        if (h < 24) return 'age-recent';
+        if (h < 168) return 'age-stale';
+        return 'age-old';
+    }
+    document.querySelectorAll('.odds-age[data-fetched]').forEach(el => {
+        const t = el.dataset.fetched;
+        el.textContent = timeAgo(t);
+        el.classList.add(ageClass(t));
+    });
+
     // Store both predictions for mode toggle
     const fundPred = {{ fund|tojson if fund else 'null' }};
     const sharpPred = {{ sharp|tojson if sharp else 'null' }};

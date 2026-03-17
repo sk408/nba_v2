@@ -1,0 +1,742 @@
+{
+  "targetUrl": "https://www.cineby.gd/tv/4629/5/1",
+  "wsEndpoint": "ws://127.0.0.1:9223/",
+  "elapsedMs": 14888,
+  "navigationError": "",
+  "totalEvents": 124,
+  "uniqueEndpoints": 61,
+  "endpoints": [
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/tv/4629/5/1",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "text/html; charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/webpack-d55bbbceafb63f7c.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/framework-a71af9b1c76f668e.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/main-5397ebf9b8fc18ec.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/pages/_app-ea759936a362aada.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/1664-9b8ca4ecc35d08d1.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/6492-954d20ae1f320a6b.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/1354-f03109d66e69ffa0.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/5518-eed6a1a8fd4b2479.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/7634-39314bdc6debef8f.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/8159-2ca71cb3e63162ca.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/2586-a4de19f6a22646ae.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/4363-5876e8b225f91c34.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/7396-65b521d8806f27d0.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/4263-33391aed1e0fafef.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/5537-7d2df5ff25e1fc51.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/2401-4dbcd9c38fefb934.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/pages/tv/%5B...params%5D-2d21514a8db1f7c0.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/31bOJSUhkaB-8gN9D38C_/_buildManifest.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/31bOJSUhkaB-8gN9D38C_/_ssgManifest.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/7435.1cfdcf7a6f4cd387.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/3780.d46dd1fe2eedc99e.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://users.videasy.net/api/script.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://gb.hogbackmutuate.com/rAPfInrXBS73hN/ewQng",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/594.c3fa476a1aedf1ec.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/4629/season/5/episode/1?append_to_response=external_ids&language=en",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/4629?append_to_response=credits,external_ids,similar,videos,recommendations,translations&language=en&include_video_language=en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/data/31bOJSUhkaB-8gN9D38C_/en.json",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/4620-270e2e4a2b120318.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/719-d295614884947606.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/1456-b33f8b4b80263939.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/7974-40a69968b93a2f4a.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/pages/index-6527348ee108ecdb.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/css/d1a2b773870ecfc3.css",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "text/css; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "POST",
+      "url": "https://users.videasy.net/api/track",
+      "statuses": [
+        403
+      ],
+      "contentTypes": [
+        "application/json; charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/4629/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/9924.469bd4917d990bda.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/8827.05977027918bf46b.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://trailers.videasy.net/getOldestTrailer?id=tt0118480",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/4629/season/1?language=en",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/8771.a311b12a324fa6ac.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/4271/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/580/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/2290/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/1649/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/5148/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/2560/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/3534/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/2985/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/314/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/1855/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/2580/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/253/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/2840/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/3051/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/4562/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/3137/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/79649/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://db.videasy.net/3/tv/34967/images?include_image_language=en,en,null",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/json;charset=utf-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/css/043ba903ff2c1378.css",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "text/css; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    },
+    {
+      "method": "GET",
+      "url": "https://www.cineby.gd/_next/static/chunks/2230.38d6cfa4a211fb3c.js",
+      "statuses": [
+        200
+      ],
+      "contentTypes": [
+        "application/javascript; charset=UTF-8"
+      ],
+      "authClues": [],
+      "bodySamples": []
+    }
+  ]
+}

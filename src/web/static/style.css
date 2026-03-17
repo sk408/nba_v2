@@ -288,11 +288,11 @@ a:hover {
 
 .date-strip {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     justify-content: center;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
-    padding: 0 4px 16px 4px;
+    padding: 4px 16px 24px;
     scrollbar-width: none;
 }
 
@@ -302,29 +302,93 @@ a:hover {
 
 .date-chip {
     flex-shrink: 0;
-    padding: 8px 18px;
-    border-radius: 999px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    width: 68px;
+    padding: 10px 0 8px;
+    border-radius: var(--radius);
     background: var(--bg-card);
     border: 1px solid var(--border);
-    color: var(--text-secondary);
+    text-align: center;
+    transition: all var(--transition);
+    position: relative;
+}
+
+.date-chip__day {
     font-family: var(--font-body);
-    font-size: 0.875rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    line-height: 1;
+}
+
+.date-chip__num {
+    font-family: var(--font-heading);
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    line-height: 1.1;
+}
+
+.date-chip__month {
+    font-family: var(--font-body);
+    font-size: 0.6rem;
     font-weight: 500;
-    white-space: nowrap;
-    transition: background var(--transition), color var(--transition), border-color var(--transition);
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    line-height: 1;
 }
 
 .date-chip:hover {
     background: var(--bg-card-hover);
-    color: var(--text-primary);
     border-color: var(--text-muted);
+    transform: translateY(-2px);
 }
 
+.date-chip:hover .date-chip__num {
+    color: var(--text-primary);
+}
+
+/* Today indicator dot */
+.date-chip.today::after {
+    content: '';
+    position: absolute;
+    bottom: 3px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--accent-cyan);
+}
+
+/* Active date */
 .date-chip.active {
-    background: rgba(0, 229, 255, 0.12);
+    background: linear-gradient(135deg, rgba(0, 229, 255, 0.15), rgba(0, 229, 255, 0.05));
     border-color: var(--accent-cyan);
+    box-shadow: 0 0 16px rgba(0, 229, 255, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.date-chip.active .date-chip__day {
     color: var(--accent-cyan);
-    font-weight: 600;
+}
+
+.date-chip.active .date-chip__num {
+    color: var(--accent-cyan);
+}
+
+.date-chip.active .date-chip__month {
+    color: rgba(0, 229, 255, 0.6);
+}
+
+.date-chip.active.today::after {
+    width: 5px;
+    height: 5px;
+    box-shadow: 0 0 6px var(--accent-cyan);
 }
 
 
@@ -2837,3 +2901,34 @@ a:hover {
         margin-bottom: 68px;
     }
 }
+
+
+/* ══════════════════════════════════════════════════
+   Odds Freshness Indicator
+   ══════════════════════════════════════════════════ */
+
+.odds-age {
+    font-size: 0.7rem;
+    font-weight: 500;
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    background: var(--bg-input);
+}
+.odds-age.age-fresh  { color: var(--accent-green); }
+.odds-age.age-recent { color: var(--text-secondary); }
+.odds-age.age-stale  { color: var(--accent-amber); }
+.odds-age.age-old    { color: var(--accent-red); }
+
+.gc-odds-age {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    margin-left: 6px;
+}
+.gc-odds-age.age-fresh  { color: var(--accent-green); }
+.gc-odds-age.age-stale  { color: var(--accent-amber); }
+.gc-odds-age.age-old    { color: var(--accent-red); }
+
+.gc-move     { color: var(--accent-amber); font-size: 0.75rem; margin-left: 4px; }
+.gc-move-big { color: var(--accent-red); font-size: 0.75rem; font-weight: 700; margin-left: 4px; }
