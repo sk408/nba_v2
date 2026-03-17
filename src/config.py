@@ -1,4 +1,9 @@
-"""JSON-backed application settings at data/app_settings.json."""
+"""JSON-backed application settings at data/app_settings.json.
+
+Runtime source of truth is ``data/app_settings.json``.
+This module keeps code-side defaults only as bootstrap/fallback values when the
+settings file is missing/corrupt, and auto-hydrates missing keys back to disk.
+"""
 
 import json
 import logging
@@ -18,6 +23,12 @@ except Exception:
 
 _SETTINGS_PATH = Path("data") / "app_settings.json"
 _settings_lock = threading.Lock()
+
+# MAINTAINER NOTE:
+# - Runtime source-of-truth is data/app_settings.json.
+# - _DEFAULTS below are bootstrap/fallback values (missing/corrupt file, new keys).
+# - If you intentionally tune runtime behavior, update app_settings.json in the
+#   same change so troubleshooting sees the effective values in one place.
 
 _DEFAULTS: Dict[str, Any] = {
     "db_path": "data/nba_analytics.db",
@@ -39,21 +50,96 @@ _DEFAULTS: Dict[str, Any] = {
     "timezone": "US/Pacific",
     "oled_mode": False,
     "sync_freshness_hours": 4,
+    "precompute_progress_log_every": 200,
+    "nba_api_min_interval_seconds": 1.6,
+    "nba_api_on_off_timeout_seconds": 12.0,
+    "nba_api_on_off_retries": 1,
+    "nba_api_on_off_team_retry_attempts": 1,
+    "nba_api_on_off_failure_backoff_base_seconds": 2.1,
+    "nba_api_on_off_failure_backoff_step_seconds": 0.5,
+    "nba_api_on_off_abort_after_failures": 0,  # 0 = disabled
     "optimizer_log_interval": 300,
     "optimizer_deterministic": False,
     "optimizer_deterministic_seed": 42,
-    "prediction_mode": "fundamentals",  # "fundamentals" or "fundamentals_sharp"
+    "optimizer_cmaes_suppress_independent_sampling_warn": True,
+    "optimizer_tuning_mode": "blocked",  # "classic" or "blocked"
+    "prediction_mode": "fundamentals_sharp",  # "fundamentals" or "fundamentals_sharp"
     "upset_bonus_mult": 0.5,  # optimizer upset reward multiplier
     "upset_bonus_mult_max": 5.0,  # hard cap for upset bonus tuning
+    # Optimizer objective tuning (coverage + tier-A quality)
+    "optimizer_objective_target_upset_coverage_pct": 20.0,
+    "optimizer_objective_target_tier_a_hit_rate": 56.0,
+    "optimizer_objective_coverage_shortfall_mult": 0.20,
+    "optimizer_objective_tier_a_shortfall_mult": 0.12,
+    "optimizer_objective_tier_a_prior_weight": 12.0,
+    "optimizer_objective_tier_a_min_confidence": 70.0,
+    "optimizer_objective_tier_b_min_confidence": 55.0,
+    # Anti-overfit objective probe: penalize train-only winners that regress on
+    # a deterministic slice of validation games during trial scoring.
+    "optimizer_objective_val_probe_enabled": True,
+    "optimizer_objective_val_probe_sample_size": 480,
+    "optimizer_objective_val_probe_slices": 3,
+    "optimizer_objective_val_probe_loss_mult": 1.0,
+    "optimizer_objective_val_probe_winner_drop_mult": 0.35,
+    # Dominance penalties for feature families (soft regularization, not clamps)
+    "optimizer_objective_use_family_dominance_penalty": True,
+    "optimizer_objective_family_penalty_mult": 0.05,
+    "optimizer_objective_ff_p95_cap": 95.0,
+    "optimizer_objective_onoff_p95_cap": 25.0,
+    # Optional prior pull toward current champion to discourage gratuitous drift.
+    "optimizer_objective_l2_prior_mult": 0.02,
+    # Objective track selection:
+    # - live: walk-forward / rolling-CV only
+    # - oracle: full-history hindsight objective
+    # - dual_track: weighted blend of live + oracle losses
+    "optimizer_objective_primary_track": "dual_track",
+    "optimizer_objective_dual_live_weight": 0.70,
+    # Tanking signal feature mode for model score adjustments.
+    "optimizer_tanking_feature_mode": "both",  # "live", "oracle", "both"
+    # Underdog confidence calibration for tiering/frontier analytics.
+    # Uses raw model edge to avoid confidence saturation at 100.
+    "underdog_confidence_use_edge_logistic": True,
+    "underdog_confidence_edge_scale": 70.0,
+    # Optional user-controlled study namespace suffix for clean retunes.
+    "optimizer_study_tag": "",
+    "optimizer_blocked_cycle_tag": "",
+    "optimizer_blocked_auto_cycle_tag": True,
+    "optimizer_blocked_cycle_hours": 24,
+    # Blocked-pathway optimizer stage settings.
+    "optimizer_blocked_core_fraction": 0.35,
+    "optimizer_blocked_ff_fraction": 0.25,
+    "optimizer_blocked_onoff_fraction": 0.15,
+    "optimizer_blocked_joint_fraction": 0.25,
+    "optimizer_blocked_min_stage_trials": 250,
+    "optimizer_blocked_joint_radius_fraction": 0.18,
+    "optimizer_blocked_stage_verbose": False,
+    "optimizer_blocked_preserve_stage_champions": True,
+    "optimizer_blocked_champion_log_top_k": 4,
+    "optimizer_stage_champion_bank_enabled": True,
+    "optimizer_stage_champion_bank_top_k": 100,
+    "optimizer_stage_champion_bank_seed_enabled": True,
+    "optimizer_stage_champion_bank_seed_max": 100,
+    "optimizer_stage_champion_bank_clear_on_full_promotion": True,
     # Diagnostic threshold: dog pick counted "competitive" if it loses by <= this margin
     "optimizer_competitive_dog_margin": 7.5,
+    # One-possession underdog near-miss credit (objective diagnostics + scoring).
+    "optimizer_onepos_credit_enabled": True,
+    "optimizer_onepos_credit_margin": 3.0,
+    "optimizer_onepos_credit_all_dogs_weight": 0.5,
+    "optimizer_onepos_credit_long_dogs_weight": 1.0,
+    "optimizer_onepos_credit_affects_winner_pct": True,
     # Moneyline filter for optimizer ROI diagnostics (1.50 == risk 100 to return 150 total)
     "optimizer_min_ml_payout": 1.50,
+    # On/off signal shaping (feature engineering, not hard clamps)
+    "optimizer_onoff_player_minutes_smoothing": 800.0,
+    "optimizer_onoff_team_reliability_slots": 12.0,
     # Optimizer anti-gaming save gate settings
     "optimizer_save_loss_margin": 0.01,
     "optimizer_save_min_weight_delta": 0.0001,
     "optimizer_save_max_winner_drop": 0.35,
     "optimizer_save_favorites_slack": 0.25,
+    # Additive guard bump from one-possession credit lift (0 disables bump).
+    "optimizer_save_onepos_credit_bump_mult": 0.15,
     "optimizer_save_compression_floor": 0.55,
     "optimizer_save_min_upset_count": 0,  # 0 = auto from validation sample size
     "optimizer_save_min_upset_rate": 8.0,
@@ -105,12 +191,47 @@ _DEFAULTS: Dict[str, Any] = {
     "score_calibration_team_range_quantile_high": 0.97,
     "score_calibration_team_range_padding": 6.0,
     # Optuna controls
-    "optuna_top_n_validation": 10,
+    "optuna_top_n_validation": 120,
+    "optimizer_seed_disk_trials_enabled": True,
+    "optimizer_seed_disk_trials_max": 600,
+    "optimizer_seed_disk_trials_top_fraction": 0.6,
+    "optimizer_use_wide_ranges": False,
     "optuna_stagnation_threshold": 500,
     "optuna_early_stop_trials": 2000,
     "optuna_min_trials_before_stop": 500,
+    # Rolling walk-forward CV objective (robustness-aware)
+    "optimizer_rolling_cv_enabled": True,
+    "optimizer_rolling_cv_folds": 4,
+    "optimizer_rolling_cv_min_train_games": 320,
+    "optimizer_rolling_cv_val_games": 160,
+    "optimizer_rolling_cv_worst_fold_mult": 0.40,
+    # Optional ML upset scorer promotion gate (feature-flagged)
+    "optimizer_ml_underdog_scorer_enabled": False,
+    "optimizer_ml_underdog_scorer_lr": 0.05,
+    "optimizer_ml_underdog_scorer_l2": 1.0,
+    "optimizer_ml_underdog_scorer_max_iter": 220,
+    "optimizer_ml_underdog_scorer_min_train_samples": 140,
+    "optimizer_ml_underdog_scorer_min_val_samples": 60,
+    "optimizer_ml_underdog_scorer_min_brier_lift": 0.0025,
     # Overnight loop controls
-    "overnight_max_no_save_passes": 0,  # 0 = disabled
+    "overnight_max_no_save_passes": 3,  # 0 = disabled
+    # Weekly frontier/drift reporting
+    "weekly_frontier_report_dir": "data/reports",
+    "drift_tier_a_min_hit_rate": 56.0,
+    "drift_tier_b_min_hit_rate": 50.0,
+    "drift_tier_c_min_hit_rate": 44.0,
+    "drift_tier_min_samples": 12,
+    "drift_band_2_00_2_99_min_roi": -2.0,
+    "drift_band_3_00_3_99_min_roi": -4.0,
+    "drift_band_4_plus_min_roi": -8.0,
+    "drift_band_min_bets": 15,
+    # Phase acceptance guardrails
+    "phase_gate_min_winner_pct": 60.0,
+    "phase_gate_min_upset_coverage_pct": 20.0,
+    "phase_gate_upset_coverage_tolerance_pp": 0.5,
+    "phase_gate_min_tier_a_hit_rate": 56.0,
+    "phase_gate_min_ml_roi": 0.0,
+    "phase_gate_max_fund_drift_alerts": 1,
 }
 
 _cache: Dict[str, Any] | None = None
@@ -121,7 +242,7 @@ def _ensure_dir():
 
 
 def load_settings() -> Dict[str, Any]:
-    """Load settings from disk, merging with defaults."""
+    """Load settings and keep app_settings.json synced with effective values."""
     global _cache
     with _settings_lock:
         if _cache is not None:
@@ -136,6 +257,26 @@ def load_settings() -> Dict[str, Any]:
         else:
             data = {}
         merged = {**_DEFAULTS, **data}
+        override_keys = [
+            key for key, value in data.items()
+            if key in _DEFAULTS and _DEFAULTS[key] != value
+        ]
+        if override_keys:
+            sample = ", ".join(sorted(override_keys)[:6])
+            if len(override_keys) > 6:
+                sample += ", ..."
+            logger.info(
+                "Runtime settings source is %s: %d keys override defaults (%s)",
+                _SETTINGS_PATH.as_posix(),
+                len(override_keys),
+                sample,
+            )
+        # Keep a single visible source-of-truth on disk: if defaults filled in
+        # any missing keys (or recovered from a corrupt/empty file), persist the
+        # merged settings immediately so future edits only need one file.
+        if data != merged:
+            with open(_SETTINGS_PATH, "w") as f:
+                json.dump(merged, f, indent=2)
         _cache = merged
         return merged
 

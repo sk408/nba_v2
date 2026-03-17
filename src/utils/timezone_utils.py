@@ -37,6 +37,14 @@ def nba_today() -> str:
     return (datetime.now(tz=_ET) - timedelta(hours=6)).strftime("%Y-%m-%d")
 
 
+def nba_tomorrow() -> str:
+    """Return the NBA "next game date" as YYYY-MM-DD.
+
+    Uses the same 6 AM ET rollover logic as ``nba_today`` but adds one day.
+    """
+    return (datetime.now(tz=_ET) - timedelta(hours=6) + timedelta(days=1)).strftime("%Y-%m-%d")
+
+
 def nba_now() -> datetime:
     """Current datetime in Eastern Time (timezone-aware).
 

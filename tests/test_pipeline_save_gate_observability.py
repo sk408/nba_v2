@@ -11,6 +11,10 @@ def test_extract_save_gate_state_compacts_details():
             "weight_delta": 0.0,
             "use_roi_gate": False,
             "compression_ok": True,
+            "ml_underdog_gate_enabled": True,
+            "ml_underdog_gate_applied": True,
+            "ml_underdog_gate_passed": False,
+            "ml_underdog_gate_brier_lift": -0.0015,
             "nested": {"ignore": True},
         },
     }
@@ -21,6 +25,10 @@ def test_extract_save_gate_state_compacts_details():
     assert snapshot["weight_delta"] == 0.0
     assert snapshot["use_roi_gate"] is False
     assert snapshot["compression_ok"] is True
+    assert snapshot["ml_underdog_gate_enabled"] is True
+    assert snapshot["ml_underdog_gate_applied"] is True
+    assert snapshot["ml_underdog_gate_passed"] is False
+    assert snapshot["ml_underdog_gate_brier_lift"] == -0.0015
     assert "nested" not in snapshot
     assert snapshot["reason"].endswith("...")
     assert len(snapshot["reason"]) <= 220
@@ -41,6 +49,10 @@ def test_run_pipeline_persists_save_gate_metadata(tmp_path, monkeypatch):
                 "min_weight_delta": 0.0001,
                 "weight_change_ok": False,
                 "candidate_ml_roi_lb95": -0.4,
+                "ml_underdog_gate_enabled": True,
+                "ml_underdog_gate_applied": True,
+                "ml_underdog_gate_passed": False,
+                "ml_underdog_gate_brier_lift": -0.0021,
             },
         }
 
@@ -62,3 +74,5 @@ def test_run_pipeline_persists_save_gate_metadata(tmp_path, monkeypatch):
     assert step_state["save_gate"]["reason"] == "loss gate failed due regression"
     assert step_state["save_gate"]["weight_delta"] == 0.0
     assert step_state["save_gate"]["weight_change_ok"] is False
+    assert step_state["save_gate"]["ml_underdog_gate_enabled"] is True
+    assert step_state["save_gate"]["ml_underdog_gate_passed"] is False

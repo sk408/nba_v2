@@ -38,6 +38,12 @@ def test_odds_today_sync_requires_csrf_token():
     assert resp.status_code == 403
 
 
+def test_alert_dispatch_requires_csrf_token():
+    with app.test_client() as client:
+        resp = client.post("/api/underdogs/alerts/dispatch")
+    assert resp.status_code == 403
+
+
 def test_api_responses_are_not_cacheable():
     with app.test_client() as client:
         resp = client.get("/api/sync/status")

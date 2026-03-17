@@ -1,10 +1,12 @@
 """NBA API wrappers – teams, rosters, game logs, metrics."""
 
 import logging
-from typing import List, Dict, Any, Optional
 from datetime import datetime
+import threading
+import time
+from typing import List, Dict, Any, Optional
 
-from src.config import get_season, get_season_year
+from src.config import get as get_setting, get_season, get_season_year
 from src.database import db
 from src.data.http_client import get_json, retry_call, HttpClientError
 from src.utils.timezone_utils import nba_today, to_display_tz
@@ -36,6 +38,61 @@ def _normalize_game_date(raw: str) -> str:
     return s[:10]
 
 _API_SLEEP = 0.8
+_nba_api_rate_lock = threading.Lock()
+_next_nba_api_request_at = 0.0
+
+
+def _nba_api_min_interval_seconds() -> float:
+    """Resolve NBA API pacing from settings with safe fallback."""
+    try:
+        interval = float(get_setting("nba_api_min_interval_seconds", _API_SLEEP))
+    except (TypeError, ValueError):
+        interval = _API_SLEEP
+    return max(0.0, interval)
+
+
+def _on_off_timeout_seconds() -> float:
+    """Timeout override for TeamPlayerOnOffSummary requests."""
+    try:
+        timeout_seconds = float(get_setting("nba_api_on_off_timeout_seconds", 12.0))
+    except (TypeError, ValueError):
+        timeout_seconds = 12.0
+    return max(3.0, min(30.0, timeout_seconds))
+
+
+def _on_off_retries() -> int:
+    """Retry override for TeamPlayerOnOffSummary requests."""
+    try:
+        retries = int(get_setting("nba_api_on_off_retries", 1))
+    except (TypeError, ValueError):
+        retries = 1
+    return max(1, min(5, retries))
+
+
+def _looks_like_rate_limit_timeout(exc: BaseException) -> bool:
+    """Heuristic: stats.nba.com timeout patterns often indicate throttling."""
+    text = str(exc).lower()
+    return (
+        "timed out" in text
+        or "read timed out" in text
+        or "readtimeout" in text
+    )
+
+
+def _pace_nba_api_request() -> None:
+    """Apply a global spacing guard before each NBA API request."""
+    global _next_nba_api_request_at
+    min_interval = _nba_api_min_interval_seconds()
+    if min_interval <= 0.0:
+        return
+
+    now = time.monotonic()
+    with _nba_api_rate_lock:
+        scheduled_at = max(now, _next_nba_api_request_at)
+        _next_nba_api_request_at = scheduled_at + min_interval
+    wait_seconds = scheduled_at - now
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
 
 
 def _row_to_game_log(row, player_id: int) -> dict:
@@ -73,20 +130,35 @@ def _row_to_game_log(row, player_id: int) -> dict:
     }
 
 
-def _safe_get(func, *args, retries=3, **kwargs):
+def _safe_get(func, *args, retries=3, log_label: Optional[str] = None, **kwargs):
     """Call an nba_api function with rate limiting, retries, and error handling."""
+    label = log_label or getattr(func, "__name__", "callable")
+
     def _on_retry(attempt: int, total: int, exc: BaseException):
-        logger.warning(
-            "NBA API retry %d/%d for %s: %s",
-            attempt,
-            total,
-            getattr(func, "__name__", "callable"),
-            exc,
-        )
+        if _looks_like_rate_limit_timeout(exc):
+            logger.warning(
+                "NBA API retry %d/%d for %s after timeout (likely upstream rate limiting): %s",
+                attempt,
+                total,
+                label,
+                exc,
+            )
+        else:
+            logger.warning(
+                "NBA API retry %d/%d for %s: %s",
+                attempt,
+                total,
+                label,
+                exc,
+            )
 
     try:
+        def _paced_call(*paced_args, **paced_kwargs):
+            _pace_nba_api_request()
+            return func(*paced_args, **paced_kwargs)
+
         return retry_call(
-            func,
+            _paced_call,
             *args,
             retries=retries,
             backoff_base=_API_SLEEP,
@@ -96,12 +168,19 @@ def _safe_get(func, *args, retries=3, **kwargs):
             **kwargs,
         )
     except Exception as e:
-        logger.error(
-            "NBA API error in %s after %d attempts: %s",
-            getattr(func, "__name__", "callable"),
-            retries,
-            e,
-        )
+        if _looks_like_rate_limit_timeout(e):
+            logger.warning(
+                "NBA API gave repeated timeouts for %s after %d attempt(s); treating as rate-limit pressure and skipping this call.",
+                label,
+                retries,
+            )
+        else:
+            logger.error(
+                "NBA API error in %s after %d attempts: %s",
+                label,
+                retries,
+                e,
+            )
         logger.debug("NBA API call stacktrace", exc_info=True)
         return None
 
@@ -334,29 +413,40 @@ def fetch_team_hustle_stats(season: Optional[str] = None) -> List[Dict[str, Any]
         return []
 
 
-def fetch_player_on_off(team_id: int) -> Dict[str, List[Dict]]:
+def fetch_player_on_off(team_id: int) -> Dict[str, Any]:
     """Fetch TeamPlayerOnOffSummary for on/off court ratings."""
     try:
         from nba_api.stats.endpoints import TeamPlayerOnOffSummary
         season = get_season()
+        timeout_seconds = _on_off_timeout_seconds()
+        retries = _on_off_retries()
         result = _safe_get(
             TeamPlayerOnOffSummary,
             team_id=team_id,
             season=season,
             measure_type_detailed_defense="Advanced",
+            timeout=timeout_seconds,
+            retries=retries,
+            log_label=f"TeamPlayerOnOffSummary(team_id={team_id})",
         )
         if result is None:
-            return {"on": [], "off": []}
+            logger.warning(
+                "On/off fetch unavailable for team_id=%s (timeout=%.1fs retries=%d)",
+                team_id,
+                timeout_seconds,
+                retries,
+            )
+            return {"on": [], "off": [], "_ok": False}
         dfs = result.get_data_frames()
         # dfs[0] = team aggregate (no per-player ratings), skip it
         # dfs[1] = per-player ON court (COURT_STATUS='On')
         # dfs[2] = per-player OFF court (COURT_STATUS='Off')
         on_court = dfs[1].to_dict("records") if len(dfs) > 1 else []
         off_court = dfs[2].to_dict("records") if len(dfs) > 2 else []
-        return {"on": on_court, "off": off_court}
+        return {"on": on_court, "off": off_court, "_ok": True}
     except Exception as e:
         logger.error(f"Error fetching player on/off for team {team_id}: {e}")
-        return {"on": [], "off": []}
+        return {"on": [], "off": [], "_ok": False}
 
 
 def fetch_player_estimated_metrics() -> List[Dict[str, Any]]:

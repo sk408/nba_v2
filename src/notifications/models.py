@@ -5,6 +5,8 @@ from enum import Enum
 
 class NotificationCategory(str, Enum):
     INJURY = "injury"
+    UNDERDOG = "underdog"
+    ODDS = "odds"
 
 
 class NotificationSeverity(str, Enum):

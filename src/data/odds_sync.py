@@ -420,7 +420,10 @@ def sync_odds_for_date(
             ml_away_public = game_odds.get("ml_away_public")
             ml_home_money = game_odds.get("ml_home_money")
             ml_away_money = game_odds.get("ml_away_money")
-            
+
+            # Bet count (updates as more bets come in)
+            num_bets = game_odds.get("num_bets")
+
             if spread is None and ou is None:
                 continue
                 
@@ -436,7 +439,7 @@ def sync_odds_for_date(
                     home_moneyline, away_moneyline, fetched_at, provider,
                     spread_home_public, spread_away_public, spread_home_money, spread_away_money,
                     ml_home_public, ml_away_public, ml_home_money, ml_away_money,
-                    opening_spread
+                    num_bets
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'actionnetwork', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(game_date, home_team_id, away_team_id) DO UPDATE SET
@@ -452,6 +455,7 @@ def sync_odds_for_date(
                     ml_away_public=excluded.ml_away_public,
                     ml_home_money=excluded.ml_home_money,
                     ml_away_money=excluded.ml_away_money,
+                    num_bets=excluded.num_bets,
                     fetched_at=excluded.fetched_at,
                     provider=excluded.provider,
                     opening_spread=COALESCE(opening_spread, excluded.opening_spread),
@@ -459,7 +463,7 @@ def sync_odds_for_date(
             """, (game_date, home_id, away_id, spread, ou, home_ml, away_ml, now,
                   spread_home_public, spread_away_public, spread_home_money, spread_away_money,
                   ml_home_public, ml_away_public, ml_home_money, ml_away_money,
-                  spread))
+                  num_bets))
             
             saved_count += 1
         except Exception as e:
@@ -604,3 +608,20 @@ def backfill_odds(callback: Optional[Callable] = None, force: bool = False) -> i
             logger.debug("Backfill cache invalidation failed: %s", e)
         
     return total_saved
+
+
+def sync_upcoming_odds(callback: Optional[Callable] = None) -> int:
+    """Sync odds for today and tomorrow (Action Network primary, ESPN/SBD fallback).
+
+    Returns total games saved/updated across both dates.
+    """
+    from src.utils.timezone_utils import nba_today, nba_tomorrow
+
+    total = 0
+    for date in (nba_today(), nba_tomorrow()):
+        try:
+            saved = sync_odds_for_date(date, callback=callback)
+            total += saved
+        except Exception as e:
+            logger.warning("sync_upcoming_odds failed for %s: %s", date, e)
+    return total

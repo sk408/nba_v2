@@ -152,15 +152,26 @@ class _OddsSyncWorker(QObject):
     error = Signal(str)
     progress = Signal(str)
 
+    def __init__(self, force: bool = False):
+        super().__init__()
+        self._force = force
+
     def run(self):
         try:
-            from src.data.sync_service import sync_historical_odds
-            self.progress.emit("Force-syncing Vegas odds...")
-            sync_historical_odds(
-                force=True,
+            from src.data.odds_sync import backfill_odds
+            mode = "full refresh (all historical dates)" if self._force else "missing odds only"
+            self.progress.emit(f"Syncing Vegas odds ({mode})...")
+            count = backfill_odds(
+                force=self._force,
                 callback=lambda msg: self.progress.emit(msg),
             )
-            self.finished.emit({"odds_sync": "complete"})
+            self.finished.emit(
+                {
+                    "odds_sync": "complete",
+                    "updated_games": count,
+                    "force": self._force,
+                }
+            )
         except Exception as e:
             logger.error("OddsSyncWorker error: %s", e, exc_info=True)
             self.error.emit(str(e))
@@ -322,7 +333,8 @@ class PipelineView(QWidget):
 
         self._force_sync_cb = QCheckBox("Force full")
         self._force_sync_cb.setToolTip(
-            "Bypass freshness checks and re-fetch all data from scratch"
+            "Bypass freshness checks and re-fetch all data from scratch "
+            "(also forces a full historical odds refresh)"
         )
         self._force_sync_cb.setStyleSheet(
             f"color: {TEXT_MUTED}; font-size: 12px; spacing: 5px;"
@@ -342,7 +354,8 @@ class PipelineView(QWidget):
         self._sync_odds_btn.setFixedHeight(44)
         self._sync_odds_btn.setMinimumWidth(130)
         self._sync_odds_btn.setToolTip(
-            "Force-sync Vegas odds from Action Network"
+            "Backfill missing Vegas odds from Action Network "
+            "(check Force full for a complete historical refresh)"
         )
         self._sync_odds_btn.clicked.connect(self._on_sync_odds)
         row1.addWidget(self._sync_odds_btn)
@@ -584,6 +597,50 @@ class PipelineView(QWidget):
             return text
         return text[: max(0, max_len - 3)].rstrip() + "..."
 
+    @staticmethod
+    def _format_ml_gate_summary(gate: dict, label: str) -> str:
+        """Format compact ML gate diagnostics for logs/state summary."""
+        if not isinstance(gate, dict):
+            return ""
+        if not bool(gate.get("ml_underdog_gate_enabled", False)):
+            return ""
+
+        applied = bool(gate.get("ml_underdog_gate_applied", False))
+        if not applied:
+            reason = str(gate.get("ml_underdog_gate_reason", "")).strip()
+            reason = PipelineView._short_text(reason, 120)
+            if reason:
+                return f"{label} ML: skipped ({reason})"
+            return f"{label} ML: skipped"
+
+        brier_lift = gate.get("ml_underdog_gate_brier_lift")
+        logloss_lift = gate.get("ml_underdog_gate_logloss_lift")
+        baseline_brier = gate.get("ml_underdog_gate_baseline_brier")
+        candidate_brier = gate.get("ml_underdog_gate_candidate_brier")
+        baseline_logloss = gate.get("ml_underdog_gate_baseline_logloss")
+        candidate_logloss = gate.get("ml_underdog_gate_candidate_logloss")
+        passed = bool(gate.get("ml_underdog_gate_passed", True))
+
+        def _fmt4(value):
+            try:
+                return f"{float(value):.4f}"
+            except (TypeError, ValueError):
+                return "n/a"
+
+        def _fmtd(value):
+            try:
+                return f"{float(value):+0.4f}"
+            except (TypeError, ValueError):
+                return "n/a"
+
+        return (
+            f"{label} ML: brier {_fmt4(baseline_brier)}->{_fmt4(candidate_brier)} "
+            f"(Δ{_fmtd(brier_lift)}), "
+            f"logloss {_fmt4(baseline_logloss)}->{_fmt4(candidate_logloss)} "
+            f"(Δ{_fmtd(logloss_lift)}) "
+            f"[{'PASS' if passed else 'FAIL'}]"
+        )
+
     # ---------------------------------------------------------------
     # Pipeline state (last run)
     # ---------------------------------------------------------------
@@ -666,6 +723,7 @@ class PipelineView(QWidget):
             self._step_timing_lbl.setText("")
 
         gate_parts = []
+        ml_gate_parts = []
         for step_name, short_name in (
             ("optimize_fundamentals", "Fund"),
             ("optimize_sharp", "Sharp"),
@@ -684,10 +742,37 @@ class PipelineView(QWidget):
                 gate_parts.append(f"{short_name}: {reason}")
             else:
                 gate_parts.append(f"{short_name}: blocked")
+            ml_summary = self._format_ml_gate_summary(gate, short_name)
+            if ml_summary:
+                ml_gate_parts.append(ml_summary)
+
+        phase_gate = {}
+        results_summary = state.get("results_summary", {})
+        if isinstance(results_summary, dict):
+            backtest_summary = results_summary.get("backtest", {})
+            if isinstance(backtest_summary, dict):
+                raw_phase_gate = backtest_summary.get("phase_acceptance", {})
+                if isinstance(raw_phase_gate, dict):
+                    phase_gate = raw_phase_gate
+
+        phase_gate_text = ""
+        if phase_gate:
+            phase_passed = bool(phase_gate.get("passed", False))
+            failed_count = int(phase_gate.get("failed_count", 0) or 0)
+            if phase_passed:
+                phase_gate_text = "Phase gate: PASS"
+            else:
+                phase_gate_text = f"Phase gate: FAIL ({failed_count} failed checks)"
+
+        summary_lines = []
         if gate_parts:
-            self._save_gate_lbl.setText("Save gate: " + "  |  ".join(gate_parts))
-        else:
-            self._save_gate_lbl.setText("")
+            summary_lines.append("Save gate: " + "  |  ".join(gate_parts))
+        if ml_gate_parts:
+            summary_lines.append("ML gate: " + "  |  ".join(ml_gate_parts))
+        if phase_gate_text:
+            summary_lines.append(phase_gate_text)
+
+        self._save_gate_lbl.setText("\n".join(summary_lines))
 
         # Update step indicators from state
         for step_name, _ in STEP_LABELS:
@@ -793,6 +878,7 @@ class PipelineView(QWidget):
         )
 
         self._reset_controls()
+        self._invalidate_matchup_prediction_cache("data sync complete")
 
         if self.main_window:
             self.main_window.set_status(
@@ -827,14 +913,30 @@ class PipelineView(QWidget):
         self._sync_thread = None
         self._sync_worker = None
 
+    def _invalidate_matchup_prediction_cache(self, reason: str):
+        """Clear MatchupView prediction cache after sync changes."""
+        if not self.main_window:
+            return
+        matchup_view = getattr(self.main_window, "matchup", None)
+        invalidate = getattr(matchup_view, "invalidate_prediction_cache", None)
+        if not callable(invalidate):
+            return
+        try:
+            invalidate(reason=reason)
+        except Exception as e:
+            logger.debug("Matchup cache invalidation skipped: %s", e, exc_info=True)
+
     # ---------------------------------------------------------------
     # Odds sync-only
     # ---------------------------------------------------------------
 
     def _on_sync_odds(self):
-        """Run odds sync only (force mode)."""
+        """Run odds sync only (missing odds by default)."""
         if self._running:
             return
+
+        force = self._force_sync_cb.isChecked()
+        mode_str = "full refresh" if force else "missing odds only"
 
         self._running = True
         self._pipeline_start_time = time.time()
@@ -848,11 +950,11 @@ class PipelineView(QWidget):
         self._hours_spin.setEnabled(False)
         self._log_text.clear()
 
-        self._log_text.append("Starting force odds sync...")
+        self._log_text.append(f"Starting odds sync ({mode_str})...")
         self._current_step_lbl.setText("ODDS SYNC")
 
         # Create worker
-        self._odds_worker = _OddsSyncWorker()
+        self._odds_worker = _OddsSyncWorker(force=force)
         self._odds_thread = QThread()
         self._odds_worker.moveToThread(self._odds_thread)
         self._odds_thread.started.connect(self._odds_worker.run)
@@ -869,7 +971,7 @@ class PipelineView(QWidget):
         self._odds_thread.start()
 
         if self.main_window:
-            self.main_window.set_status("Odds sync running...")
+            self.main_window.set_status(f"Odds sync running ({mode_str})...")
 
     def _on_odds_sync_finished(self, result: dict):
         """Handle odds sync completion."""
@@ -886,6 +988,10 @@ class PipelineView(QWidget):
         )
 
         self._reset_controls()
+        updated_games = int((result or {}).get("updated_games", 0) or 0)
+        self._invalidate_matchup_prediction_cache(
+            f"odds sync complete (updated_games={updated_games})"
+        )
 
         if self.main_window:
             self.main_window.set_status(
@@ -1062,6 +1168,10 @@ class PipelineView(QWidget):
                 self._log_text.append(f"{label} save gate: pass")
             elif reason:
                 self._log_text.append(f"{label} save gate: {reason}")
+            details = step_result.get("save_gate_details", {})
+            ml_summary = self._format_ml_gate_summary(details, label)
+            if ml_summary:
+                self._log_text.append(ml_summary)
 
         pass_summaries = result.get("save_gate_passes")
         if not isinstance(pass_summaries, list) or not pass_summaries:
@@ -1081,6 +1191,9 @@ class PipelineView(QWidget):
                     reason = self._short_text(gate.get("reason", ""), 140)
                     if reason:
                         self._log_text.append(f"  Pass {pass_id} {label}: {reason}")
+                ml_summary = self._format_ml_gate_summary(gate, f"Pass {pass_id} {label}")
+                if ml_summary:
+                    self._log_text.append(f"  {ml_summary}")
 
     def _on_error(self, msg: str):
         """Handle pipeline error."""

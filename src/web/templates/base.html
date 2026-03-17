@@ -20,6 +20,7 @@
             </a>
             <div class="nav-links">
                 <a href="/" class="nav-link {% if request.path == '/' %}active{% endif %}">Dashboard</a>
+                <a href="/underdogs" class="nav-link {% if request.path.startswith('/underdogs') %}active{% endif %}">Underdogs</a>
                 <a href="/matchup" class="nav-link {% if '/matchup' in request.path %}active{% endif %}">Matchup</a>
                 <a href="/gamecast" class="nav-link {% if request.path.startswith('/gamecast') %}active{% endif %}">Gamecast</a>
                 <a href="/accuracy" class="nav-link {% if request.path == '/accuracy' %}active{% endif %}">Accuracy</a>
@@ -261,6 +262,12 @@
                 <rect x="14" y="14" width="7" height="7" rx="1.5"/>
             </svg>
             <span>Games</span>
+        </a>
+        <a href="/underdogs" class="bnav-item {% if request.path.startswith('/underdogs') %}active{% endif %}">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2l3.09 6.26 6.91 1-5 4.87 1.18 6.87L12 17.77 5.82 21l1.18-6.87-5-4.87 6.91-1z"/>
+            </svg>
+            <span>Dogs</span>
         </a>
         <a href="/matchup" class="bnav-item {% if '/matchup' in request.path %}active{% endif %}">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">

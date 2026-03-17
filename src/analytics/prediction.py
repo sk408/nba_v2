@@ -24,9 +24,15 @@ from dataclasses import dataclass, field, fields as dc_fields
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from src.database import db
 from src.config import get_season, get_config, get_historical_seasons
-from src.analytics.weight_config import WeightConfig, get_weight_config
+from src.analytics.weight_config import (
+    FOUR_FACTORS_FIXED_SCALE,
+    WeightConfig,
+    get_weight_config,
+)
 from src.analytics.thresholds import MODEL_PICK_EDGE_THRESHOLD, ACTUAL_WIN_THRESHOLD
 from src.analytics.stats_engine import (
     aggregate_projection, get_home_court_advantage, compute_fatigue,
@@ -124,6 +130,15 @@ class GameInput:
     away_letdown: bool = False
     home_road_trip_game: int = 0
     away_road_trip_game: int = 0
+    # Season phase + regime features
+    home_season_progress: float = 0.0
+    away_season_progress: float = 0.0
+    home_tank_signal_live: float = 0.0
+    away_tank_signal_live: float = 0.0
+    home_tank_signal_oracle: float = 0.0
+    away_tank_signal_oracle: float = 0.0
+    home_roster_shock: float = 0.0
+    away_roster_shock: float = 0.0
     # SRS / Pythagorean
     home_srs: float = 0.0
     away_srs: float = 0.0
@@ -132,6 +147,8 @@ class GameInput:
     # Player On/Off impact
     home_onoff_impact: float = 0.0
     away_onoff_impact: float = 0.0
+    home_onoff_reliability: float = 0.0
+    away_onoff_reliability: float = 0.0
     # Pace differential
     pace_diff: float = 0.0
     # 3PT luck (regression to mean)
@@ -176,6 +193,17 @@ class Prediction:
     calibrated_away_pts: Optional[float] = None
     score_calibrated: bool = False
     score_calibration_mode: str = ""
+
+
+def _resolve_tanking_feature_mode() -> str:
+    """Return validated tanking feature mode: live, oracle, or both."""
+    try:
+        cfg = get_config()
+        mode = str(cfg.get("optimizer_tanking_feature_mode", "both") or "both")
+    except Exception:
+        mode = "both"
+    mode = mode.strip().lower()
+    return mode if mode in {"live", "oracle", "both"} else "both"
 
 
 # ──────────────────────────────────────────────────────────────
@@ -246,7 +274,7 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
     oreb_e = hff.get("oreb", 0) - aff.get("oreb", 0)
     fta_e = hff.get("fta", 0) - aff.get("fta", 0)
     ff_adj = (efg_e * w.ff_efg_weight + tov_e * w.ff_tov_weight +
-              oreb_e * w.ff_oreb_weight + fta_e * w.ff_fta_weight) * w.four_factors_scale
+              oreb_e * w.ff_oreb_weight + fta_e * w.ff_fta_weight) * FOUR_FACTORS_FIXED_SCALE
     game_score += ff_adj
     pred.adjustments["four_factors"] = ff_adj
 
@@ -256,7 +284,7 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
     opp_oreb_e = aff.get("opp_oreb", 0) - hff.get("opp_oreb", 0)
     opp_fta_e = aff.get("opp_fta", 0) - hff.get("opp_fta", 0)
     opp_ff_adj = (opp_efg_e * w.opp_ff_efg_weight + opp_tov_e * w.opp_ff_tov_weight +
-                  opp_oreb_e * w.opp_ff_oreb_weight + opp_fta_e * w.opp_ff_fta_weight) * w.four_factors_scale
+                  opp_oreb_e * w.opp_ff_oreb_weight + opp_fta_e * w.opp_ff_fta_weight) * FOUR_FACTORS_FIXED_SCALE
     game_score += opp_ff_adj
     pred.adjustments["opp_four_factors"] = opp_ff_adj
 
@@ -356,28 +384,62 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
     game_score += road_trip_adj
     pred.adjustments["road_trip_game"] = road_trip_adj
 
-    # 25. SRS differential
+    # 25. Season progress differential (late-season asymmetry and cadence)
+    season_progress_adj = (
+        game.home_season_progress - game.away_season_progress
+    ) * w.season_progress_mult
+    game_score += season_progress_adj
+    pred.adjustments["season_progress"] = season_progress_adj
+
+    # 26. Roster/trade shock (higher churn is penalized)
+    roster_shock_adj = (
+        game.away_roster_shock - game.home_roster_shock
+    ) * w.roster_shock_mult
+    game_score += roster_shock_adj
+    pred.adjustments["roster_shock"] = roster_shock_adj
+
+    # 27. Tanking pressure (configurable live/oracle/both)
+    tank_mode = _resolve_tanking_feature_mode()
+    if tank_mode in {"live", "both"}:
+        tank_live_adj = (
+            game.away_tank_signal_live - game.home_tank_signal_live
+        ) * w.tank_live_mult
+        game_score += tank_live_adj
+        pred.adjustments["tank_live"] = tank_live_adj
+    if tank_mode in {"oracle", "both"}:
+        tank_oracle_adj = (
+            game.away_tank_signal_oracle - game.home_tank_signal_oracle
+        ) * w.tank_oracle_mult
+        game_score += tank_oracle_adj
+        pred.adjustments["tank_oracle"] = tank_oracle_adj
+
+    # 28. SRS differential
     srs_adj = (game.home_srs - game.away_srs) * w.srs_diff_mult
     game_score += srs_adj
     pred.adjustments["srs"] = srs_adj
 
-    # 26. Pythagorean differential
+    # 29. Pythagorean differential
     pythag_adj = (game.home_pythag_wpct - game.away_pythag_wpct) * w.pythag_diff_mult
     game_score += pythag_adj
     pred.adjustments["pythag"] = pythag_adj
 
-    # 27. Player On/Off impact
-    onoff_adj = (game.home_onoff_impact - game.away_onoff_impact) * w.onoff_impact_mult
+    # 30. Player On/Off impact (reliability-aware z-scored team signal)
+    onoff_lambda = max(0.0, float(getattr(w, "onoff_reliability_lambda", 0.0)))
+    home_rel = max(0.0, float(game.home_onoff_reliability))
+    away_rel = max(0.0, float(game.away_onoff_reliability))
+    home_onoff = game.home_onoff_impact * (home_rel / (home_rel + onoff_lambda + 1e-9))
+    away_onoff = game.away_onoff_impact * (away_rel / (away_rel + onoff_lambda + 1e-9))
+    onoff_adj = (home_onoff - away_onoff) * w.onoff_impact_mult
     game_score += onoff_adj
     pred.adjustments["onoff_impact"] = onoff_adj
 
-    # 28. 3PT luck regression (hot team regresses down, cold team regresses up)
+    # 31. 3PT luck regression (hot team regresses down, cold team regresses up)
     # Negative because positive luck = overperforming = expect regression down
     fg3_luck_adj = -(game.home_fg3_luck - game.away_fg3_luck) * w.fg3_luck_mult
     game_score += fg3_luck_adj
     pred.adjustments["fg3_luck"] = fg3_luck_adj
 
-    # 29. Process stats matchup (paint scoring vs paint defense, etc.)
+    # 32. Process stats matchup (paint scoring vs paint defense, etc.)
     # Each component: (team's scoring - opponent's allowed) normalized by league avg
     hp, ap = game.home_process, game.away_process
     if hp and ap:
@@ -478,6 +540,116 @@ def _load_current_injuries(*team_ids: int) -> Dict[int, float]:
         else:
             injured[pid] = 0.0
     return injured
+
+
+# ──────────────────────────────────────────────────────────────
+# On/Off team signal helpers (reliability-weighted + z-scored)
+# ──────────────────────────────────────────────────────────────
+
+_onoff_team_signal_cache: Dict[str, Dict[int, Dict[str, float]]] = {}
+_onoff_team_signal_lock = threading.Lock()
+
+
+def _onoff_player_minutes_smoothing() -> float:
+    """Minutes smoothing term for player on/off reliability weighting."""
+    try:
+        cfg = get_config()
+        return max(
+            1.0,
+            float(cfg.get("optimizer_onoff_player_minutes_smoothing", 800.0) or 800.0),
+        )
+    except Exception:
+        return 800.0
+
+
+def _onoff_team_reliability_slots() -> float:
+    """Equivalent 30-minute slots needed for full team on/off reliability."""
+    try:
+        cfg = get_config()
+        return max(
+            1.0,
+            float(cfg.get("optimizer_onoff_team_reliability_slots", 12.0) or 12.0),
+        )
+    except Exception:
+        return 12.0
+
+
+def _compute_onoff_team_signals_for_season(season: str) -> Dict[int, Dict[str, float]]:
+    """Compute per-team on/off z-signal and reliability for one season."""
+    rows = db.fetch_all(
+        "SELECT team_id, net_rating_diff, on_court_minutes "
+        "FROM player_impact "
+        "WHERE season = ? AND on_court_minutes > 0",
+        (season,),
+    )
+    if not rows:
+        return {}
+
+    smooth = _onoff_player_minutes_smoothing()
+    reliability_slots = _onoff_team_reliability_slots()
+    raw_signal_by_team: Dict[int, float] = defaultdict(float)
+    capped_slots_by_team: Dict[int, float] = defaultdict(float)
+
+    for row in rows:
+        team_id = int(row.get("team_id") or 0)
+        if team_id <= 0:
+            continue
+        net_diff = float(row.get("net_rating_diff", 0.0) or 0.0)
+        minutes = float(row.get("on_court_minutes", 0.0) or 0.0)
+        if minutes <= 0.0:
+            continue
+        minute_share = min(minutes, 30.0) / 30.0
+        reliability = minutes / (minutes + smooth)
+        raw_signal_by_team[team_id] += net_diff * minute_share * reliability
+        capped_slots_by_team[team_id] += minute_share
+
+    if not raw_signal_by_team:
+        return {}
+
+    raw_values = np.array(list(raw_signal_by_team.values()), dtype=float)
+    season_mean = float(np.mean(raw_values))
+    season_std = float(np.std(raw_values))
+
+    out: Dict[int, Dict[str, float]] = {}
+    for team_id, raw_signal in raw_signal_by_team.items():
+        if season_std > 1e-8:
+            signal_z = (raw_signal - season_mean) / season_std
+        else:
+            signal_z = 0.0
+        reliability = min(1.0, capped_slots_by_team.get(team_id, 0.0) / reliability_slots)
+        out[team_id] = {
+            "signal": float(signal_z),
+            "reliability": float(reliability),
+        }
+    return out
+
+
+def _get_onoff_team_signals_for_season(season: str) -> Dict[int, Dict[str, float]]:
+    """Cached accessor for season-level on/off team signal map."""
+    smooth = _onoff_player_minutes_smoothing()
+    reliability_slots = _onoff_team_reliability_slots()
+    cache_key = f"{season}|{smooth:.3f}|{reliability_slots:.3f}"
+    with _onoff_team_signal_lock:
+        cached = _onoff_team_signal_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    computed = _compute_onoff_team_signals_for_season(season)
+    with _onoff_team_signal_lock:
+        _onoff_team_signal_cache[cache_key] = computed
+    return computed
+
+
+def _get_onoff_team_signals_for_seasons(
+    seasons: List[str],
+) -> Dict[tuple[int, str], Dict[str, float]]:
+    """Build (team_id, season) -> signal/reliability map for many seasons."""
+    out: Dict[tuple[int, str], Dict[str, float]] = {}
+    for season in sorted({str(s) for s in seasons if s}):
+        per_season = _get_onoff_team_signals_for_season(season)
+        for team_id, payload in per_season.items():
+            out[(team_id, season)] = payload
+    return out
 
 
 # ──────────────────────────────────────────────────────────────
@@ -722,7 +894,15 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
 
     # ── V2.1 features ──
     from src.analytics.elo import get_team_elo
-    from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots, compute_fg3_luck
+    from src.analytics.stats_engine import (
+        compute_travel,
+        compute_momentum,
+        compute_schedule_spots,
+        compute_fg3_luck,
+        compute_season_progress,
+        compute_tanking_signal,
+        compute_roster_shock,
+    )
 
     _home_travel = compute_travel(home_team_id, game_date, away_team_id, is_home=True)
     _away_travel = compute_travel(away_team_id, game_date, home_team_id, is_home=False)
@@ -730,26 +910,66 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
     _away_momentum = compute_momentum(away_team_id, game_date, season=game_season)
     _home_sched = compute_schedule_spots(home_team_id, game_date, away_team_id, season=game_season)
     _away_sched = compute_schedule_spots(away_team_id, game_date, home_team_id, season=game_season)
+    feature_date = as_of_date or game_date
+    _home_season_progress = compute_season_progress(
+        home_team_id,
+        feature_date,
+        season=game_season,
+    )
+    _away_season_progress = compute_season_progress(
+        away_team_id,
+        feature_date,
+        season=game_season,
+    )
+    _home_tank_live = compute_tanking_signal(
+        home_team_id,
+        feature_date,
+        season=game_season,
+        mode="live",
+    )
+    _away_tank_live = compute_tanking_signal(
+        away_team_id,
+        feature_date,
+        season=game_season,
+        mode="live",
+    )
+    _home_tank_oracle = compute_tanking_signal(
+        home_team_id,
+        feature_date,
+        season=game_season,
+        mode="oracle",
+    )
+    _away_tank_oracle = compute_tanking_signal(
+        away_team_id,
+        feature_date,
+        season=game_season,
+        mode="oracle",
+    )
+    _home_roster_shock = compute_roster_shock(
+        home_team_id,
+        feature_date,
+        season=game_season,
+    )
+    _away_roster_shock = compute_roster_shock(
+        away_team_id,
+        feature_date,
+        season=game_season,
+    )
 
-    # On/Off impact
-    _home_onoff = 0.0
-    _away_onoff = 0.0
-    for _side, _tid in [("home", home_team_id), ("away", away_team_id)]:
-        _impact_rows = db.fetch_all(
-            "SELECT pi.net_rating_diff, pi.on_court_minutes "
-            "FROM player_impact pi "
-            "WHERE pi.season = ? AND pi.team_id = ? AND pi.on_court_minutes > 0",
-            (game_season, _tid),
-        )
-        _total_impact = sum(
-            r["net_rating_diff"] * min(r["on_court_minutes"], 30) / 30.0
-            for r in _impact_rows
-            if r.get("net_rating_diff") is not None
-        ) if _impact_rows else 0.0
-        if _side == "home":
-            _home_onoff = _total_impact
-        else:
-            _away_onoff = _total_impact
+    # On/Off impact (season z-scored + reliability payloads)
+    _onoff_signal_map = _get_onoff_team_signals_for_season(game_season)
+    _home_onoff_payload = _onoff_signal_map.get(
+        home_team_id,
+        {"signal": 0.0, "reliability": 0.0},
+    )
+    _away_onoff_payload = _onoff_signal_map.get(
+        away_team_id,
+        {"signal": 0.0, "reliability": 0.0},
+    )
+    _home_onoff = float(_home_onoff_payload.get("signal", 0.0) or 0.0)
+    _away_onoff = float(_away_onoff_payload.get("signal", 0.0) or 0.0)
+    _home_onoff_rel = float(_home_onoff_payload.get("reliability", 0.0) or 0.0)
+    _away_onoff_rel = float(_away_onoff_payload.get("reliability", 0.0) or 0.0)
 
     # Injury VORP lost
     _home_injury_vorp = 0.0
@@ -856,6 +1076,14 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
         away_letdown=_away_sched["letdown"],
         home_road_trip_game=_home_sched["road_trip_game"],
         away_road_trip_game=_away_sched["road_trip_game"],
+        home_season_progress=_home_season_progress,
+        away_season_progress=_away_season_progress,
+        home_tank_signal_live=_home_tank_live,
+        away_tank_signal_live=_away_tank_live,
+        home_tank_signal_oracle=_home_tank_oracle,
+        away_tank_signal_oracle=_away_tank_oracle,
+        home_roster_shock=_home_roster_shock,
+        away_roster_shock=_away_roster_shock,
         # SRS
         home_srs=hm.get("srs", 0.0) or 0.0,
         away_srs=am.get("srs", 0.0) or 0.0,
@@ -865,6 +1093,8 @@ def predict_matchup(home_team_id: int, away_team_id: int, game_date: str,
         # On/Off
         home_onoff_impact=_home_onoff,
         away_onoff_impact=_away_onoff,
+        home_onoff_reliability=_home_onoff_rel,
+        away_onoff_reliability=_away_onoff_rel,
         # Pace diff
         pace_diff=abs(home_pace - away_pace),
         # 3PT luck
@@ -1513,17 +1743,8 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
         idx = bisect.bisect_left(entries, (game_date,)) - 1
         return entries[idx][1] if idx >= 0 else 1500.0
 
-    # On/Off impact: (team_id, season) -> weighted_sum
-    _impact_rows = db.fetch_all(
-        "SELECT team_id, season, net_rating_diff, on_court_minutes "
-        "FROM player_impact WHERE on_court_minutes > 0"
-    )
-    _onoff_cache: dict = {}
-    for _r in (_impact_rows or []):
-        _key = (_r["team_id"], _r["season"])
-        nrd = _r["net_rating_diff"]
-        if nrd is not None:
-            _onoff_cache[_key] = _onoff_cache.get(_key, 0.0) + nrd * min(_r["on_court_minutes"], 30) / 30.0
+    # On/Off impact: (team_id, season) -> {"signal", "reliability"}
+    _onoff_cache = _get_onoff_team_signals_for_seasons(game_seasons)
 
     # Odds: (game_date, home_team_id, away_team_id) -> row dict
     _odds_rows = db.fetch_all(
@@ -1540,6 +1761,10 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
 
     cfg = get_config()
     max_workers = cfg.get("worker_threads", 4)
+    precompute_log_every = max(
+        25,
+        int(cfg.get("precompute_progress_log_every", 200) or 200),
+    )
     _pc_lock = threading.Lock()
     completed_count = [0]
 
@@ -1649,7 +1874,15 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
         }
 
         # ── V2.1 features ──
-        from src.analytics.stats_engine import compute_travel, compute_momentum, compute_schedule_spots, compute_fg3_luck
+        from src.analytics.stats_engine import (
+            compute_travel,
+            compute_momentum,
+            compute_schedule_spots,
+            compute_fg3_luck,
+            compute_season_progress,
+            compute_tanking_signal,
+            compute_roster_shock,
+        )
 
         _home_travel = compute_travel(htid, gdate, atid, is_home=True)
         _away_travel = compute_travel(atid, gdate, htid, is_home=False)
@@ -1657,10 +1890,64 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
         _away_momentum = compute_momentum(atid, gdate, season=game_season)
         _home_sched = compute_schedule_spots(htid, gdate, atid, season=game_season)
         _away_sched = compute_schedule_spots(atid, gdate, htid, season=game_season)
+        _home_season_progress = compute_season_progress(
+            htid,
+            gdate,
+            season=game_season,
+        )
+        _away_season_progress = compute_season_progress(
+            atid,
+            gdate,
+            season=game_season,
+        )
+        _home_tank_live = compute_tanking_signal(
+            htid,
+            gdate,
+            season=game_season,
+            mode="live",
+        )
+        _away_tank_live = compute_tanking_signal(
+            atid,
+            gdate,
+            season=game_season,
+            mode="live",
+        )
+        _home_tank_oracle = compute_tanking_signal(
+            htid,
+            gdate,
+            season=game_season,
+            mode="oracle",
+        )
+        _away_tank_oracle = compute_tanking_signal(
+            atid,
+            gdate,
+            season=game_season,
+            mode="oracle",
+        )
+        _home_roster_shock = compute_roster_shock(
+            htid,
+            gdate,
+            season=game_season,
+        )
+        _away_roster_shock = compute_roster_shock(
+            atid,
+            gdate,
+            season=game_season,
+        )
 
         # On/Off impact (from pre-built cache)
-        _home_onoff = _onoff_cache.get((htid, game_season), 0.0)
-        _away_onoff = _onoff_cache.get((atid, game_season), 0.0)
+        _home_onoff_payload = _onoff_cache.get(
+            (htid, game_season),
+            {"signal": 0.0, "reliability": 0.0},
+        )
+        _away_onoff_payload = _onoff_cache.get(
+            (atid, game_season),
+            {"signal": 0.0, "reliability": 0.0},
+        )
+        _home_onoff = float(_home_onoff_payload.get("signal", 0.0) or 0.0)
+        _away_onoff = float(_away_onoff_payload.get("signal", 0.0) or 0.0)
+        _home_onoff_rel = float(_home_onoff_payload.get("reliability", 0.0) or 0.0)
+        _away_onoff_rel = float(_away_onoff_payload.get("reliability", 0.0) or 0.0)
 
         # Spread sharp edge (from pre-built cache)
         _spread_sharp = 0.0
@@ -1736,6 +2023,14 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
             away_letdown=_away_sched["letdown"],
             home_road_trip_game=_home_sched["road_trip_game"],
             away_road_trip_game=_away_sched["road_trip_game"],
+            home_season_progress=_home_season_progress,
+            away_season_progress=_away_season_progress,
+            home_tank_signal_live=_home_tank_live,
+            away_tank_signal_live=_away_tank_live,
+            home_tank_signal_oracle=_home_tank_oracle,
+            away_tank_signal_oracle=_away_tank_oracle,
+            home_roster_shock=_home_roster_shock,
+            away_roster_shock=_away_roster_shock,
             # SRS
             home_srs=hm.get("srs", 0.0) or 0.0,
             away_srs=am.get("srs", 0.0) or 0.0,
@@ -1745,6 +2040,8 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
             # On/Off
             home_onoff_impact=_home_onoff,
             away_onoff_impact=_away_onoff,
+            home_onoff_reliability=_home_onoff_rel,
+            away_onoff_reliability=_away_onoff_rel,
             # Pace diff
             pace_diff=abs(home_pace - away_pace),
             # Spread sharp edge
@@ -1773,7 +2070,7 @@ def precompute_all_games(callback=None, force=False) -> List[GameInput]:
             with _pc_lock:
                 completed_count[0] += 1
                 c = completed_count[0]
-                if callback and c % 25 == 0:
+                if callback and c % precompute_log_every == 0:
                     callback(f"Precomputed {c}/{len(new_games)} games")
 
     # Merge new results into cache and persist

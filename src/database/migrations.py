@@ -291,6 +291,57 @@ CREATE TABLE IF NOT EXISTS notifications (
     read INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS recommendation_snapshot_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope_key TEXT NOT NULL,
+    game_date TEXT NOT NULL,
+    snapshot_at TEXT NOT NULL,
+    filters TEXT NOT NULL DEFAULT '{}',
+    summary TEXT NOT NULL DEFAULT '{}',
+    alert_digest TEXT NOT NULL DEFAULT '{}',
+    total_candidates INTEGER NOT NULL DEFAULT 0,
+    screened_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS recommendation_snapshot_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    signal_key TEXT NOT NULL,
+    game_date TEXT NOT NULL,
+    home_team_id INTEGER NOT NULL,
+    away_team_id INTEGER NOT NULL,
+    pick TEXT NOT NULL,
+    tier TEXT DEFAULT '',
+    confidence REAL DEFAULT 0.0,
+    game_score REAL DEFAULT 0.0,
+    rank_score REAL DEFAULT 0.0,
+    dog_payout REAL DEFAULT 0.0,
+    vegas_spread REAL DEFAULT 0.0,
+    vegas_home_ml INTEGER DEFAULT 0,
+    vegas_away_ml INTEGER DEFAULT 0,
+    is_dog_pick INTEGER NOT NULL DEFAULT 0,
+    is_value_zone INTEGER NOT NULL DEFAULT 0,
+    ml_home_public REAL DEFAULT 0.0,
+    ml_home_money REAL DEFAULT 0.0,
+    filters TEXT NOT NULL DEFAULT '{}',
+    why_pick TEXT NOT NULL DEFAULT '{}',
+    feature_snapshot TEXT NOT NULL DEFAULT '{}',
+    snapshot_at TEXT NOT NULL,
+    is_settled INTEGER NOT NULL DEFAULT 0,
+    settled_at TEXT,
+    settlement_source TEXT,
+    actual_home_score REAL,
+    actual_away_score REAL,
+    actual_winner TEXT,
+    model_correct INTEGER,
+    profit_units REAL,
+    roi_pct REAL,
+    realized_margin_for_pick REAL,
+    realized_edge_delta REAL,
+    FOREIGN KEY (run_id) REFERENCES recommendation_snapshot_runs(id),
+    UNIQUE(run_id, signal_key)
+);
+
 CREATE TABLE IF NOT EXISTS game_odds (
     game_date DATE NOT NULL,
     home_team_id INTEGER NOT NULL,
@@ -311,6 +362,7 @@ CREATE TABLE IF NOT EXISTS game_odds (
     ml_away_public INTEGER,
     ml_home_money INTEGER,
     ml_away_money INTEGER,
+    num_bets INTEGER,
     PRIMARY KEY (game_date, home_team_id, away_team_id),
     FOREIGN KEY (home_team_id) REFERENCES teams(team_id),
     FOREIGN KEY (away_team_id) REFERENCES teams(team_id)
@@ -371,6 +423,9 @@ CREATE INDEX IF NOT EXISTS idx_player_sync_cache_date ON player_sync_cache(last_
 CREATE INDEX IF NOT EXISTS idx_player_impact_team ON player_impact(team_id, season);
 CREATE INDEX IF NOT EXISTS idx_quarter_scores_team_date ON game_quarter_scores(team_id, game_date);
 CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(read, id DESC);
+CREATE INDEX IF NOT EXISTS idx_rec_items_unsettled ON recommendation_snapshot_items(is_settled, game_date);
+CREATE INDEX IF NOT EXISTS idx_rec_items_matchup ON recommendation_snapshot_items(game_date, home_team_id, away_team_id);
+CREATE INDEX IF NOT EXISTS idx_rec_runs_scope_date ON recommendation_snapshot_runs(scope_key, game_date, snapshot_at DESC);
 CREATE INDEX IF NOT EXISTS idx_injuries_team ON injuries(team_id);
 CREATE INDEX IF NOT EXISTS idx_injuries_player ON injuries(player_id);
 CREATE INDEX IF NOT EXISTS idx_player_stats_season ON player_stats(season, game_date);
@@ -428,6 +483,7 @@ def _run_column_migrations():
     _add_column_if_missing("player_impact", "ws_per_48", "REAL DEFAULT 0.0")
     # New feature column: spread movement
     _add_column_if_missing("game_odds", "spread_movement", "REAL DEFAULT 0.0")
+    _add_column_if_missing("game_odds", "num_bets", "INTEGER")
     _add_column_if_missing("player_stats", "team_id", "INTEGER")
     _add_column_if_missing("elo_ratings", "season", "TEXT DEFAULT ''")
     try:
@@ -770,7 +826,8 @@ def get_table_counts() -> dict:
     """Return row counts for key tables."""
     tables = ["teams", "players", "player_stats", "predictions",
               "team_metrics", "player_impact", "injuries", "injury_history",
-              "injury_status_log", "team_tuning", "notifications", "game_odds",
+              "injury_status_log", "team_tuning", "notifications",
+              "recommendation_snapshot_runs", "recommendation_snapshot_items", "game_odds",
               "arenas", "referees", "game_referees", "elo_ratings"]
     counts = {}
     for t in tables:

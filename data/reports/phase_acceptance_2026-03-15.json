@@ -1,0 +1,84 @@
+{
+  "generated_at": "2026-03-15T23:58:39+00:00",
+  "passed": false,
+  "failed_count": 2,
+  "checks": [
+    {
+      "id": "winner_pct_floor",
+      "label": "Winner accuracy floor",
+      "passed": true,
+      "actual": 65.5451,
+      "threshold": 60.0,
+      "operator": ">=",
+      "detail": "65.55 >= 60.00"
+    },
+    {
+      "id": "upset_coverage_floor",
+      "label": "Upset coverage floor",
+      "passed": true,
+      "actual": 22.3367,
+      "threshold": 20.0,
+      "operator": ">=",
+      "detail": "22.34 + 0.50 >= 20.00",
+      "threshold_target": 20.0,
+      "tolerance_pp": 0.5,
+      "effective_threshold": 19.5
+    },
+    {
+      "id": "tier_a_hit_rate_floor",
+      "label": "Tier A hit-rate floor",
+      "passed": false,
+      "actual": 55.0,
+      "threshold": 56.0,
+      "operator": ">=",
+      "detail": "55.00 >= 56.00"
+    },
+    {
+      "id": "ml_roi_floor",
+      "label": "Moneyline ROI floor",
+      "passed": true,
+      "actual": 1.282,
+      "threshold": 0.0,
+      "operator": ">=",
+      "detail": "1.28 >= 0.00"
+    },
+    {
+      "id": "fund_drift_alert_budget",
+      "label": "Fundamentals drift-alert budget",
+      "passed": false,
+      "actual": 3.0,
+      "threshold": 1.0,
+      "operator": "<=",
+      "detail": "3.00 <= 1.00"
+    }
+  ],
+  "thresholds": {
+    "min_winner_pct": 60.0,
+    "min_upset_coverage_pct": 20.0,
+    "upset_coverage_tolerance_pp": 0.5,
+    "min_tier_a_hit_rate": 56.0,
+    "min_ml_roi": 0.0,
+    "max_fund_drift_alerts": 1.0
+  },
+  "failed_checks": [
+    {
+      "id": "tier_a_hit_rate_floor",
+      "label": "Tier A hit-rate floor",
+      "passed": false,
+      "actual": 55.0,
+      "threshold": 56.0,
+      "operator": ">=",
+      "detail": "55.00 >= 56.00"
+    },
+    {
+      "id": "fund_drift_alert_budget",
+      "label": "Fundamentals drift-alert budget",
+      "passed": false,
+      "actual": 3.0,
+      "threshold": 1.0,
+      "operator": "<=",
+      "detail": "3.00 <= 1.00"
+    }
+  ],
+  "report_date": "2026-03-15"
+}

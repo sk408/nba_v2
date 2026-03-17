@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 
 _SNAPSHOTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "snapshots")
 
+# Four-factors contribution normalization constant.
+# This replaces the old tunable four_factors_scale pathway to reduce
+# identifiability issues between scale and per-factor weights.
+FOUR_FACTORS_FIXED_SCALE = 100.0
+
 
 @dataclass
 class WeightConfig:
@@ -29,7 +34,8 @@ class WeightConfig:
     rating_matchup_mult: float = 4.06
 
     # Four Factors
-    four_factors_scale: float = 50.0
+    # Legacy compatibility knob (no longer tuned; fixed normalization is used).
+    four_factors_scale: float = 1.0
     ff_efg_weight: float = 7.36
     ff_tov_weight: float = 3.40
     ff_oreb_weight: float = 1.97
@@ -90,7 +96,12 @@ class WeightConfig:
     srs_diff_mult: float = 0.5
     pythag_diff_mult: float = 2.0
     onoff_impact_mult: float = 0.5
+    onoff_reliability_lambda: float = 0.35
     road_trip_game_mult: float = 0.25
+    season_progress_mult: float = 0.8
+    roster_shock_mult: float = 1.2
+    tank_live_mult: float = 1.0
+    tank_oracle_mult: float = 0.4
     cum_travel_7d_mult: float = 0.75
     pace_mismatch_mult: float = 0.2
     fg3_luck_mult: float = 15.0
@@ -141,7 +152,6 @@ OPTIMIZER_RANGES = {
     "turnover_margin_mult": (0.0, 10.0),
     "rebound_diff_mult": (0.0, 4.0),
     "rating_matchup_mult": (0.0, 5.0),
-    "four_factors_scale": (1.0, 100.0),
     "ff_efg_weight": (0.0, 15.0),
     "ff_tov_weight": (0.0, 15.0),
     "ff_oreb_weight": (0.0, 15.0),
@@ -177,7 +187,12 @@ OPTIMIZER_RANGES = {
     "srs_diff_mult": (0.0, 3.0),
     "pythag_diff_mult": (0.0, 8.0),
     "onoff_impact_mult": (0.0, 3.0),
+    "onoff_reliability_lambda": (0.0, 2.5),
     "road_trip_game_mult": (0.0, 2.0),
+    "season_progress_mult": (0.0, 3.0),
+    "roster_shock_mult": (0.0, 4.0),
+    "tank_live_mult": (0.0, 5.0),
+    "tank_oracle_mult": (0.0, 5.0),
     "cum_travel_7d_mult": (0.0, 5.0),
     "pace_mismatch_mult": (0.0, 2.0),
     "fg3_luck_mult": (0.0, 50.0),
@@ -200,7 +215,6 @@ CD_RANGES = {
     "turnover_margin_mult": (0.0, 12.0),
     "rebound_diff_mult": (0.0, 5.0),
     "rating_matchup_mult": (0.0, 6.0),
-    "four_factors_scale": (0.5, 120.0),
     "ff_efg_weight": (0.0, 18.0),
     "ff_tov_weight": (0.0, 18.0),
     "ff_oreb_weight": (0.0, 18.0),
@@ -236,7 +250,12 @@ CD_RANGES = {
     "srs_diff_mult": (0.0, 5.0),
     "pythag_diff_mult": (0.0, 10.0),
     "onoff_impact_mult": (0.0, 5.0),
+    "onoff_reliability_lambda": (0.0, 4.0),
     "road_trip_game_mult": (0.0, 3.0),
+    "season_progress_mult": (0.0, 5.0),
+    "roster_shock_mult": (0.0, 6.0),
+    "tank_live_mult": (0.0, 7.0),
+    "tank_oracle_mult": (0.0, 7.0),
     "cum_travel_7d_mult": (0.0, 7.0),
     "pace_mismatch_mult": (0.0, 3.0),
     "fg3_luck_mult": (0.0, 75.0),
@@ -269,12 +288,23 @@ def get_weight_config() -> WeightConfig:
 
 
 def _enforce_ranges(w: WeightConfig) -> WeightConfig:
-    """Clamp all tunable parameters to their OPTIMIZER_RANGES bounds.
+    """Clamp tunable parameters to active optimizer bounds.
 
     Prevents degenerate configurations (negative weights, inverted signs)
-    from being persisted.  Checks both fundamentals and sharp ranges.
+    from being persisted. When optimizer wide ranges are enabled, use the
+    corresponding wider CD bounds so persisted weights match what Optuna scored.
     """
-    all_ranges = {**OPTIMIZER_RANGES, **SHARP_RANGES}
+    use_wide_ranges = False
+    try:
+        from src.config import get as get_setting
+
+        use_wide_ranges = bool(get_setting("optimizer_use_wide_ranges", False))
+    except Exception:
+        logger.debug("Failed reading optimizer_use_wide_ranges; using defaults", exc_info=True)
+
+    all_ranges = (
+        CD_SHARP_RANGES if use_wide_ranges else {**OPTIMIZER_RANGES, **SHARP_RANGES}
+    )
     d = w.to_dict()
     for k, (lo, hi) in all_ranges.items():
         if k in d:

@@ -11,7 +11,8 @@
       "WebFetch(domain:dunksandthrees.com)",
       "WebFetch(domain:www.underdogchance.com)",
       "Bash(git:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(find:*)"
     ]
   }
 }

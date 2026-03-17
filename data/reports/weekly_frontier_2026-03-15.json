@@ -1,0 +1,403 @@
+{
+  "generated_at": "2026-03-15T23:58:39+00:00",
+  "report_date": "2026-03-15",
+  "fundamentals": {
+    "winner_pct": 65.54507077228706,
+    "upset_rate": 22.336727092128136,
+    "upset_accuracy": 45.41411895497499,
+    "ml_roi": 1.2820287273515574,
+    "hit_rate_quality_observation": "Hit/quality observation: tier hit A/B/C=55.0/45.5/43.8% (coverage 2.7/3.3/16.3% of slate); frontier top 30% upsets=48.9% vs full book=45.4%.",
+    "tier_metrics": {
+      "A": {
+        "count": 220.0,
+        "hit_rate": 55.00000000000001,
+        "coverage_pct": 2.7315619567916563,
+        "ml_roi": 31.730081014273605,
+        "avg_confidence": 79.4987877595715
+      },
+      "B": {
+        "count": 264.0,
+        "hit_rate": 45.45454545454545,
+        "coverage_pct": 3.2778743481499872,
+        "ml_roi": 4.948389565161208,
+        "avg_confidence": 62.44510916176282
+      },
+      "C": {
+        "count": 1315.0,
+        "hit_rate": 43.8022813688213,
+        "coverage_pct": 16.32729078718649,
+        "ml_roi": 7.1652099497601816,
+        "avg_confidence": 27.483279894933364
+      }
+    },
+    "roi_by_odds_band": {
+      "lt_1_50": {
+        "label": "<1.50x",
+        "bets": 1,
+        "hit_rate": 0.0,
+        "ml_roi": -100.0,
+        "avg_payout": 1.4
+      },
+      "1_50_1_99": {
+        "label": "1.50x-1.99x",
+        "bets": 185,
+        "hit_rate": 53.51351351351351,
+        "ml_roi": 4.612128390688594,
+        "avg_payout": 1.9524233954497459
+      },
+      "2_00_2_99": {
+        "label": "2.00x-2.99x",
+        "bets": 1314,
+        "hit_rate": 47.64079147640791,
+        "ml_roi": 10.359208523592086,
+        "avg_payout": 2.343234398782344
+      },
+      "3_00_3_99": {
+        "label": "3.00x-3.99x",
+        "bets": 234,
+        "hit_rate": 33.76068376068376,
+        "ml_roi": 10.615384615384617,
+        "avg_payout": 3.363888888888889
+      },
+      "4_plus": {
+        "label": "4.00x+",
+        "bets": 65,
+        "hit_rate": 20.0,
+        "ml_roi": 13.230769230769232,
+        "avg_payout": 5.000461538461538
+      }
+    },
+    "quality_frontier": [
+      {
+        "upset_coverage_pct": 10.00555864369094,
+        "coverage_pct": 2.2349143282840824,
+        "picks": 180.0,
+        "hit_rate": 55.55555555555556,
+        "ml_roi": 35.67148031736969,
+        "avg_confidence": 81.3878343227256
+      },
+      {
+        "upset_coverage_pct": 20.01111728738188,
+        "coverage_pct": 4.469828656568165,
+        "picks": 360.0,
+        "hit_rate": 50.27777777777778,
+        "ml_roi": 19.4766015962015,
+        "avg_confidence": 74.20423880394232
+      },
+      {
+        "upset_coverage_pct": 30.016675931072818,
+        "coverage_pct": 6.704742984852248,
+        "picks": 540.0,
+        "hit_rate": 48.888888888888886,
+        "ml_roi": 15.514325532608902,
+        "avg_confidence": 68.47388032268101
+      },
+      {
+        "upset_coverage_pct": 40.02223457476376,
+        "coverage_pct": 8.93965731313633,
+        "picks": 720.0,
+        "hit_rate": 46.38888888888889,
+        "ml_roi": 9.472454744838194,
+        "avg_confidence": 63.499632035005014
+      },
+      {
+        "upset_coverage_pct": 50.0277932184547,
+        "coverage_pct": 11.174571641420412,
+        "picks": 900.0,
+        "hit_rate": 46.111111111111114,
+        "ml_roi": 9.150016270481666,
+        "avg_confidence": 59.04750176139511
+      },
+      {
+        "upset_coverage_pct": 60.033351862145636,
+        "coverage_pct": 13.409485969704496,
+        "picks": 1080.0,
+        "hit_rate": 45.092592592592595,
+        "ml_roi": 7.441415675136838,
+        "avg_confidence": 54.775138203830736
+      },
+      {
+        "upset_coverage_pct": 70.03891050583657,
+        "coverage_pct": 15.644400297988579,
+        "picks": 1260.0,
+        "hit_rate": 45.23809523809524,
+        "ml_roi": 8.13601627689771,
+        "avg_confidence": 50.696841055464844
+      },
+      {
+        "upset_coverage_pct": 80.04446914952752,
+        "coverage_pct": 17.87931462627266,
+        "picks": 1440.0,
+        "hit_rate": 45.55555555555556,
+        "ml_roi": 9.090417376188629,
+        "avg_confidence": 46.746255270851584
+      },
+      {
+        "upset_coverage_pct": 90.05002779321846,
+        "coverage_pct": 20.114228954556744,
+        "picks": 1620.0,
+        "hit_rate": 45.55555555555556,
+        "ml_roi": 9.677177888328508,
+        "avg_confidence": 42.87029720851209
+      },
+      {
+        "upset_coverage_pct": 100.0,
+        "coverage_pct": 22.336727092128136,
+        "picks": 1799.0,
+        "hit_rate": 45.41411895497499,
+        "ml_roi": 9.84393760549049,
+        "avg_confidence": 38.974850020927455
+      }
+    ],
+    "drift": {
+      "generated_at": "2026-03-15T23:58:39+00:00",
+      "triggered": true,
+      "alert_count": 3,
+      "alerts": [
+        {
+          "type": "tier_hit_rate_drift",
+          "tier": "A",
+          "severity": "high",
+          "metric": "hit_rate",
+          "value": 55.0,
+          "threshold": 56.0,
+          "sample_size": 220,
+          "message": "Tier A hit rate drift: 55.0% below threshold 56.0% (220 picks)."
+        },
+        {
+          "type": "tier_hit_rate_drift",
+          "tier": "B",
+          "severity": "medium",
+          "metric": "hit_rate",
+          "value": 45.455,
+          "threshold": 50.0,
+          "sample_size": 264,
+          "message": "Tier B hit rate drift: 45.5% below threshold 50.0% (264 picks)."
+        },
+        {
+          "type": "tier_hit_rate_drift",
+          "tier": "C",
+          "severity": "medium",
+          "metric": "hit_rate",
+          "value": 43.802,
+          "threshold": 44.0,
+          "sample_size": 1315,
+          "message": "Tier C hit rate drift: 43.8% below threshold 44.0% (1315 picks)."
+        }
+      ],
+      "thresholds": {
+        "tier_a_min_hit_rate": 56.0,
+        "tier_b_min_hit_rate": 50.0,
+        "tier_c_min_hit_rate": 44.0,
+        "tier_min_samples": 12.0,
+        "band_2_00_2_99_min_roi": -2.0,
+        "band_3_00_3_99_min_roi": -4.0,
+        "band_4_plus_min_roi": -8.0,
+        "band_min_bets": 15.0
+      }
+    }
+  },
+  "sharp": {
+    "winner_pct": 65.60715172585051,
+    "upset_rate": 22.324310901415444,
+    "upset_accuracy": 45.550611790878754,
+    "ml_roi": 1.4032063169033924,
+    "hit_rate_quality_observation": "Hit/quality observation: tier hit A/B/C=54.5/46.3/43.9% (coverage 2.8/3.2/16.4% of slate); frontier top 30% upsets=48.5% vs full book=45.6%.",
+    "tier_metrics": {
+      "A": {
+        "count": 222.0,
+        "hit_rate": 54.5045045045045,
+        "coverage_pct": 2.756394338217035,
+        "ml_roi": 31.128909113244113,
+        "avg_confidence": 79.43794096880819
+      },
+      "B": {
+        "count": 259.0,
+        "hit_rate": 46.33204633204633,
+        "coverage_pct": 3.2157933945865405,
+        "ml_roi": 6.642373919701,
+        "avg_confidence": 62.43281852403279
+      },
+      "C": {
+        "count": 1317.0,
+        "hit_rate": 43.887623386484435,
+        "coverage_pct": 16.35212316861187,
+        "ml_roi": 7.373124472352684,
+        "avg_confidence": 27.568975265888408
+      }
+    },
+    "roi_by_odds_band": {
+      "lt_1_50": {
+        "label": "<1.50x",
+        "bets": 1,
+        "hit_rate": 0.0,
+        "ml_roi": -100.0,
+        "avg_payout": 1.4
+      },
+      "1_50_1_99": {
+        "label": "1.50x-1.99x",
+        "bets": 186,
+        "hit_rate": 53.76344086021505,
+        "ml_roi": 5.104288163608796,
+        "avg_payout": 1.9524724011814054
+      },
+      "2_00_2_99": {
+        "label": "2.00x-2.99x",
+        "bets": 1312,
+        "hit_rate": 47.71341463414634,
+        "ml_roi": 10.566310975609754,
+        "avg_payout": 2.3431249999999997
+      },
+      "3_00_3_99": {
+        "label": "3.00x-3.99x",
+        "bets": 233,
+        "hit_rate": 34.33476394849785,
+        "ml_roi": 12.313304721030043,
+        "avg_payout": 3.3621030042918454
+      },
+      "4_plus": {
+        "label": "4.00x+",
+        "bets": 66,
+        "hit_rate": 19.696969696969695,
+        "ml_roi": 11.515151515151516,
+        "avg_payout": 4.992878787878787
+      }
+    },
+    "quality_frontier": [
+      {
+        "upset_coverage_pct": 10.011123470522804,
+        "coverage_pct": 2.2349143282840824,
+        "picks": 180.0,
+        "hit_rate": 54.44444444444444,
+        "ml_roi": 33.082373563557056,
+        "avg_confidence": 81.3932229563341
+      },
+      {
+        "upset_coverage_pct": 20.02224694104561,
+        "coverage_pct": 4.469828656568165,
+        "picks": 360.0,
+        "hit_rate": 50.55555555555556,
+        "ml_roi": 19.571816348769193,
+        "avg_confidence": 74.21165161623753
+      },
+      {
+        "upset_coverage_pct": 30.03337041156841,
+        "coverage_pct": 6.704742984852248,
+        "picks": 540.0,
+        "hit_rate": 48.51851851851852,
+        "ml_roi": 14.849510717794088,
+        "avg_confidence": 68.46390396155606
+      },
+      {
+        "upset_coverage_pct": 40.04449388209122,
+        "coverage_pct": 8.93965731313633,
+        "picks": 720.0,
+        "hit_rate": 46.666666666666664,
+        "ml_roi": 10.03773252261597,
+        "avg_confidence": 63.47510438478143
+      },
+      {
+        "upset_coverage_pct": 50.0,
+        "coverage_pct": 11.162155450707722,
+        "picks": 899.0,
+        "hit_rate": 46.0511679644049,
+        "ml_roi": 9.06871696128521,
+        "avg_confidence": 59.05608565709493
+      },
+      {
+        "upset_coverage_pct": 60.0111234705228,
+        "coverage_pct": 13.397069778991805,
+        "picks": 1079.0,
+        "hit_rate": 44.94902687673772,
+        "ml_roi": 7.134838585643827,
+        "avg_confidence": 54.77553899006495
+      },
+      {
+        "upset_coverage_pct": 70.02224694104561,
+        "coverage_pct": 15.631984107275887,
+        "picks": 1259.0,
+        "hit_rate": 44.95631453534551,
+        "ml_roi": 7.349852865746913,
+        "avg_confidence": 50.68964938401088
+      },
+      {
+        "upset_coverage_pct": 80.0333704115684,
+        "coverage_pct": 17.866898435559968,
+        "picks": 1439.0,
+        "hit_rate": 45.58721334259903,
+        "ml_roi": 9.205036258205547,
+        "avg_confidence": 46.7443399398556
+      },
+      {
+        "upset_coverage_pct": 90.04449388209122,
+        "coverage_pct": 20.101812763844052,
+        "picks": 1619.0,
+        "hit_rate": 45.521927115503395,
+        "ml_roi": 9.775265456095884,
+        "avg_confidence": 42.87082802657295
+      },
+      {
+        "upset_coverage_pct": 100.0,
+        "coverage_pct": 22.324310901415444,
+        "picks": 1798.0,
+        "hit_rate": 45.550611790878754,
+        "ml_roi": 10.200999776658083,
+        "avg_confidence": 38.99536335816181
+      }
+    ],
+    "drift": {
+      "generated_at": "2026-03-15T23:58:39+00:00",
+      "triggered": true,
+      "alert_count": 3,
+      "alerts": [
+        {
+          "type": "tier_hit_rate_drift",
+          "tier": "A",
+          "severity": "high",
+          "metric": "hit_rate",
+          "value": 54.505,
+          "threshold": 56.0,
+          "sample_size": 222,
+          "message": "Tier A hit rate drift: 54.5% below threshold 56.0% (222 picks)."
+        },
+        {
+          "type": "tier_hit_rate_drift",
+          "tier": "B",
+          "severity": "medium",
+          "metric": "hit_rate",
+          "value": 46.332,
+          "threshold": 50.0,
+          "sample_size": 259,
+          "message": "Tier B hit rate drift: 46.3% below threshold 50.0% (259 picks)."
+        },
+        {
+          "type": "tier_hit_rate_drift",
+          "tier": "C",
+          "severity": "medium",
+          "metric": "hit_rate",
+          "value": 43.888,
+          "threshold": 44.0,
+          "sample_size": 1317,
+          "message": "Tier C hit rate drift: 43.9% below threshold 44.0% (1317 picks)."
+        }
+      ],
+      "thresholds": {
+        "tier_a_min_hit_rate": 56.0,
+        "tier_b_min_hit_rate": 50.0,
+        "tier_c_min_hit_rate": 44.0,
+        "tier_min_samples": 12.0,
+        "band_2_00_2_99_min_roi": -2.0,
+        "band_3_00_3_99_min_roi": -4.0,
+        "band_4_plus_min_roi": -8.0,
+        "band_min_bets": 15.0
+      }
+    }
+  },
+  "comparison": {
+    "sharp_flipped_picks": 31,
+    "sharp_flipped_correct": 18,
+    "sharp_flipped_accuracy": 58.06451612903226,
+    "sharp_net_value": 0.06208095356345211
+  },
+  "drift_triggered": true
+}
