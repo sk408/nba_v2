@@ -15,102 +15,126 @@
 <div class="underdog-presets">
     {% for preset in preset_options %}
     <a href="/underdogs?date={{ selected_date }}&preset={{ preset.value }}"
-       class="date-chip underdog-preset{% if filters.preset == preset.value %} active{% endif %}">
+       class="underdog-preset-chip{% if filters.preset == preset.value %} active{% endif %}">
         {{ preset.label }}
     </a>
     {% endfor %}
 </div>
 <div id="saved-underdog-presets" class="underdog-saved-presets" aria-live="polite"></div>
 
-<div class="date-strip">
-    {% for d in dates %}
-    <a href="/underdogs?date={{ d.value }}"
-       class="date-chip{% if d.is_active %} active{% endif %}">
-        {{ d.label }}
-    </a>
-    {% endfor %}
-</div>
+<section class="date-strip-shell">
+    <div class="date-strip-head">
+        <span class="date-strip-title">Target date</span>
+        <span class="date-strip-active">{{ selected_date }}</span>
+    </div>
+    <div class="date-strip">
+        {% for d in dates %}
+        <a href="/underdogs?date={{ d.value }}&preset={{ filters.preset }}"
+           class="date-chip{% if d.is_active %} active{% endif %}{% if d.is_today %} today{% endif %}">
+            <span class="date-chip__day">{{ d.day_name }}</span>
+            <span class="date-chip__num">{{ d.day_num }}</span>
+            <span class="date-chip__month">{{ d.month }}</span>
+        </a>
+        {% endfor %}
+    </div>
+</section>
 
 <form method="get" action="/underdogs" class="underdog-filters">
     <input type="hidden" name="preset" value="{{ filters.preset }}">
     <input type="hidden" name="date" value="{{ selected_date }}">
 
-    <label class="underdog-filter">
-        <span class="underdog-filter-label">Tier</span>
-        <select name="tier" class="underdog-filter-input">
-            <option value="ALL" {% if filters.tier == 'ALL' %}selected{% endif %}>All tiers</option>
-            <option value="A" {% if filters.tier == 'A' %}selected{% endif %}>Tier A</option>
-            <option value="B" {% if filters.tier == 'B' %}selected{% endif %}>Tier B</option>
-            <option value="C" {% if filters.tier == 'C' %}selected{% endif %}>Tier C</option>
-        </select>
-    </label>
+    <div class="underdog-filters-grid">
+        <div class="underdog-filter">
+            <span class="underdog-filter-label">Tier</span>
+            <div class="underdog-segment" role="radiogroup" aria-label="Tier">
+                <input id="tier-all" type="radio" name="tier" value="ALL" {% if filters.tier == 'ALL' %}checked{% endif %}>
+                <label for="tier-all" class="underdog-segment-btn">All</label>
+                <input id="tier-a" type="radio" name="tier" value="A" {% if filters.tier == 'A' %}checked{% endif %}>
+                <label for="tier-a" class="underdog-segment-btn">A</label>
+                <input id="tier-b" type="radio" name="tier" value="B" {% if filters.tier == 'B' %}checked{% endif %}>
+                <label for="tier-b" class="underdog-segment-btn">B</label>
+                <input id="tier-c" type="radio" name="tier" value="C" {% if filters.tier == 'C' %}checked{% endif %}>
+                <label for="tier-c" class="underdog-segment-btn">C</label>
+            </div>
+        </div>
 
-    <label class="underdog-filter">
-        <span class="underdog-filter-label">Min confidence</span>
-        <input
-            type="number"
-            name="min_confidence"
-            class="underdog-filter-input"
-            min="0"
-            max="100"
-            step="1"
-            value="{{ '%.0f'|format(filters.min_confidence) }}"
-        >
-    </label>
+        <label class="underdog-filter">
+            <span class="underdog-filter-label">Min confidence</span>
+            <div class="underdog-input-wrap">
+                <input
+                    type="number"
+                    name="min_confidence"
+                    class="underdog-filter-input"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="{{ '%.0f'|format(filters.min_confidence) }}"
+                >
+                <span class="underdog-input-suffix">%</span>
+            </div>
+        </label>
 
-    <label class="underdog-filter">
-        <span class="underdog-filter-label">Min payout (x)</span>
-        <input
-            type="number"
-            name="min_payout"
-            class="underdog-filter-input"
-            min="0"
-            step="0.1"
-            value="{{ '%.1f'|format(filters.min_payout) }}"
-        >
-    </label>
+        <label class="underdog-filter">
+            <span class="underdog-filter-label">Min payout</span>
+            <div class="underdog-input-wrap">
+                <input
+                    type="number"
+                    name="min_payout"
+                    class="underdog-filter-input"
+                    min="0"
+                    step="0.1"
+                    value="{{ '%.1f'|format(filters.min_payout) }}"
+                >
+                <span class="underdog-input-suffix">x</span>
+            </div>
+        </label>
 
-    <label class="underdog-filter">
-        <span class="underdog-filter-label">Max rows</span>
-        <input
-            type="number"
-            name="limit"
-            class="underdog-filter-input"
-            min="1"
-            max="200"
-            step="1"
-            value="{{ filters.limit }}"
-        >
-    </label>
+        <label class="underdog-filter">
+            <span class="underdog-filter-label">Max rows</span>
+            <input
+                type="number"
+                name="limit"
+                class="underdog-filter-input"
+                min="1"
+                max="200"
+                step="1"
+                value="{{ filters.limit }}"
+            >
+        </label>
 
-    <label class="underdog-filter">
-        <span class="underdog-filter-label">Sort by</span>
-        <select name="sort_by" class="underdog-filter-input">
-            <option value="rank_score" {% if filters.sort_by == 'rank_score' %}selected{% endif %}>Rank score</option>
-            <option value="confidence" {% if filters.sort_by == 'confidence' %}selected{% endif %}>Confidence</option>
-            <option value="dog_payout" {% if filters.sort_by == 'dog_payout' %}selected{% endif %}>Dog payout</option>
-            <option value="edge" {% if filters.sort_by == 'edge' %}selected{% endif %}>Edge magnitude</option>
-            <option value="start_time" {% if filters.sort_by == 'start_time' %}selected{% endif %}>Start time</option>
-        </select>
-    </label>
+        <label class="underdog-filter">
+            <span class="underdog-filter-label">Sort by</span>
+            <select name="sort_by" class="underdog-filter-input">
+                <option value="rank_score" {% if filters.sort_by == 'rank_score' %}selected{% endif %}>Rank score</option>
+                <option value="confidence" {% if filters.sort_by == 'confidence' %}selected{% endif %}>Confidence</option>
+                <option value="dog_payout" {% if filters.sort_by == 'dog_payout' %}selected{% endif %}>Dog payout</option>
+                <option value="edge" {% if filters.sort_by == 'edge' %}selected{% endif %}>Edge magnitude</option>
+                <option value="start_time" {% if filters.sort_by == 'start_time' %}selected{% endif %}>Start time</option>
+            </select>
+        </label>
 
-    <label class="underdog-filter">
-        <span class="underdog-filter-label">Direction</span>
-        <select name="sort_dir" class="underdog-filter-input">
-            <option value="desc" {% if filters.sort_dir == 'desc' %}selected{% endif %}>Descending</option>
-            <option value="asc" {% if filters.sort_dir == 'asc' %}selected{% endif %}>Ascending</option>
-        </select>
-    </label>
+        <div class="underdog-filter">
+            <span class="underdog-filter-label">Direction</span>
+            <div class="underdog-segment underdog-segment-two" role="radiogroup" aria-label="Sort direction">
+                <input id="sort-desc" type="radio" name="sort_dir" value="desc" {% if filters.sort_dir == 'desc' %}checked{% endif %}>
+                <label for="sort-desc" class="underdog-segment-btn">Desc</label>
+                <input id="sort-asc" type="radio" name="sort_dir" value="asc" {% if filters.sort_dir == 'asc' %}checked{% endif %}>
+                <label for="sort-asc" class="underdog-segment-btn">Asc</label>
+            </div>
+        </div>
+    </div>
 
-    <label class="underdog-toggle">
-        <input type="checkbox" name="value_only" value="1" {% if filters.value_only %}checked{% endif %}>
-        <span>Value-zone only</span>
-    </label>
+    <div class="underdog-filter-flags">
+        <label class="underdog-toggle">
+            <input type="checkbox" name="value_only" value="1" {% if filters.value_only %}checked{% endif %}>
+            <span class="underdog-toggle-pill">Value-zone only</span>
+        </label>
 
-    <label class="underdog-toggle">
-        <input type="checkbox" name="include_sharp" value="1" {% if filters.include_sharp %}checked{% endif %}>
-        <span>Include sharp mode</span>
-    </label>
+        <label class="underdog-toggle">
+            <input type="checkbox" name="include_sharp" value="1" {% if filters.include_sharp %}checked{% endif %}>
+            <span class="underdog-toggle-pill">Include sharp mode</span>
+        </label>
+    </div>
 
     <div class="underdog-filter-actions">
         <button type="submit" class="btn btn-sm btn-outline">Apply</button>
@@ -125,20 +149,31 @@
     <div class="underdog-summary-card">
         <span class="underdog-summary-label">Avg confidence</span>
         <span class="underdog-summary-value">{{ "%.1f"|format(summary.avg_confidence) }}%</span>
+        <div class="underdog-summary-meter" aria-hidden="true">
+            <span class="underdog-summary-meter-fill confidence" style="width: {{ summary.avg_confidence|round(0, 'floor') }}%"></span>
+        </div>
     </div>
     <div class="underdog-summary-card">
         <span class="underdog-summary-label">Avg payout</span>
-        <span class="underdog-summary-value">{{ "%.2f"|format(summary.avg_payout) }}x</span>
+        <span class="underdog-summary-value">
+            <span class="metric-pill metric-pill-payout">{{ "%.2f"|format(summary.avg_payout) }}x</span>
+        </span>
     </div>
     <div class="underdog-summary-card">
         <span class="underdog-summary-label">Value zone</span>
         <span class="underdog-summary-value">{{ summary.value_zone_count }} / {{ summary.count }}</span>
+        {% set value_coverage = ((summary.value_zone_count / summary.count) * 100) if summary.count else 0 %}
+        <div class="underdog-summary-meter" aria-hidden="true">
+            <span class="underdog-summary-meter-fill value" style="width: {{ value_coverage|round(0, 'floor') }}%"></span>
+        </div>
     </div>
     <div class="underdog-summary-card">
-        <span class="underdog-summary-label">Tier mix</span>
-        <span class="underdog-summary-value">
-            A {{ summary.tier_counts.A }} | B {{ summary.tier_counts.B }} | C {{ summary.tier_counts.C }}
-        </span>
+        <span class="underdog-summary-label">Tier summary</span>
+        <div class="underdog-tier-summary">
+            <span class="tier-badge tier-a">Tier A {{ summary.tier_counts.A }}</span>
+            <span class="tier-badge tier-b">Tier B {{ summary.tier_counts.B }}</span>
+            <span class="tier-badge tier-c">Tier C {{ summary.tier_counts.C }}</span>
+        </div>
     </div>
 </div>
 {% endif %}
@@ -147,19 +182,39 @@
 <div class="underdog-alerts-panel">
     <div class="underdog-alerts-head">
         <span class="underdog-summary-label">Alert Preview</span>
-        <span class="underdog-alerts-subtle">
+        <span class="underdog-alerts-subtle">Signals ranked by priority</span>
+    </div>
+    <div class="underdog-alert-digest">
+        <span class="alert-digest-pill alert-digest-primary">
             {{ alert_digest.alert_count }} alert{{ 's' if alert_digest.alert_count != 1 else '' }}
-            from {{ alert_digest.total_candidates }} candidates
         </span>
+        <span class="alert-digest-pill">
+            {{ "%.0f"|format(alert_digest.coverage_pct) }}% coverage
+        </span>
+        <span class="alert-digest-pill">
+            {{ alert_digest.total_candidates }} candidate{{ 's' if alert_digest.total_candidates != 1 else '' }}
+        </span>
+        {% for code, count in alert_digest.code_counts.items() %}
+        <span class="alert-digest-pill">
+            {{ code.replace('_', ' ')|title }} {{ count }}
+        </span>
+        {% endfor %}
     </div>
     <div class="underdog-alert-list">
         {% for alert in alerts_preview %}
         <a href="{{ alert.matchup_url }}" class="underdog-alert-item">
-            <span class="tier-badge tier-{{ alert.tier|lower }}">Tier {{ alert.tier }}</span>
+            <div class="underdog-alert-top">
+                <span class="tier-badge tier-{{ alert.tier|lower }}">Tier {{ alert.tier }}</span>
+                {% if alert.is_value_zone %}
+                <span class="metric-pill metric-pill-value">Value</span>
+                {% endif %}
+            </div>
             <span class="underdog-alert-title">{{ alert.label }}</span>
-            <span class="underdog-alert-meta">
-                {{ alert.away_team }} @ {{ alert.home_team }} - {{ "%.0f"|format(alert.confidence) }}% - {{ "%.2f"|format(alert.dog_payout) }}x
-            </span>
+            <span class="underdog-alert-meta">{{ alert.away_team }} @ {{ alert.home_team }}</span>
+            <div class="underdog-alert-metrics">
+                <span class="metric-pill metric-pill-confidence">{{ "%.0f"|format(alert.confidence) }}%</span>
+                <span class="metric-pill metric-pill-payout">{{ "%.2f"|format(alert.dog_payout) }}x</span>
+            </div>
         </a>
         {% endfor %}
     </div>
@@ -309,7 +364,7 @@ function renderCustomPresets() {
         const query = String(preset.query || '').replace(/"/g, '&quot;');
         return `
             <span class="underdog-saved-chip">
-                <a href="/underdogs?${query}" class="date-chip underdog-preset">${name}</a>
+                <a href="/underdogs?${query}" class="underdog-preset-chip">${name}</a>
                 <button type="button" class="underdog-saved-remove" data-index="${idx}" title="Remove preset">x</button>
             </span>
         `;

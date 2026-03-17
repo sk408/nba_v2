@@ -223,14 +223,19 @@ def _build_date_strip(today: str, selected_date: str, days: int = 7) -> List[Dic
     for i in range(days):
         day = today_dt + timedelta(days=i)
         value = day.strftime("%Y-%m-%d")
+        is_today = i == 0
         dates.append({
             "label": (
                 day.strftime("%a %-m/%d")
                 if os.name != "nt"
                 else day.strftime("%a %#m/%d")
             ),
+            "day_name": "TODAY" if is_today else day.strftime("%a").upper(),
+            "day_num": str(day.day),
+            "month": day.strftime("%b").upper(),
             "value": value,
             "is_active": value == selected_date,
+            "is_today": is_today,
         })
     return dates
 
@@ -1886,7 +1891,7 @@ def api_sync():
 
 @app.route("/api/sync/odds-today", methods=["POST"])
 def api_sync_odds_today():
-    """Trigger odds-only sync for today's games (background thread)."""
+    """Trigger odds-only sync for today + tomorrow (background thread)."""
     global _sync_running, _sync_status, _last_sync_request_at
 
     now = time.time()
@@ -1909,8 +1914,9 @@ def api_sync_odds_today():
 
         try:
             from src.data.odds_sync import sync_upcoming_odds
-            from src.utils.timezone_utils import nba_tomorrow
+            from src.utils.timezone_utils import nba_today, nba_tomorrow
 
+            today = nba_today()
             tomorrow = nba_tomorrow()
 
             missing_before = _count_missing_odds_for_today(today)
@@ -1923,37 +1929,43 @@ def api_sync_odds_today():
                 _sync_status = f"Odds sync running for {today} + {tomorrow}..."
 
             saved_count = sync_upcoming_odds(
-                callback=lambda msg: _update_sync_status(msg),
+                callback=_update_sync_status,
             )
             missing_after = _count_missing_odds_for_today(today)
 
-            total_saved, last_date = sync_odds_forward(callback=_odds_cb)
+            if missing_before is not None and missing_after is not None:
+                filled = max(0, missing_before - missing_after)
+            else:
+                filled = None
 
-            today = nba_today()
-            if total_saved > 0:
-                if last_date != today:
+            if saved_count > 0:
+                if missing_after is None:
                     _sync_status = (
-                        f"Odds sync complete. Filled {filled} missing matchup(s). "
-                        f"Updated {saved_count} game(s) for {today} + {tomorrow}."
+                        f"Odds sync complete. Updated {saved_count} game(s) for {today} + {tomorrow}."
                     )
                 elif missing_after == 0:
                     _sync_status = (
-                        f"Odds sync complete. {saved_count} game(s) updated for {today} + {tomorrow}."
+                        f"Odds sync complete. Filled all missing today matchups "
+                        f"and updated {saved_count} game(s) for {today} + {tomorrow}."
                     )
-                elif saved_count > 0:
+                elif filled is not None and filled > 0:
+                    _sync_status = (
+                        f"Odds sync complete. Filled {filled} missing matchup(s); "
+                        f"{missing_after} still missing for today."
+                    )
+                else:
                     _sync_status = (
                         f"Odds sync complete. Updated {saved_count} game(s); "
                         f"{missing_after} matchup(s) still missing for today."
                     )
+            else:
+                if missing_after is None:
+                    _sync_status = "Odds sync complete. No new odds returned."
                 else:
                     _sync_status = (
                         f"Odds sync complete. No new odds returned; "
                         f"{missing_after} matchup(s) still missing for today."
                     )
-            elif saved_count > 0:
-                _sync_status = f"Odds sync complete. Updated {saved_count} game(s) for {today} + {tomorrow}."
-            else:
-                _sync_status = f"Odds sync complete. No new odds returned."
         except Exception as e:
             logger.error("Background odds sync error: %s", e, exc_info=True)
             _sync_status = "Odds sync failed. See server logs."

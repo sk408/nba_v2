@@ -391,6 +391,36 @@ a:hover {
     box-shadow: 0 0 6px var(--accent-cyan);
 }
 
+.date-strip-shell {
+    margin: 0 0 18px 0;
+    padding: 12px 12px 4px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+}
+
+.date-strip-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 4px 8px;
+}
+
+.date-strip-title {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    font-weight: 600;
+}
+
+.date-strip-active {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
 .underdog-presets {
     display: flex;
     gap: 8px;
@@ -398,8 +428,33 @@ a:hover {
     margin-bottom: 12px;
 }
 
-.underdog-preset {
-    padding: 6px 12px;
+.underdog-preset-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 34px;
+    padding: 7px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    line-height: 1;
+    transition: all var(--transition);
+}
+
+.underdog-preset-chip:hover {
+    border-color: var(--text-muted);
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+}
+
+.underdog-preset-chip.active {
+    border-color: var(--accent-cyan);
+    background: rgba(0, 229, 255, 0.12);
+    color: var(--accent-cyan);
 }
 
 .underdog-saved-presets {
@@ -442,9 +497,8 @@ a:hover {
 
 .underdog-filters {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
     gap: 12px;
-    align-items: flex-end;
     margin: 6px 0 22px 0;
     padding: 14px;
     border-radius: var(--radius);
@@ -452,11 +506,16 @@ a:hover {
     background: var(--bg-card);
 }
 
+.underdog-filters-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 10px 12px;
+}
+
 .underdog-filter {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    min-width: 140px;
 }
 
 .underdog-filter-label {
@@ -468,7 +527,7 @@ a:hover {
 }
 
 .underdog-filter-input {
-    min-height: 34px;
+    min-height: 36px;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     background: var(--bg-input);
@@ -483,25 +542,114 @@ a:hover {
     border-color: var(--accent-cyan);
 }
 
+.underdog-input-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.underdog-input-wrap .underdog-filter-input {
+    width: 100%;
+    padding-right: 30px;
+}
+
+.underdog-input-suffix {
+    position: absolute;
+    right: 10px;
+    font-size: 0.74rem;
+    color: var(--text-muted);
+    pointer-events: none;
+}
+
+.underdog-segment {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.underdog-segment.underdog-segment-two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.underdog-segment input {
+    display: none;
+}
+
+.underdog-segment-btn {
+    min-height: 36px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.underdog-segment-btn:hover {
+    border-color: var(--text-muted);
+    color: var(--text-primary);
+}
+
+.underdog-segment input:checked + .underdog-segment-btn {
+    border-color: var(--accent-cyan);
+    color: var(--accent-cyan);
+    background: rgba(0, 229, 255, 0.12);
+}
+
+.underdog-filter-flags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
 .underdog-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    gap: 0;
     font-size: 0.82rem;
     color: var(--text-secondary);
-    padding-bottom: 8px;
 }
 
-.underdog-toggle input {
-    accent-color: var(--accent-cyan);
+.underdog-toggle input[type="checkbox"] {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.underdog-toggle-pill {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 500;
+    padding: 6px 11px;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.underdog-toggle-pill:hover {
+    border-color: var(--text-muted);
+    color: var(--text-primary);
+}
+
+.underdog-toggle input[type="checkbox"]:checked + .underdog-toggle-pill {
+    border-color: var(--accent-cyan);
+    background: rgba(0, 229, 255, 0.12);
+    color: var(--accent-cyan);
 }
 
 .underdog-filter-actions {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    margin-left: auto;
-    padding-bottom: 4px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
 }
 
 .underdog-summary-grid {
@@ -536,6 +684,69 @@ a:hover {
     color: var(--text-primary);
 }
 
+.underdog-summary-meter {
+    height: 7px;
+    border-radius: 999px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-light);
+    overflow: hidden;
+}
+
+.underdog-summary-meter-fill {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent-cyan);
+}
+
+.underdog-summary-meter-fill.confidence {
+    background: linear-gradient(90deg, rgba(0, 229, 255, 0.75), rgba(0, 230, 118, 0.85));
+}
+
+.underdog-summary-meter-fill.value {
+    background: linear-gradient(90deg, rgba(255, 179, 0, 0.75), rgba(255, 214, 10, 0.9));
+}
+
+.underdog-tier-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.metric-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    line-height: 1.35;
+}
+
+.metric-pill.metric-pill-confidence {
+    border-color: rgba(0, 229, 255, 0.45);
+    color: var(--accent-cyan);
+    background: rgba(0, 229, 255, 0.1);
+}
+
+.metric-pill.metric-pill-payout {
+    border-color: rgba(255, 179, 0, 0.45);
+    color: var(--accent-amber);
+    background: rgba(255, 179, 0, 0.12);
+}
+
+.metric-pill.metric-pill-value {
+    border-color: rgba(255, 214, 10, 0.5);
+    color: #ffd54a;
+    background: rgba(255, 214, 10, 0.14);
+}
+
 .underdog-alerts-panel {
     margin: 0 0 18px 0;
     padding: 12px;
@@ -555,6 +766,32 @@ a:hover {
 .underdog-alerts-subtle {
     font-size: 0.78rem;
     color: var(--text-muted);
+}
+
+.underdog-alert-digest {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.alert-digest-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.25px;
+}
+
+.alert-digest-pill.alert-digest-primary {
+    border-color: rgba(187, 134, 252, 0.45);
+    background: rgba(187, 134, 252, 0.12);
+    color: var(--accent-purple);
 }
 
 .underdog-alert-list {
@@ -588,9 +825,21 @@ a:hover {
     color: var(--text-primary);
 }
 
+.underdog-alert-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
 .underdog-alert-meta {
     font-size: 0.74rem;
     color: var(--text-secondary);
+}
+
+.underdog-alert-metrics {
+    display: flex;
+    align-items: center;
+    gap: 6px;
 }
 
 .underdog-badges {
@@ -3047,6 +3296,10 @@ a:hover {
 
     .mode-btn {
         padding: 10px 20px;
+    }
+
+    .underdog-filters-grid {
+        grid-template-columns: 1fr;
     }
 }
 

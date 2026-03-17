@@ -7,17 +7,23 @@
     <span class="page-subtitle">Select a game</span>
 </div>
 
-<nav class="date-strip" aria-label="Game dates">
-    {% for d in dates %}
-    <a href="/matchup?date={{ d.value }}"
-       class="date-chip{% if d.is_active %} active{% endif %}{% if d.is_today %} today{% endif %}"
-       {% if d.is_active %}aria-current="date"{% endif %}>
-        <span class="date-chip__day">{{ d.day_name }}</span>
-        <span class="date-chip__num">{{ d.day_num }}</span>
-        <span class="date-chip__month">{{ d.month }}</span>
-    </a>
-    {% endfor %}
-</nav>
+<section class="date-strip-shell">
+    <div class="date-strip-head">
+        <span class="date-strip-title">Select date</span>
+        <span class="date-strip-active">{{ selected_date }}</span>
+    </div>
+    <nav class="date-strip" aria-label="Game dates">
+        {% for d in dates %}
+        <a href="/matchup?date={{ d.value }}"
+           class="date-chip{% if d.is_active %} active{% endif %}{% if d.is_today %} today{% endif %}"
+           {% if d.is_active %}aria-current="date"{% endif %}>
+            <span class="date-chip__day">{{ d.day_name }}</span>
+            <span class="date-chip__num">{{ d.day_num }}</span>
+            <span class="date-chip__month">{{ d.month }}</span>
+        </a>
+        {% endfor %}
+    </nav>
+</section>
 
 {% if games %}
 <div class="game-grid">
