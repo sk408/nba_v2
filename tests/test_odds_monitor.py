@@ -79,6 +79,17 @@ def test_nba_tomorrow_returns_next_day():
     assert tomorrow - today == timedelta(days=1)
 
 
+def test_nba_game_date_from_utc_iso_handles_late_west_tipoffs():
+    """UTC midnight tipoffs still map to the prior NBA slate date."""
+    from src.utils.timezone_utils import nba_game_date_from_utc_iso
+
+    # 2026-03-20 00:00Z == 2026-03-19 20:00 ET -> NBA date should be 2026-03-19
+    assert nba_game_date_from_utc_iso("2026-03-20T00:00:00Z") == "2026-03-19"
+
+    # 2026-03-20 13:00Z == 2026-03-20 09:00 ET -> NBA date should be 2026-03-20
+    assert nba_game_date_from_utc_iso("2026-03-20T13:00:00Z") == "2026-03-20"
+
+
 @patch("src.data.odds_sync.sync_odds_for_date")
 def test_sync_upcoming_odds_calls_today_and_tomorrow(mock_sync):
     """sync_upcoming_odds calls sync_odds_for_date for both today and tomorrow."""
@@ -125,3 +136,101 @@ def test_injury_monitor_skips_odds_on_non_3rd_cycles(mock_inj, mock_odds):
         monitor._check_changes()
 
     assert mock_odds.call_count == 0
+
+
+@patch("src.data.odds_sync.get_json")
+@patch("src.analytics.stats_engine.get_team_abbreviations")
+def test_sync_betting_splits_blank_values_do_not_block_later_fill(
+    mock_team_map, mock_get_json
+):
+    """Blank split payloads stay NULL so later numeric payload can fill them."""
+    from src.data.odds_sync import sync_betting_splits
+
+    teams = db.fetch_all(
+        "SELECT team_id, abbreviation FROM teams ORDER BY team_id ASC LIMIT 2"
+    )
+    assert len(teams) == 2
+
+    home_id = teams[0]["team_id"]
+    away_id = teams[1]["team_id"]
+    home_abbr = teams[0]["abbreviation"]
+    away_abbr = teams[1]["abbreviation"]
+    game_date = "2099-01-01"
+
+    mock_team_map.return_value = {home_id: home_abbr, away_id: away_abbr}
+
+    db.execute(
+        "DELETE FROM game_odds WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?",
+        (game_date, home_id, away_id),
+    )
+    db.execute(
+        """
+        INSERT INTO game_odds (
+            game_date, home_team_id, away_team_id, spread, over_under,
+            home_moneyline, away_moneyline, provider, fetched_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'espn', ?)
+        """,
+        (game_date, home_id, away_id, -3.5, 218.5, -145, 125, "2099-01-01T00:00:00"),
+    )
+
+    blank_payload = {
+        "data": [
+            {
+                "competitors": {
+                    "home": {"abbreviation": home_abbr},
+                    "away": {"abbreviation": away_abbr},
+                },
+                "bettingSplits": {
+                    "spread": {
+                        "home": {"betsPercentage": "", "stakePercentage": ""},
+                        "away": {"betsPercentage": "", "stakePercentage": ""},
+                    },
+                    "moneyline": {
+                        "home": {"betsPercentage": "", "stakePercentage": ""},
+                        "away": {"betsPercentage": "", "stakePercentage": ""},
+                    },
+                },
+            }
+        ]
+    }
+    numeric_payload = {
+        "data": [
+            {
+                "competitors": {
+                    "home": {"abbreviation": home_abbr},
+                    "away": {"abbreviation": away_abbr},
+                },
+                "bettingSplits": {
+                    "spread": {
+                        "home": {"betsPercentage": 62, "stakePercentage": 71},
+                        "away": {"betsPercentage": 38, "stakePercentage": 29},
+                    },
+                    "moneyline": {
+                        "home": {"betsPercentage": 64, "stakePercentage": 69},
+                        "away": {"betsPercentage": 36, "stakePercentage": 31},
+                    },
+                },
+            }
+        ]
+    }
+    mock_get_json.side_effect = [blank_payload, numeric_payload]
+
+    first = sync_betting_splits(game_date)
+    second = sync_betting_splits(game_date)
+
+    row = db.fetch_one(
+        """
+        SELECT spread_home_public, spread_home_money, ml_home_public, ml_home_money
+        FROM game_odds
+        WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?
+        """,
+        (game_date, home_id, away_id),
+    )
+    assert row is not None
+
+    assert first == 0
+    assert second == 1
+    assert row["spread_home_public"] == 62
+    assert row["spread_home_money"] == 71
+    assert row["ml_home_public"] == 64
+    assert row["ml_home_money"] == 69

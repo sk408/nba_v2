@@ -155,6 +155,27 @@ _SBD_API_URL = "https://www.sportsbettingdime.com/wp-json/adpt/v1/nba-odds"
 _SBD_BOOKS = "sr:book:17324,sr:book:18149,sr:book:18186"
 
 
+def _normalize_split_pct(value) -> Optional[float]:
+    """Normalize split percentages from upstream payloads.
+
+    Sources sometimes send empty strings or percent-formatted strings. We
+    convert those to numeric values and treat blanks/invalid values as None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip().rstrip("%")
+        if not value:
+            return None
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return None
+    if pct < 0 or pct > 100:
+        return None
+    return pct
+
+
 def sync_betting_splits(game_date: str, callback: Optional[Callable] = None) -> int:
     """Fetch betting splits (bet% / money%) from SportsBettingDime and update game_odds.
 
@@ -204,14 +225,14 @@ def sync_betting_splits(game_date: str, callback: Optional[Callable] = None) -> 
         sp = splits.get("spread", {})
         ml = splits.get("moneyline", {})
 
-        spread_home_public = (sp.get("home") or {}).get("betsPercentage")
-        spread_away_public = (sp.get("away") or {}).get("betsPercentage")
-        spread_home_money = (sp.get("home") or {}).get("stakePercentage")
-        spread_away_money = (sp.get("away") or {}).get("stakePercentage")
-        ml_home_public = (ml.get("home") or {}).get("betsPercentage")
-        ml_away_public = (ml.get("away") or {}).get("betsPercentage")
-        ml_home_money = (ml.get("home") or {}).get("stakePercentage")
-        ml_away_money = (ml.get("away") or {}).get("stakePercentage")
+        spread_home_public = _normalize_split_pct((sp.get("home") or {}).get("betsPercentage"))
+        spread_away_public = _normalize_split_pct((sp.get("away") or {}).get("betsPercentage"))
+        spread_home_money = _normalize_split_pct((sp.get("home") or {}).get("stakePercentage"))
+        spread_away_money = _normalize_split_pct((sp.get("away") or {}).get("stakePercentage"))
+        ml_home_public = _normalize_split_pct((ml.get("home") or {}).get("betsPercentage"))
+        ml_away_public = _normalize_split_pct((ml.get("away") or {}).get("betsPercentage"))
+        ml_home_money = _normalize_split_pct((ml.get("home") or {}).get("stakePercentage"))
+        ml_away_money = _normalize_split_pct((ml.get("away") or {}).get("stakePercentage"))
 
         if spread_home_public is None and ml_home_public is None:
             continue
@@ -219,16 +240,25 @@ def sync_betting_splits(game_date: str, callback: Optional[Callable] = None) -> 
         try:
             cur = db.execute("""
                 UPDATE game_odds SET
-                    spread_home_public = COALESCE(spread_home_public, ?),
-                    spread_away_public = COALESCE(spread_away_public, ?),
-                    spread_home_money  = COALESCE(spread_home_money,  ?),
-                    spread_away_money  = COALESCE(spread_away_money,  ?),
-                    ml_home_public     = COALESCE(ml_home_public,     ?),
-                    ml_away_public     = COALESCE(ml_away_public,     ?),
-                    ml_home_money      = COALESCE(ml_home_money,      ?),
-                    ml_away_money      = COALESCE(ml_away_money,      ?)
+                    spread_home_public = COALESCE(NULLIF(spread_home_public, ''), ?),
+                    spread_away_public = COALESCE(NULLIF(spread_away_public, ''), ?),
+                    spread_home_money  = COALESCE(NULLIF(spread_home_money,  ''), ?),
+                    spread_away_money  = COALESCE(NULLIF(spread_away_money,  ''), ?),
+                    ml_home_public     = COALESCE(NULLIF(ml_home_public,     ''), ?),
+                    ml_away_public     = COALESCE(NULLIF(ml_away_public,     ''), ?),
+                    ml_home_money      = COALESCE(NULLIF(ml_home_money,      ''), ?),
+                    ml_away_money      = COALESCE(NULLIF(ml_away_money,      ''), ?)
                 WHERE game_date = ? AND home_team_id = ? AND away_team_id = ?
-                  AND (spread_home_public IS NULL OR ml_home_public IS NULL)
+                  AND (
+                        NULLIF(spread_home_public, '') IS NULL
+                     OR NULLIF(spread_away_public, '') IS NULL
+                     OR NULLIF(spread_home_money,  '') IS NULL
+                     OR NULLIF(spread_away_money,  '') IS NULL
+                     OR NULLIF(ml_home_public,     '') IS NULL
+                     OR NULLIF(ml_away_public,     '') IS NULL
+                     OR NULLIF(ml_home_money,      '') IS NULL
+                     OR NULLIF(ml_away_money,      '') IS NULL
+                  )
             """, (spread_home_public, spread_away_public,
                   spread_home_money, spread_away_money,
                   ml_home_public, ml_away_public,
@@ -412,14 +442,14 @@ def sync_odds_for_date(
             away_ml = game_odds.get("ml_away")
             
             # Sharp money metrics
-            spread_home_public = game_odds.get("spread_home_public")
-            spread_away_public = game_odds.get("spread_away_public")
-            spread_home_money = game_odds.get("spread_home_money")
-            spread_away_money = game_odds.get("spread_away_money")
-            ml_home_public = game_odds.get("ml_home_public")
-            ml_away_public = game_odds.get("ml_away_public")
-            ml_home_money = game_odds.get("ml_home_money")
-            ml_away_money = game_odds.get("ml_away_money")
+            spread_home_public = _normalize_split_pct(game_odds.get("spread_home_public"))
+            spread_away_public = _normalize_split_pct(game_odds.get("spread_away_public"))
+            spread_home_money = _normalize_split_pct(game_odds.get("spread_home_money"))
+            spread_away_money = _normalize_split_pct(game_odds.get("spread_away_money"))
+            ml_home_public = _normalize_split_pct(game_odds.get("ml_home_public"))
+            ml_away_public = _normalize_split_pct(game_odds.get("ml_away_public"))
+            ml_home_money = _normalize_split_pct(game_odds.get("ml_home_money"))
+            ml_away_money = _normalize_split_pct(game_odds.get("ml_away_money"))
 
             # Bet count (updates as more bets come in)
             num_bets = game_odds.get("num_bets")

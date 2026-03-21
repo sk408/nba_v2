@@ -47,7 +47,7 @@ from src.analytics.underdog_metrics import quality_tier_for_confidence
 from src.config import get as get_setting
 from src.notifications.models import NotificationCategory, NotificationSeverity
 from src.notifications.service import create_notification
-from src.utils.timezone_utils import nba_today
+from src.utils.timezone_utils import nba_today, nba_game_date_from_utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -2060,6 +2060,18 @@ def _parse_game_summary(summary, game_id, normalize_abbr):
         except (TypeError, ValueError):
             return default
 
+    def _as_optional_float(value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip().rstrip("%")
+            if not value:
+                return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     def _extract_logo(team_obj):
         logos = team_obj.get("logos", [])
         if isinstance(logos, list) and logos:
@@ -2128,8 +2140,8 @@ def _parse_game_summary(summary, game_id, normalize_abbr):
     if competitions:
         comp = competitions[0]
         raw_comp_date = str(comp.get("date", "") or "")
-        if len(raw_comp_date) >= 10:
-            game_date_for_context = raw_comp_date[:10]
+        if raw_comp_date:
+            game_date_for_context = nba_game_date_from_utc_iso(raw_comp_date)
 
         get_team_display_context = None
         try:
@@ -2366,14 +2378,14 @@ def _parse_game_summary(summary, game_id, normalize_abbr):
                         "away_moneyline": _odds_row.get("away_moneyline"),
                         "provider": _odds_row.get("provider") or "DB",
                         "fetched_at": _odds_row.get("fetched_at"),
-                        "spread_home_public": _odds_row.get("spread_home_public"),
-                        "spread_away_public": _odds_row.get("spread_away_public"),
-                        "spread_home_money": _odds_row.get("spread_home_money"),
-                        "spread_away_money": _odds_row.get("spread_away_money"),
-                        "ml_home_public": _odds_row.get("ml_home_public"),
-                        "ml_away_public": _odds_row.get("ml_away_public"),
-                        "ml_home_money": _odds_row.get("ml_home_money"),
-                        "ml_away_money": _odds_row.get("ml_away_money"),
+                        "spread_home_public": _as_optional_float(_odds_row.get("spread_home_public")),
+                        "spread_away_public": _as_optional_float(_odds_row.get("spread_away_public")),
+                        "spread_home_money": _as_optional_float(_odds_row.get("spread_home_money")),
+                        "spread_away_money": _as_optional_float(_odds_row.get("spread_away_money")),
+                        "ml_home_public": _as_optional_float(_odds_row.get("ml_home_public")),
+                        "ml_away_public": _as_optional_float(_odds_row.get("ml_away_public")),
+                        "ml_home_money": _as_optional_float(_odds_row.get("ml_home_money")),
+                        "ml_away_money": _as_optional_float(_odds_row.get("ml_away_money")),
                         "opening_spread": _odds_row.get("opening_spread"),
                         "spread_movement": _odds_row.get("spread_movement"),
                     }

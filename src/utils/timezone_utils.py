@@ -45,6 +45,25 @@ def nba_tomorrow() -> str:
     return (datetime.now(tz=_ET) - timedelta(hours=6) + timedelta(days=1)).strftime("%Y-%m-%d")
 
 
+def nba_game_date_from_utc_iso(raw_iso: str) -> str:
+    """Convert an ESPN-style UTC timestamp to the NBA game date.
+
+    ESPN competition timestamps are UTC (often next-day for late West games).
+    We convert to ET and apply the same 6 AM rollover rule used by nba_today().
+    """
+    text = str(raw_iso or "").strip()
+    if not text:
+        return nba_today()
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except Exception:
+        # Fallback for unexpected formats that still include YYYY-MM-DD.
+        if len(text) >= 10:
+            return text[:10]
+        return nba_today()
+    return (dt.astimezone(_ET) - timedelta(hours=6)).strftime("%Y-%m-%d")
+
+
 def nba_now() -> datetime:
     """Current datetime in Eastern Time (timezone-aware).
 
