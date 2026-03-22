@@ -1,33 +1,33 @@
 {
-  "generated_at": "2026-03-21T03:36:12+00:00",
-  "report_date": "2026-03-21",
+  "generated_at": "2026-03-22T00:27:26+00:00",
+  "report_date": "2026-03-22",
   "fundamentals": {
-    "winner_pct": 60.52599086306951,
-    "upset_rate": 34.16471169280158,
-    "upset_accuracy": 39.5735453559812,
-    "ml_roi": 1.856670742078549,
-    "hit_rate_quality_observation": "Hit/quality observation: tier hit A/B/C=47.8/38.3/38.8% (coverage 3.3/4.9/26.0% of slate); frontier top 30% upsets=42.7% vs full book=39.6%.",
+    "winner_pct": 60.46913580246913,
+    "upset_rate": 34.086419753086425,
+    "upset_accuracy": 39.478449837015575,
+    "ml_roi": 1.4526709894830754,
+    "hit_rate_quality_observation": "Hit/quality observation: tier hit A/B/C=48.3/37.4/38.9% (coverage 2.9/4.8/26.3% of slate); frontier top 30% upsets=41.7% vs full book=39.5%.",
     "tier_metrics": {
       "A": {
-        "count": 268.0,
-        "hit_rate": 47.76119402985074,
-        "coverage_pct": 3.309050500061736,
-        "ml_roi": 19.875712311614326,
-        "avg_confidence": 79.14720319700167
+        "count": 238.0,
+        "hit_rate": 48.319327731092436,
+        "coverage_pct": 2.9382716049382718,
+        "ml_roi": 22.241233565496934,
+        "avg_confidence": 78.96670591412177
       },
       "B": {
-        "count": 394.0,
-        "hit_rate": 38.3248730964467,
-        "coverage_pct": 4.864798123225089,
-        "ml_roi": -0.07642090565419292,
-        "avg_confidence": 62.020532011214804
+        "count": 390.0,
+        "hit_rate": 37.43589743589744,
+        "coverage_pct": 4.814814814814815,
+        "ml_roi": -4.069411849080712,
+        "avg_confidence": 62.26843555300631
       },
       "C": {
-        "count": 2105.0,
-        "hit_rate": 38.764845605700714,
-        "coverage_pct": 25.990863069514752,
-        "ml_roi": 7.259676273004767,
-        "avg_confidence": 26.906109243511132
+        "count": 2133.0,
+        "hit_rate": 38.86544772620722,
+        "coverage_pct": 26.333333333333332,
+        "ml_roi": 6.72058763460038,
+        "avg_confidence": 26.942807302123406
       }
     },
     "roi_by_odds_band": {
@@ -40,117 +40,117 @@
       },
       "1_50_1_99": {
         "label": "1.50x-1.99x",
-        "bets": 191,
-        "hit_rate": 50.78534031413613,
-        "ml_roi": -0.8471224221993574,
-        "avg_payout": 1.949725786792443
+        "bets": 188,
+        "hit_rate": 49.46808510638298,
+        "ml_roi": -3.3864021699499594,
+        "avg_payout": 1.9504172670089528
       },
       "2_00_2_99": {
         "label": "2.00x-2.99x",
-        "bets": 1691,
-        "hit_rate": 44.115907746895324,
-        "ml_roi": 3.5334121821407445,
-        "avg_payout": 2.3818628030751037
+        "bets": 1695,
+        "hit_rate": 44.306784660766965,
+        "ml_roi": 4.147492625368732,
+        "avg_payout": 2.382253687315634
       },
       "3_00_3_99": {
         "label": "3.00x-3.99x",
-        "bets": 536,
-        "hit_rate": 31.343283582089555,
-        "ml_roi": 4.436567164179104,
-        "avg_payout": 3.3855597014925376
+        "bets": 533,
+        "hit_rate": 30.95684803001876,
+        "ml_roi": 2.8911819887429644,
+        "avg_payout": 3.3809943714821764
       },
       "4_plus": {
         "label": "4.00x+",
-        "bets": 348,
-        "hit_rate": 24.137931034482758,
-        "ml_roi": 35.88218390804598,
-        "avg_payout": 5.598879310344828
+        "bets": 344,
+        "hit_rate": 23.546511627906977,
+        "ml_roi": 29.671511627906977,
+        "avg_payout": 5.555406976744186
       }
     },
     "quality_frontier": [
       {
-        "upset_coverage_pct": 10.010842067220818,
-        "coverage_pct": 3.42017533028769,
+        "upset_coverage_pct": 10.032596885186527,
+        "coverage_pct": 3.419753086419753,
         "picks": 277.0,
-        "hit_rate": 48.375451263537904,
-        "ml_roi": 22.45736786827668,
-        "avg_confidence": 78.84365090709466
+        "hit_rate": 45.84837545126354,
+        "ml_roi": 16.168417631142116,
+        "avg_confidence": 77.5743845168776
       },
       {
-        "upset_coverage_pct": 20.021684134441635,
-        "coverage_pct": 6.84035066057538,
-        "picks": 554.0,
-        "hit_rate": 42.238267148014444,
-        "ml_roi": 6.698745256694401,
-        "avg_confidence": 71.32645648549983
+        "upset_coverage_pct": 20.02897500905469,
+        "coverage_pct": 6.82716049382716,
+        "picks": 553.0,
+        "hit_rate": 42.31464737793852,
+        "ml_roi": 6.7357446238166405,
+        "avg_confidence": 70.24276635861442
       },
       {
-        "upset_coverage_pct": 30.032526201662453,
-        "coverage_pct": 10.26052599086307,
-        "picks": 831.0,
-        "hit_rate": 42.71961492178099,
-        "ml_roi": 9.149357726627619,
-        "avg_confidence": 65.59566059275852
+        "upset_coverage_pct": 30.025353132922856,
+        "coverage_pct": 10.234567901234568,
+        "picks": 829.0,
+        "hit_rate": 41.73703256936068,
+        "ml_roi": 7.72626906530914,
+        "avg_confidence": 64.55966092058513
       },
       {
-        "upset_coverage_pct": 40.00722804481388,
-        "coverage_pct": 13.668354117792319,
-        "picks": 1107.0,
-        "hit_rate": 40.921409214092144,
-        "ml_roi": 6.416695867117675,
-        "avg_confidence": 60.61147288343414
+        "upset_coverage_pct": 40.021731256791014,
+        "coverage_pct": 13.641975308641976,
+        "picks": 1105.0,
+        "hit_rate": 41.44796380090498,
+        "ml_roi": 7.070592689591211,
+        "avg_confidence": 59.603907780840856
       },
       {
-        "upset_coverage_pct": 50.01807011203469,
-        "coverage_pct": 17.08852944808001,
-        "picks": 1384.0,
-        "hit_rate": 40.31791907514451,
-        "ml_roi": 6.691041704831529,
-        "avg_confidence": 56.14655060645712
+        "upset_coverage_pct": 50.01810938065918,
+        "coverage_pct": 17.049382716049383,
+        "picks": 1381.0,
+        "hit_rate": 40.333091962346124,
+        "ml_roi": 6.142819833128261,
+        "avg_confidence": 55.25851789012849
       },
       {
-        "upset_coverage_pct": 60.028912179255514,
-        "coverage_pct": 20.5087047783677,
-        "picks": 1661.0,
-        "hit_rate": 39.735099337748345,
-        "ml_roi": 5.635124846575872,
-        "avg_confidence": 52.0779777553338
+        "upset_coverage_pct": 60.014487504527345,
+        "coverage_pct": 20.456790123456788,
+        "picks": 1657.0,
+        "hit_rate": 40.43452021726011,
+        "ml_roi": 7.260326554730129,
+        "avg_confidence": 51.24400857302311
       },
       {
-        "upset_coverage_pct": 70.00361402240694,
-        "coverage_pct": 23.91653290529695,
-        "picks": 1937.0,
-        "hit_rate": 38.82292204439855,
-        "ml_roi": 2.193814891733372,
-        "avg_confidence": 48.21606833923983
+        "upset_coverage_pct": 70.0108656283955,
+        "coverage_pct": 23.8641975308642,
+        "picks": 1933.0,
+        "hit_rate": 39.11019141231247,
+        "ml_roi": 3.3371564439338917,
+        "avg_confidence": 47.419419513467524
       },
       {
-        "upset_coverage_pct": 80.01445608962776,
-        "coverage_pct": 27.336708235584638,
-        "picks": 2214.0,
-        "hit_rate": 39.34056007226739,
-        "ml_roi": 4.621856034623919,
-        "avg_confidence": 44.40860787436659
+        "upset_coverage_pct": 80.00724375226366,
+        "coverage_pct": 27.271604938271604,
+        "picks": 2209.0,
+        "hit_rate": 38.97691263014939,
+        "ml_roi": 3.6721727628929113,
+        "avg_confidence": 43.72604618901116
       },
       {
-        "upset_coverage_pct": 90.02529815684858,
-        "coverage_pct": 30.75688356587233,
-        "picks": 2491.0,
-        "hit_rate": 38.90004014452027,
-        "ml_roi": 3.669016302607945,
-        "avg_confidence": 40.67898010800989
+        "upset_coverage_pct": 90.00362187613183,
+        "coverage_pct": 30.679012345679013,
+        "picks": 2485.0,
+        "hit_rate": 38.99396378269618,
+        "ml_roi": 4.598942625210947,
+        "avg_confidence": 40.07383690554277
       },
       {
         "upset_coverage_pct": 100.0,
-        "coverage_pct": 34.16471169280158,
-        "picks": 2767.0,
-        "hit_rate": 39.5735453559812,
-        "ml_roi": 7.437007451160073,
-        "avg_confidence": 36.96599205883846
+        "coverage_pct": 34.086419753086425,
+        "picks": 2761.0,
+        "hit_rate": 39.478449837015575,
+        "ml_roi": 6.534355810231585,
+        "avg_confidence": 36.41715822117446
       }
     ],
     "drift": {
-      "generated_at": "2026-03-21T03:36:12+00:00",
+      "generated_at": "2026-03-22T00:27:26+00:00",
       "triggered": true,
       "alert_count": 3,
       "alerts": [
@@ -159,30 +159,30 @@
           "tier": "A",
           "severity": "high",
           "metric": "hit_rate",
-          "value": 47.761,
+          "value": 48.319,
           "threshold": 56.0,
-          "sample_size": 268,
-          "message": "Tier A hit rate drift: 47.8% below threshold 56.0% (268 picks)."
+          "sample_size": 238,
+          "message": "Tier A hit rate drift: 48.3% below threshold 56.0% (238 picks)."
         },
         {
           "type": "tier_hit_rate_drift",
           "tier": "B",
           "severity": "medium",
           "metric": "hit_rate",
-          "value": 38.325,
+          "value": 37.436,
           "threshold": 50.0,
-          "sample_size": 394,
-          "message": "Tier B hit rate drift: 38.3% below threshold 50.0% (394 picks)."
+          "sample_size": 390,
+          "message": "Tier B hit rate drift: 37.4% below threshold 50.0% (390 picks)."
         },
         {
           "type": "tier_hit_rate_drift",
           "tier": "C",
           "severity": "medium",
           "metric": "hit_rate",
-          "value": 38.765,
+          "value": 38.865,
           "threshold": 44.0,
-          "sample_size": 2105,
-          "message": "Tier C hit rate drift: 38.8% below threshold 44.0% (2105 picks)."
+          "sample_size": 2133,
+          "message": "Tier C hit rate drift: 38.9% below threshold 44.0% (2133 picks)."
         }
       ],
       "thresholds": {
@@ -198,32 +198,32 @@
     }
   },
   "sharp": {
-    "winner_pct": 60.40251882948512,
-    "upset_rate": 34.01654525250031,
-    "upset_accuracy": 39.346642468239565,
-    "ml_roi": 1.316397277354441,
-    "hit_rate_quality_observation": "Hit/quality observation: tier hit A/B/C=47.2/38.8/38.4% (coverage 3.3/4.9/25.8% of slate); frontier top 30% upsets=42.9% vs full book=39.3%.",
+    "winner_pct": 60.46913580246913,
+    "upset_rate": 34.086419753086425,
+    "upset_accuracy": 39.478449837015575,
+    "ml_roi": 1.4526709894830754,
+    "hit_rate_quality_observation": "Hit/quality observation: tier hit A/B/C=48.3/37.4/38.9% (coverage 2.9/4.8/26.3% of slate); frontier top 30% upsets=41.7% vs full book=39.5%.",
     "tier_metrics": {
       "A": {
-        "count": 271.0,
-        "hit_rate": 47.23247232472325,
-        "coverage_pct": 3.346092110137054,
-        "ml_roi": 18.98026451596445,
-        "avg_confidence": 79.08924119597248
+        "count": 238.0,
+        "hit_rate": 48.319327731092436,
+        "coverage_pct": 2.9382716049382718,
+        "ml_roi": 22.241233565496934,
+        "avg_confidence": 78.96673306473676
       },
       "B": {
-        "count": 394.0,
-        "hit_rate": 38.83248730964467,
-        "coverage_pct": 4.864798123225089,
-        "ml_roi": 0.7313895281640045,
-        "avg_confidence": 61.99124151505257
+        "count": 390.0,
+        "hit_rate": 37.43589743589744,
+        "coverage_pct": 4.814814814814815,
+        "ml_roi": -4.069411849080712,
+        "avg_confidence": 62.268575243525845
       },
       "C": {
-        "count": 2090.0,
-        "hit_rate": 38.421052631578945,
-        "coverage_pct": 25.805655019138165,
-        "ml_roi": 5.604325759232263,
-        "avg_confidence": 26.98336404853908
+        "count": 2133.0,
+        "hit_rate": 38.86544772620722,
+        "coverage_pct": 26.333333333333332,
+        "ml_roi": 6.72058763460038,
+        "avg_confidence": 26.942740965835572
       }
     },
     "roi_by_odds_band": {
@@ -236,117 +236,117 @@
       },
       "1_50_1_99": {
         "label": "1.50x-1.99x",
-        "bets": 189,
-        "hit_rate": 50.79365079365079,
-        "ml_roi": -0.8261375940824693,
-        "avg_payout": 1.9499742758828074
+        "bets": 188,
+        "hit_rate": 49.46808510638298,
+        "ml_roi": -3.3864021699499594,
+        "avg_payout": 1.9504172670089528
       },
       "2_00_2_99": {
         "label": "2.00x-2.99x",
-        "bets": 1685,
-        "hit_rate": 43.916913946587535,
-        "ml_roi": 3.0718100890207714,
-        "avg_payout": 2.3820356083086054
+        "bets": 1695,
+        "hit_rate": 44.306784660766965,
+        "ml_roi": 4.147492625368732,
+        "avg_payout": 2.382253687315634
       },
       "3_00_3_99": {
         "label": "3.00x-3.99x",
         "bets": 533,
-        "hit_rate": 31.51969981238274,
-        "ml_roi": 5.071294559099437,
-        "avg_payout": 3.3884803001876174
+        "hit_rate": 30.95684803001876,
+        "ml_roi": 2.8911819887429644,
+        "avg_payout": 3.3809943714821764
       },
       "4_plus": {
         "label": "4.00x+",
-        "bets": 347,
-        "hit_rate": 23.054755043227665,
-        "ml_roi": 27.44092219020173,
-        "avg_payout": 5.567752161383285
+        "bets": 344,
+        "hit_rate": 23.546511627906977,
+        "ml_roi": 29.671511627906977,
+        "avg_payout": 5.555406976744186
       }
     },
     "quality_frontier": [
       {
-        "upset_coverage_pct": 10.01814882032668,
-        "coverage_pct": 3.4078281269292505,
-        "picks": 276.0,
-        "hit_rate": 47.10144927536232,
-        "ml_roi": 18.70177862142261,
-        "avg_confidence": 78.92299671825957
+        "upset_coverage_pct": 10.032596885186527,
+        "coverage_pct": 3.419753086419753,
+        "picks": 277.0,
+        "hit_rate": 45.84837545126354,
+        "ml_roi": 16.168417631142116,
+        "avg_confidence": 77.57446237934839
       },
       {
-        "upset_coverage_pct": 20.0,
-        "coverage_pct": 6.8033090505000615,
-        "picks": 551.0,
-        "hit_rate": 41.74228675136116,
-        "ml_roi": 5.4150869887781425,
-        "avg_confidence": 71.4749730771055
+        "upset_coverage_pct": 20.02897500905469,
+        "coverage_pct": 6.82716049382716,
+        "picks": 553.0,
+        "hit_rate": 42.31464737793852,
+        "ml_roi": 6.7357446238166405,
+        "avg_confidence": 70.24291210283721
       },
       {
-        "upset_coverage_pct": 30.01814882032668,
-        "coverage_pct": 10.211137177429313,
-        "picks": 827.0,
-        "hit_rate": 42.926239419588875,
-        "ml_roi": 10.200866107409373,
-        "avg_confidence": 65.7271608520862
+        "upset_coverage_pct": 30.025353132922856,
+        "coverage_pct": 10.234567901234568,
+        "picks": 829.0,
+        "hit_rate": 41.73703256936068,
+        "ml_roi": 7.72626906530914,
+        "avg_confidence": 64.55973185500739
       },
       {
-        "upset_coverage_pct": 40.0,
-        "coverage_pct": 13.606618101000123,
-        "picks": 1102.0,
-        "hit_rate": 40.92558983666062,
-        "ml_roi": 6.965290535221959,
-        "avg_confidence": 60.754231518519404
+        "upset_coverage_pct": 40.021731256791014,
+        "coverage_pct": 13.641975308641976,
+        "picks": 1105.0,
+        "hit_rate": 41.44796380090498,
+        "ml_roi": 7.070592689591211,
+        "avg_confidence": 59.60396611488841
       },
       {
-        "upset_coverage_pct": 50.01814882032668,
-        "coverage_pct": 17.014446227929376,
-        "picks": 1378.0,
-        "hit_rate": 40.42089985486212,
-        "ml_roi": 6.296643987175486,
-        "avg_confidence": 56.30451449466884
+        "upset_coverage_pct": 50.01810938065918,
+        "coverage_pct": 17.049382716049383,
+        "picks": 1381.0,
+        "hit_rate": 40.333091962346124,
+        "ml_roi": 6.142819833128261,
+        "avg_confidence": 55.258613417007844
       },
       {
-        "upset_coverage_pct": 60.0,
-        "coverage_pct": 20.409927151500185,
-        "picks": 1653.0,
-        "hit_rate": 39.6854204476709,
-        "ml_roi": 5.538356415291137,
-        "avg_confidence": 52.258906823439055
+        "upset_coverage_pct": 60.014487504527345,
+        "coverage_pct": 20.456790123456788,
+        "picks": 1657.0,
+        "hit_rate": 40.43452021726011,
+        "ml_roi": 7.260326554730129,
+        "avg_confidence": 51.24410128132461
       },
       {
-        "upset_coverage_pct": 70.01814882032667,
-        "coverage_pct": 23.817755278429438,
-        "picks": 1929.0,
-        "hit_rate": 39.0357698289269,
-        "ml_roi": 2.9215079095162544,
-        "avg_confidence": 48.366425079423855
+        "upset_coverage_pct": 70.0108656283955,
+        "coverage_pct": 23.8641975308642,
+        "picks": 1933.0,
+        "hit_rate": 39.11019141231247,
+        "ml_roi": 3.3371564439338917,
+        "avg_confidence": 47.41949337519674
       },
       {
-        "upset_coverage_pct": 80.0,
-        "coverage_pct": 27.213236202000246,
-        "picks": 2204.0,
-        "hit_rate": 39.29219600725953,
-        "ml_roi": 4.810172390421073,
-        "avg_confidence": 44.54620007446553
+        "upset_coverage_pct": 80.00724375226366,
+        "coverage_pct": 27.271604938271604,
+        "picks": 2209.0,
+        "hit_rate": 38.97691263014939,
+        "ml_roi": 3.6721727628929113,
+        "avg_confidence": 43.72604030537233
       },
       {
-        "upset_coverage_pct": 90.01814882032669,
-        "coverage_pct": 30.6210643289295,
-        "picks": 2480.0,
-        "hit_rate": 39.11290322580645,
-        "ml_roi": 4.402628874917899,
-        "avg_confidence": 40.80259892609107
+        "upset_coverage_pct": 90.00362187613183,
+        "coverage_pct": 30.679012345679013,
+        "picks": 2485.0,
+        "hit_rate": 38.99396378269618,
+        "ml_roi": 4.598942625210947,
+        "avg_confidence": 40.073783596003004
       },
       {
         "upset_coverage_pct": 100.0,
-        "coverage_pct": 34.01654525250031,
-        "picks": 2755.0,
-        "hit_rate": 39.346642468239565,
-        "ml_roi": 6.223179671404143,
-        "avg_confidence": 37.115413568960406
+        "coverage_pct": 34.086419753086425,
+        "picks": 2761.0,
+        "hit_rate": 39.478449837015575,
+        "ml_roi": 6.534355810231585,
+        "avg_confidence": 36.41712904545806
       }
     ],
     "drift": {
-      "generated_at": "2026-03-21T03:36:12+00:00",
+      "generated_at": "2026-03-22T00:27:26+00:00",
       "triggered": true,
       "alert_count": 3,
       "alerts": [
@@ -355,30 +355,30 @@
           "tier": "A",
           "severity": "high",
           "metric": "hit_rate",
-          "value": 47.232,
+          "value": 48.319,
           "threshold": 56.0,
-          "sample_size": 271,
-          "message": "Tier A hit rate drift: 47.2% below threshold 56.0% (271 picks)."
+          "sample_size": 238,
+          "message": "Tier A hit rate drift: 48.3% below threshold 56.0% (238 picks)."
         },
         {
           "type": "tier_hit_rate_drift",
           "tier": "B",
           "severity": "medium",
           "metric": "hit_rate",
-          "value": 38.832,
+          "value": 37.436,
           "threshold": 50.0,
-          "sample_size": 394,
-          "message": "Tier B hit rate drift: 38.8% below threshold 50.0% (394 picks)."
+          "sample_size": 390,
+          "message": "Tier B hit rate drift: 37.4% below threshold 50.0% (390 picks)."
         },
         {
           "type": "tier_hit_rate_drift",
           "tier": "C",
           "severity": "medium",
           "metric": "hit_rate",
-          "value": 38.421,
+          "value": 38.865,
           "threshold": 44.0,
-          "sample_size": 2090,
-          "message": "Tier C hit rate drift: 38.4% below threshold 44.0% (2090 picks)."
+          "sample_size": 2133,
+          "message": "Tier C hit rate drift: 38.9% below threshold 44.0% (2133 picks)."
         }
       ],
       "thresholds": {
@@ -394,10 +394,10 @@
     }
   },
   "comparison": {
-    "sharp_flipped_picks": 56,
-    "sharp_flipped_correct": 23,
-    "sharp_flipped_accuracy": 41.07142857142857,
-    "sharp_net_value": -0.12347203358439174
+    "sharp_flipped_picks": 0,
+    "sharp_flipped_correct": 0,
+    "sharp_flipped_accuracy": 0.0,
+    "sharp_net_value": 0.0
   },
   "drift_triggered": true
 }

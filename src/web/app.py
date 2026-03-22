@@ -1177,6 +1177,10 @@ def _attach_team_context(
         "away_last_game_short": away_ctx.get("last_game_short", ""),
         "home_starters_out": _format_starters_out(home_ctx.get("starters_out", [])),
         "away_starters_out": _format_starters_out(away_ctx.get("starters_out", [])),
+        "home_starters_confirmed": home_ctx.get("starters_confirmed", False),
+        "away_starters_confirmed": away_ctx.get("starters_confirmed", False),
+        "home_minutes_restricted": home_ctx.get("minutes_restricted", []),
+        "away_minutes_restricted": away_ctx.get("minutes_restricted", []),
     })
     return pred_dict
 
@@ -1998,6 +2002,64 @@ def api_sync_status():
         "running": _sync_running,
         "status": _sync_status,
     })
+
+
+# ── Minutes restriction management ─────────────────────────────
+
+@app.route("/api/injuries/minutes-cap", methods=["GET"])
+def api_get_minutes_caps():
+    """List all players currently on minutes restrictions."""
+    rows = db.fetch_all(
+        "SELECT player_id, player_name, team_id, status, reason, minutes_cap "
+        "FROM injuries WHERE minutes_cap IS NOT NULL"
+    )
+    return jsonify([dict(r) for r in (rows or [])])
+
+
+@app.route("/api/injuries/minutes-cap", methods=["POST"])
+def api_set_minutes_cap():
+    """Set or update a minutes restriction via manual injury override.
+
+    Body: {"player_id": int, "player_name": str, "team_id": int,
+           "minutes_cap": int, "status": str (optional), "reason": str (optional)}
+    """
+    data = request.get_json(silent=True) or {}
+    player_id = data.get("player_id")
+    player_name = data.get("player_name", "")
+    team_id = data.get("team_id", 0)
+    minutes_cap = data.get("minutes_cap")
+    status = data.get("status", "Available")
+    reason = data.get("reason", "Minutes restriction")
+
+    if not player_id or minutes_cap is None:
+        return jsonify({"error": "player_id and minutes_cap are required"}), 400
+
+    try:
+        from src.data.injury_scraper import add_manual_injury
+        add_manual_injury(
+            player_id=int(player_id),
+            player_name=str(player_name),
+            team_id=int(team_id),
+            status=status,
+            reason=reason,
+            minutes_cap=int(minutes_cap),
+        )
+        return jsonify({"status": "ok", "player_id": player_id, "minutes_cap": minutes_cap})
+    except Exception as e:
+        logger.error("Failed to set minutes cap: %s", e, exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/injuries/minutes-cap/<int:player_id>", methods=["DELETE"])
+def api_remove_minutes_cap(player_id: int):
+    """Remove a manual minutes restriction for a player."""
+    try:
+        from src.data.injury_scraper import remove_manual_injury
+        remove_manual_injury(player_id)
+        return jsonify({"status": "ok", "player_id": player_id})
+    except Exception as e:
+        logger.error("Failed to remove minutes cap: %s", e, exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/cache/status")

@@ -12,7 +12,11 @@ from typing import Any, Dict, List, Sequence, Tuple
 import numpy as np
 
 from src.analytics.prediction import GameInput, predict
-from src.analytics.thresholds import ACTUAL_WIN_THRESHOLD, MODEL_PICK_EDGE_THRESHOLD
+from src.analytics.thresholds import (
+    ACTUAL_WIN_THRESHOLD,
+    MODEL_PICK_EDGE_THRESHOLD,
+    PUSH_MODEL_EDGE_MAX,
+)
 from src.analytics.weight_config import WeightConfig
 
 
@@ -61,7 +65,7 @@ def _build_upset_feature_rows(
         model_correct = (
             (model_picks_home and actual_home_win)
             or ((not model_picks_home) and actual_away_win)
-            or (actual_push and abs(float(pred.game_score)) <= 3.0)
+            or (actual_push and abs(float(pred.game_score)) <= PUSH_MODEL_EDGE_MAX)
         )
 
         ml_line = int(game.vegas_home_ml if model_picks_home else game.vegas_away_ml)

@@ -280,6 +280,18 @@ CREATE TABLE IF NOT EXISTS injuries (
     FOREIGN KEY (team_id) REFERENCES teams(team_id)
 );
 
+CREATE TABLE IF NOT EXISTS confirmed_lineups (
+    game_date TEXT NOT NULL,
+    game_id TEXT NOT NULL,
+    team_id INTEGER NOT NULL,
+    player_id INTEGER NOT NULL,
+    player_name TEXT DEFAULT '',
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (game_date, game_id, team_id, player_id),
+    FOREIGN KEY (team_id) REFERENCES teams(team_id),
+    FOREIGN KEY (player_id) REFERENCES players(player_id)
+);
+
 CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     category TEXT NOT NULL,
@@ -478,6 +490,8 @@ def _run_column_migrations():
     _add_column_if_missing("team_metrics", "opp_pts_2nd_chance", "REAL DEFAULT 0.0")
     _add_column_if_missing("team_metrics", "opp_pts_off_tov", "REAL DEFAULT 0.0")
     # New feature columns: player advanced metrics
+    _add_column_if_missing("injuries", "minutes_cap", "INTEGER DEFAULT NULL")
+    _add_column_if_missing("injury_history", "minutes_cap", "INTEGER DEFAULT NULL")
     _add_column_if_missing("player_impact", "vorp", "REAL DEFAULT 0.0")
     _add_column_if_missing("player_impact", "bpm", "REAL DEFAULT 0.0")
     _add_column_if_missing("player_impact", "ws_per_48", "REAL DEFAULT 0.0")
@@ -828,7 +842,8 @@ def get_table_counts() -> dict:
               "team_metrics", "player_impact", "injuries", "injury_history",
               "injury_status_log", "team_tuning", "notifications",
               "recommendation_snapshot_runs", "recommendation_snapshot_items", "game_odds",
-              "arenas", "referees", "game_referees", "elo_ratings"]
+              "arenas", "referees", "game_referees", "elo_ratings",
+              "confirmed_lineups"]
     counts = {}
     for t in tables:
         try:

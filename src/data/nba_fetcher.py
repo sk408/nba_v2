@@ -510,6 +510,59 @@ def fetch_nba_cdn_schedule() -> List[Dict[str, Any]]:
         return []
 
 
+def fetch_daily_lineups(game_date: str) -> List[Dict[str, Any]]:
+    """Fetch confirmed first-quarter starters from stats.nba.com for a date.
+
+    Returns list of dicts with game_id, team_id, player_id, player_name.
+    Returns empty list if lineups are not yet posted (404) or on error.
+    The endpoint only retains ~2 seasons of data.
+    """
+    date_compact = game_date.replace("-", "")
+    url = f"https://stats.nba.com/js/data/leaders/00_daily_lineups_{date_compact}.json"
+    try:
+        data = get_json(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://www.nba.com/",
+                "Origin": "https://www.nba.com",
+            },
+            timeout=12,
+            retries=2,
+            backoff_base=1.0,
+        )
+    except HttpClientError as e:
+        if "404" in str(e) or "Not Found" in str(e):
+            logger.debug("Daily lineups not available for %s (404)", game_date)
+            return []
+        logger.warning("Failed to fetch daily lineups for %s: %s", game_date, e)
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    try:
+        games = data.get("gs", {}).get("g", [])
+        for game in games:
+            game_id = str(game.get("gid", ""))
+            for side_key in ("hls", "vls"):
+                side = game.get(side_key, {})
+                team_id = int(side.get("tid", 0))
+                for player in side.get("pstsg", []):
+                    rows.append({
+                        "game_id": game_id,
+                        "team_id": team_id,
+                        "player_id": int(player.get("pid", 0)),
+                        "player_name": str(player.get("fn", "")) + " "
+                                       + str(player.get("ln", "")),
+                    })
+    except (KeyError, TypeError, ValueError) as e:
+        logger.warning("Error parsing daily lineups for %s: %s", game_date, e)
+        return []
+
+    logger.info("Fetched %d confirmed starters for %s", len(rows), game_date)
+    return rows
+
+
 def resolve_opponent_team_id(opponent_abbr: str) -> int:
     """Look up team_id from abbreviation."""
     row = db.fetch_one(

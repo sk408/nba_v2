@@ -6,6 +6,7 @@ nba_api
 numpy
 optuna
 pandas
+pdfplumber
 plyer
 PySide6
 pytest

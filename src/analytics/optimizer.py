@@ -12,6 +12,10 @@ efficient 49-dimensional exploration.
 VectorizedGames converts List[GameInput] into flat NumPy arrays for fast evaluation.
 optimize_weights() runs walk-forward Optuna optimization.
 compare_modes() A/B tests fundamentals-only vs fundamentals+sharp.
+
+Metric revision 2 (2026-03-20): upset_correct now uses the shared ``correct``
+mask (includes push-correct games), matching backtester and ML scorer semantics.
+Optuna studies/saved weights from revision 1 are not numerically comparable.
 """
 
 import hashlib
@@ -35,7 +39,11 @@ from src.analytics.weight_config import (
     OPTIMIZER_RANGES, SHARP_MODE_RANGES, invalidate_weight_cache,
     CD_RANGES, CD_SHARP_RANGES,
 )
-from src.analytics.thresholds import MODEL_PICK_EDGE_THRESHOLD, ACTUAL_WIN_THRESHOLD
+from src.analytics.thresholds import (
+    ACTUAL_WIN_THRESHOLD,
+    MODEL_PICK_EDGE_THRESHOLD,
+    PUSH_MODEL_EDGE_MAX,
+)
 from src.analytics.underdog_metrics import (
     DEFAULT_TIER_A_MIN_CONFIDENCE,
     DEFAULT_TIER_B_MIN_CONFIDENCE,
@@ -1198,7 +1206,7 @@ class VectorizedGames:
 
         correct = ((pred_home_win & actual_home_win)
                     | (pred_away_win & actual_away_win)
-                    | (actual_push & (np.abs(game_score) <= 3.0)))
+                    | (actual_push & (np.abs(game_score) <= PUSH_MODEL_EDGE_MAX)))
         winner_pct_raw = float(np.mean(correct)) * 100.0
 
         # Vegas favorite direction (needed by both favorites_pct and upset detection)
@@ -1220,9 +1228,9 @@ class VectorizedGames:
         model_picks_home = game_score > MODEL_PICK_EDGE_THRESHOLD
         # Upset = model disagrees with Vegas on who wins
         model_picks_upset = model_picks_home != vegas_fav_home
-        upset_correct = (model_picks_upset
-                         & ((model_picks_home & actual_home_win)
-                            | (~model_picks_home & actual_away_win)))
+        # Reuse `correct` so upset semantics match backtester/ML scorer
+        # (includes push-correct branch, not just outright wins).
+        upset_correct = model_picks_upset & correct
         upset_count = int(np.sum(model_picks_upset))
         upset_rate = float(upset_count) / max(1, self.n) * 100.0
         upset_correct_count = int(np.sum(upset_correct))

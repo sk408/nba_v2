@@ -126,7 +126,28 @@ def _fetch_last_game_info(team_id: int, game_date: str) -> Tuple[Optional[int], 
     return days, f"Last game {days} days ago", f"{days}d rest"
 
 
-def _projected_starters(team_id: int, season: str, game_date: str) -> List[Dict[str, Any]]:
+def _confirmed_starters(team_id: int, game_date: str) -> List[Dict[str, Any]]:
+    """Look up confirmed first-quarter starters from the confirmed_lineups table."""
+    rows = db.fetch_all(
+        """
+        SELECT cl.player_id, cl.player_name AS name
+        FROM confirmed_lineups cl
+        WHERE cl.team_id = ? AND cl.game_date = ?
+        ORDER BY cl.player_id
+        """,
+        (team_id, game_date),
+    )
+    return [
+        {
+            "player_id": _safe_int(r.get("player_id"), 0),
+            "name": str(r.get("name") or "").strip(),
+        }
+        for r in (rows or [])
+        if _safe_int(r.get("player_id"), 0) > 0
+    ]
+
+
+def _mpg_projected_starters(team_id: int, season: str, game_date: str) -> List[Dict[str, Any]]:
     """Approximate likely starters using current roster + pregame MPG ranking."""
     rows = db.fetch_all(
         """
@@ -182,6 +203,20 @@ def _projected_starters(team_id: int, season: str, game_date: str) -> List[Dict[
     ]
 
 
+def _projected_starters(
+    team_id: int, season: str, game_date: str,
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Return starters and whether they are confirmed or projected.
+
+    Prefers confirmed first-quarter starters when available; falls back
+    to the MPG-based heuristic otherwise.
+    """
+    confirmed = _confirmed_starters(team_id, game_date)
+    if confirmed:
+        return confirmed, True
+    return _mpg_projected_starters(team_id, season, game_date), False
+
+
 def _fetch_starters_out(team_id: int, starters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not starters:
         return []
@@ -227,6 +262,26 @@ def _fetch_starters_out(team_id: int, starters: List[Dict[str, Any]]) -> List[Di
     return out_list
 
 
+def _fetch_minutes_restricted(team_id: int) -> List[Dict[str, Any]]:
+    """Find players on minutes restrictions for a team."""
+    rows = db.fetch_all(
+        "SELECT player_id, player_name, status, minutes_cap "
+        "FROM injuries WHERE team_id = ? AND minutes_cap IS NOT NULL",
+        (team_id,),
+    )
+    return [
+        {
+            "player_id": _safe_int(r.get("player_id"), 0),
+            "name": str(r.get("player_name") or "").strip(),
+            "status": str(r.get("status") or "").strip(),
+            "minutes_cap": _safe_int(r.get("minutes_cap"), 0),
+        }
+        for r in (rows or [])
+        if _safe_int(r.get("player_id"), 0) > 0
+        and _safe_int(r.get("minutes_cap"), 0) > 0
+    ]
+
+
 def get_team_display_context(
     team_id: int,
     game_date: Optional[str] = None,
@@ -261,9 +316,12 @@ def get_team_display_context(
     )
 
     starters_out: List[Dict[str, Any]] = []
+    starters_confirmed = False
+    minutes_restricted: List[Dict[str, Any]] = []
     if include_starters_out:
-        starters = _projected_starters(team_id, season, game_date)
+        starters, starters_confirmed = _projected_starters(team_id, season, game_date)
         starters_out = _fetch_starters_out(team_id, starters)
+        minutes_restricted = _fetch_minutes_restricted(team_id)
 
     return {
         "record": record,
@@ -273,4 +331,6 @@ def get_team_display_context(
         "last_game_text": last_game_text,
         "last_game_short": last_game_short,
         "starters_out": starters_out,
+        "starters_confirmed": starters_confirmed,
+        "minutes_restricted": minutes_restricted,
     }

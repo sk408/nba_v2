@@ -14,7 +14,8 @@ from src.data.odds_sync import sync_upcoming_odds
 logger = logging.getLogger(__name__)
 
 HIGH_IMPACT_MPG = 20.0
-POLL_INTERVAL = 300  # 5 minutes
+POLL_INTERVAL = 300           # 5 minutes (default)
+POLL_INTERVAL_NEAR_TIP = 120  # 2 minutes when games start within 2 hours
 
 
 class InjuryMonitor:
@@ -65,13 +66,44 @@ class InjuryMonitor:
                 r["player_id"]: dict(r) for r in rows
             }
 
+    @staticmethod
+    def _adaptive_poll_interval() -> int:
+        """Return a shorter interval when games are starting soon."""
+        try:
+            from src.utils.timezone_utils import nba_today
+            from datetime import datetime, timezone
+
+            today = nba_today()
+            rows = db.fetch_all(
+                "SELECT game_time_utc FROM game_odds WHERE game_date = ?",
+                (today,),
+            )
+            if not rows:
+                return POLL_INTERVAL
+
+            now_utc = datetime.now(timezone.utc)
+            for r in rows:
+                utc_str = r.get("game_time_utc", "")
+                if not utc_str:
+                    continue
+                try:
+                    tip = datetime.fromisoformat(utc_str.replace("Z", "+00:00"))
+                    hours_until = (tip - now_utc).total_seconds() / 3600
+                    if 0 < hours_until <= 2:
+                        return POLL_INTERVAL_NEAR_TIP
+                except (ValueError, TypeError):
+                    continue
+        except Exception:
+            pass
+        return POLL_INTERVAL
+
     def _loop(self):
         """Main monitoring loop."""
         while self._running:
             try:
-                # Interruptible sleep — wakes immediately when stop_event is set
-                if self._stop_event.wait(timeout=POLL_INTERVAL):
-                    break  # stop requested
+                interval = self._adaptive_poll_interval()
+                if self._stop_event.wait(timeout=interval):
+                    break
                 if not self._running:
                     break
                 self._check_changes()

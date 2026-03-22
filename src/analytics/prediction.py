@@ -563,13 +563,18 @@ def _load_current_injuries(*team_ids: int) -> Dict[int, float]:
     """Load current injuries from DB and compute play probabilities.
 
     Returns dict mapping player_id -> play_probability (0.0 to 1.0).
+
+    When a player has a minutes_cap set, the effective play probability is
+    capped at (minutes_cap / avg_minutes) so that projection weighting and
+    injury VORP reflect the restricted contribution.
     """
     if not team_ids:
         return {}
 
     placeholders = ",".join("?" for _ in team_ids)
     rows = db.fetch_all(
-        f"SELECT player_id, status, reason FROM injuries WHERE team_id IN ({placeholders})",
+        f"SELECT player_id, status, reason, minutes_cap "
+        f"FROM injuries WHERE team_id IN ({placeholders})",
         tuple(team_ids),
     )
     injured = {}
@@ -578,18 +583,36 @@ def _load_current_injuries(*team_ids: int) -> Dict[int, float]:
         if pid is None:
             continue
         status = r.get("status", "Out")
-        # Simple probability mapping (no injury_intelligence in V2)
         status_lower = status.lower() if status else "out"
         if status_lower == "out":
-            injured[pid] = 0.0
+            play_prob = 0.0
         elif status_lower in ("doubtful",):
-            injured[pid] = 0.15
+            play_prob = 0.15
         elif status_lower in ("questionable",):
-            injured[pid] = 0.5
+            play_prob = 0.5
         elif status_lower in ("probable", "available"):
-            injured[pid] = 0.85
+            play_prob = 0.85
         else:
-            injured[pid] = 0.0
+            play_prob = 0.0
+
+        # Minutes restriction: cap effective play_prob at (cap / avg_minutes)
+        cap = r.get("minutes_cap")
+        if cap is not None and play_prob > 0.0:
+            try:
+                cap = int(cap)
+                avg_row = db.fetch_one(
+                    "SELECT AVG(minutes) AS avg_min FROM player_stats "
+                    "WHERE player_id = ? AND minutes > 0 "
+                    "ORDER BY game_date DESC LIMIT 20",
+                    (pid,),
+                )
+                avg_min = float((avg_row or {}).get("avg_min") or 0.0)
+                if avg_min > 0:
+                    play_prob = min(play_prob, cap / avg_min)
+            except (TypeError, ValueError):
+                pass
+
+        injured[pid] = play_prob
     return injured
 
 

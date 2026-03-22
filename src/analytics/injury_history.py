@@ -41,10 +41,17 @@ def infer_injuries_from_logs(callback: Optional[Callable] = None) -> dict:
         "SELECT player_id, team_id FROM players WHERE team_id IS NOT NULL"
     )
 
-    # 3. Current injury reasons (for context)
+    # 3. Current injury reasons + minutes caps (for context)
     injury_info: dict[int, str] = {}
-    for ir in db.fetch_all("SELECT player_id, reason FROM injuries"):
+    injury_caps: dict[int, int | None] = {}
+    for ir in db.fetch_all("SELECT player_id, reason, minutes_cap FROM injuries"):
         injury_info[ir["player_id"]] = ir["reason"] or ""
+        cap = ir.get("minutes_cap")
+        if cap is not None:
+            try:
+                injury_caps[ir["player_id"]] = int(cap)
+            except (TypeError, ValueError):
+                pass
 
     # 4. For each player find games their team played but they didn't
     records = 0
@@ -76,20 +83,23 @@ def infer_injuries_from_logs(callback: Optional[Callable] = None) -> dict:
         avg_min = avg_row["avg_min"] if avg_row and avg_row["avg_min"] else None
         reason = injury_info.get(pid, "")
 
+        cap = injury_caps.get(pid)
         for gd in missed:
-            batch.append((pid, tid, gd, 1, avg_min, reason))
+            batch.append((pid, tid, gd, 1, avg_min, reason, cap))
             records += 1
 
     # 5. Upsert
     if batch:
         db.execute_many(
             """INSERT INTO injury_history
-                   (player_id, team_id, game_date, was_out, avg_minutes, reason)
-               VALUES (?, ?, ?, ?, ?, ?)
+                   (player_id, team_id, game_date, was_out, avg_minutes, reason,
+                    minutes_cap)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(player_id, game_date) DO UPDATE SET
                    was_out   = excluded.was_out,
                    avg_minutes = excluded.avg_minutes,
-                   reason    = excluded.reason""",
+                   reason    = excluded.reason,
+                   minutes_cap = excluded.minutes_cap""",
             batch,
         )
 

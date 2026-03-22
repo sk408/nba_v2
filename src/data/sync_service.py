@@ -111,7 +111,7 @@ def nuke_synced_data(callback: Optional[Callable] = None):
         "game_odds", "game_quarter_scores", "sync_meta",
         # Also clear derived/tuning tables so they rebuild cleanly
         "team_tuning", "model_weights", "team_weight_overrides",
-        "predictions",
+        "predictions", "confirmed_lineups",
     ]
     db.execute("PRAGMA foreign_keys=OFF")
     try:
@@ -874,6 +874,125 @@ def sync_historical_seasons(callback: Optional[Callable] = None, force: bool = F
             callback(f"Historical season {hist_season} sync complete")
 
 
+def sync_confirmed_lineups(
+    callback: Optional[Callable] = None,
+    force: bool = False,
+    **_kwargs,
+):
+    """Sync confirmed starting lineups for today.
+
+    Past dates are immutable — once rows exist for a game_date they are never
+    re-fetched.  Only today's date is refreshed (lineups confirm ~30 min
+    before tip and can update until the game starts).
+    """
+    from src.utils.timezone_utils import nba_today
+
+    today = nba_today()
+
+    already = db.fetch_one(
+        "SELECT COUNT(*) AS cnt FROM confirmed_lineups WHERE game_date = ?",
+        (today,),
+    )
+    have_today = (already or {}).get("cnt", 0) > 0
+
+    if have_today and not force:
+        meta = _get_sync_meta("confirmed_lineups")
+        last_ts = meta.get("last_synced_at", "")
+        if last_ts:
+            try:
+                elapsed = (datetime.now() - datetime.fromisoformat(last_ts)).total_seconds()
+                if elapsed < 900:  # 15 min cooldown for today's re-fetch
+                    if callback:
+                        callback(f"Confirmed lineups for {today} fresh ({int(elapsed)}s ago)")
+                    return
+            except (ValueError, TypeError):
+                pass
+
+    rows = nba_fetcher.fetch_daily_lineups(today)
+    if not rows:
+        if callback:
+            callback(f"No confirmed lineups available for {today}")
+        return
+
+    now = datetime.now().isoformat()
+    batch = [
+        (r["game_id"][:10] if len(r.get("game_id", "")) >= 10 else today,
+         r["game_id"], r["team_id"], r["player_id"],
+         r.get("player_name", ""), now)
+        for r in rows
+        if r.get("player_id")
+    ]
+    if batch:
+        db.execute_many(
+            """INSERT INTO confirmed_lineups
+                   (game_date, game_id, team_id, player_id, player_name, fetched_at)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(game_date, game_id, team_id, player_id)
+               DO UPDATE SET player_name=excluded.player_name,
+                             fetched_at=excluded.fetched_at""",
+            batch,
+        )
+    _set_sync_meta("confirmed_lineups", len(batch), today)
+    if callback:
+        callback(f"Synced {len(batch)} confirmed starters for {today}")
+
+
+def backfill_confirmed_lineups(
+    start_date: str,
+    end_date: str,
+    callback: Optional[Callable] = None,
+):
+    """One-time backfill of historical confirmed lineups.
+
+    Skips any date that already has rows in the DB — historical data is
+    immutable and never needs re-fetching.
+    """
+    from datetime import date as _date
+
+    current = _date.fromisoformat(start_date)
+    end = _date.fromisoformat(end_date)
+    total_fetched = 0
+
+    while current <= end:
+        ds = current.isoformat()
+        already = db.fetch_one(
+            "SELECT COUNT(*) AS cnt FROM confirmed_lineups WHERE game_date = ?",
+            (ds,),
+        )
+        if (already or {}).get("cnt", 0) > 0:
+            current += timedelta(days=1)
+            continue
+
+        rows = nba_fetcher.fetch_daily_lineups(ds)
+        if rows:
+            now = datetime.now().isoformat()
+            batch = [
+                (ds, r["game_id"], r["team_id"], r["player_id"],
+                 r.get("player_name", ""), now)
+                for r in rows
+                if r.get("player_id")
+            ]
+            if batch:
+                db.execute_many(
+                    """INSERT INTO confirmed_lineups
+                           (game_date, game_id, team_id, player_id, player_name, fetched_at)
+                       VALUES (?,?,?,?,?,?)
+                       ON CONFLICT(game_date, game_id, team_id, player_id) DO NOTHING""",
+                    batch,
+                )
+                total_fetched += len(batch)
+            if callback:
+                callback(f"  {ds}: {len(batch)} starters")
+        else:
+            if callback:
+                callback(f"  {ds}: no data")
+
+        current += timedelta(days=1)
+
+    if callback:
+        callback(f"Backfill complete: {total_fetched} total starters")
+
+
 def full_sync(callback: Optional[Callable] = None, force: bool = False) -> Dict[str, str]:
     """Full 8-step data sync.
 
@@ -890,14 +1009,15 @@ def full_sync(callback: Optional[Callable] = None, force: bool = False) -> Dict[
         clear_sync_cache()
 
     steps = [
-        ("1/8 Reference data", sync_reference_data),
-        ("2/8 Player game logs", sync_player_game_logs),
-        ("3/8 Historical seasons", sync_historical_seasons),
-        ("4/8 Injuries", sync_injuries_step),
-        ("5/8 Injury history", sync_injury_history),
-        ("6/8 Team metrics", sync_team_metrics),
-        ("7/8 Player impact", sync_player_impact),
-        ("8/8 Vegas odds", sync_historical_odds),
+        ("1/9 Reference data", sync_reference_data),
+        ("2/9 Player game logs", sync_player_game_logs),
+        ("3/9 Historical seasons", sync_historical_seasons),
+        ("4/9 Injuries", sync_injuries_step),
+        ("5/9 Injury history", sync_injury_history),
+        ("6/9 Team metrics", sync_team_metrics),
+        ("7/9 Player impact", sync_player_impact),
+        ("8/9 Vegas odds", sync_historical_odds),
+        ("9/9 Confirmed lineups", sync_confirmed_lineups),
     ]
     failures: Dict[str, str] = {}
     for label, func in steps:

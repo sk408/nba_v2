@@ -23,7 +23,11 @@ from src.analytics.prediction import (
     get_actual_game_results,
 )
 from src.analytics.optimizer import VectorizedGames
-from src.analytics.thresholds import MODEL_PICK_EDGE_THRESHOLD, ACTUAL_WIN_THRESHOLD
+from src.analytics.thresholds import (
+    ACTUAL_WIN_THRESHOLD,
+    MODEL_PICK_EDGE_THRESHOLD,
+    PUSH_MODEL_EDGE_MAX,
+)
 from src.analytics.underdog_metrics import summarize_underdog_quality
 from src.analytics.weight_config import WeightConfig, get_weight_config
 from src.analytics.stats_engine import get_team_abbreviations
@@ -209,7 +213,7 @@ def _build_per_game_result(
     model_correct = (
         (pred.pick == "HOME" and actual_winner == "HOME")
         or (pred.pick == "AWAY" and actual_winner == "AWAY")
-        or (actual_winner == "PUSH" and abs(pred.game_score) <= 3.0)
+        or (actual_winner == "PUSH" and abs(pred.game_score) <= PUSH_MODEL_EDGE_MAX)
     )
 
     # Upset identification: model disagrees with Vegas favorite

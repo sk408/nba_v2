@@ -23,13 +23,19 @@
             <span class="matchup-chip">{{ fund.away_last_game_short or 'Rest n/a' }}</span>
         </div>
         <div class="starters-out">
-            <span class="starters-out-label">Projected Starters Out</span>
+            <span class="starters-out-label">{% if fund.away_starters_confirmed %}Confirmed{% else %}Projected{% endif %} Starters Out</span>
             {% if fund.away_starters_out %}
             <span class="starters-out-value">{{ fund.away_starters_out|join(', ') }}</span>
             {% else %}
             <span class="starters-out-value none">None</span>
             {% endif %}
         </div>
+        {% if fund.away_minutes_restricted %}
+        <div class="starters-out">
+            <span class="starters-out-label">Minutes Restricted</span>
+            <span class="starters-out-value">{% for p in fund.away_minutes_restricted %}{{ p.name }} ({{ p.minutes_cap }} min){% if not loop.last %}, {% endif %}{% endfor %}</span>
+        </div>
+        {% endif %}
     </div>
     <div class="matchup-vs">
         <span class="vs-at">@</span>
@@ -44,13 +50,19 @@
             <span class="matchup-chip">{{ fund.home_last_game_short or 'Rest n/a' }}</span>
         </div>
         <div class="starters-out">
-            <span class="starters-out-label">Projected Starters Out</span>
+            <span class="starters-out-label">{% if fund.home_starters_confirmed %}Confirmed{% else %}Projected{% endif %} Starters Out</span>
             {% if fund.home_starters_out %}
             <span class="starters-out-value">{{ fund.home_starters_out|join(', ') }}</span>
             {% else %}
             <span class="starters-out-value none">None</span>
             {% endif %}
         </div>
+        {% if fund.home_minutes_restricted %}
+        <div class="starters-out">
+            <span class="starters-out-label">Minutes Restricted</span>
+            <span class="starters-out-value">{% for p in fund.home_minutes_restricted %}{{ p.name }} ({{ p.minutes_cap }} min){% if not loop.last %}, {% endif %}{% endfor %}</span>
+        </div>
+        {% endif %}
     </div>
 </div>
 

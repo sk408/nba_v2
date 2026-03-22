@@ -19,6 +19,11 @@ from bs4 import BeautifulSoup
 from src.database import db
 from src.data.http_client import get_text, HttpClientError
 
+try:
+    import pdfplumber
+except ImportError:
+    pdfplumber = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
@@ -27,8 +32,34 @@ MANUAL_INJURIES_PATH = Path("data") / "manual_injuries.json"
 # ── TTL cache for HTTP scrapes (avoid hammering sources) ──
 _scrape_cache: Dict[str, Any] = {}
 _scrape_cache_ts: Dict[str, float] = {}
-_SCRAPE_TTL = 3600  # 60 minutes
+_SCRAPE_TTL_DEFAULT = 3600      # 60 minutes (non-game-day / no imminent games)
+_SCRAPE_TTL_GAMEDAY = 900       # 15 minutes (games within ~3 hours)
 _scrape_cache_lock = threading.Lock()
+
+
+def _effective_scrape_ttl() -> int:
+    """Return the appropriate TTL based on whether games are imminent."""
+    try:
+        from src.config import get as _cfg
+        ttl_default = int(_cfg("injury_scrape_ttl_default", _SCRAPE_TTL_DEFAULT) or _SCRAPE_TTL_DEFAULT)
+        ttl_gameday = int(_cfg("injury_scrape_ttl_gameday", _SCRAPE_TTL_GAMEDAY) or _SCRAPE_TTL_GAMEDAY)
+    except Exception:
+        ttl_default = _SCRAPE_TTL_DEFAULT
+        ttl_gameday = _SCRAPE_TTL_GAMEDAY
+
+    try:
+        from src.utils.timezone_utils import nba_today
+        from src.database import db as _db
+        today = nba_today()
+        row = _db.fetch_one(
+            "SELECT COUNT(*) AS cnt FROM game_odds WHERE game_date = ?",
+            (today,),
+        )
+        if row and int(row.get("cnt", 0)) > 0:
+            return max(60, ttl_gameday)
+    except Exception:
+        pass
+    return max(60, ttl_default)
 
 
 def _get_cached_scrape(source: str, use_cache: bool = True) -> Optional[List[Dict[str, Any]]]:
@@ -36,11 +67,12 @@ def _get_cached_scrape(source: str, use_cache: bool = True) -> Optional[List[Dic
     if not use_cache:
         return None
     import time
+    ttl = _effective_scrape_ttl()
     with _scrape_cache_lock:
         if source in _scrape_cache:
             age = time.time() - _scrape_cache_ts.get(source, 0)
-            if age < _SCRAPE_TTL:
-                logger.info("Using cached %s injuries (%.0fs old)", source, age)
+            if age < ttl:
+                logger.info("Using cached %s injuries (%.0fs old, TTL=%ds)", source, age, ttl)
                 return _scrape_cache[source]
     return None
 
@@ -58,6 +90,171 @@ def invalidate_injury_scrape_cache():
     with _scrape_cache_lock:
         _scrape_cache.clear()
         _scrape_cache_ts.clear()
+
+
+# ---------------------------------------------------------------------------
+# NBA Official Injury Report PDF parsing
+# ---------------------------------------------------------------------------
+
+_NBA_PDF_STATUS_MAP = {
+    "out": "Out",
+    "doubtful": "Doubtful",
+    "questionable": "Questionable",
+    "probable": "Probable",
+    "available": "Available",
+    "not yet submitted": "",
+}
+
+_NBA_PDF_TIME_SLOTS = [
+    "01_00PM", "01_30PM",
+    "02_00PM", "02_30PM",
+    "03_00PM", "03_30PM",
+    "04_00PM", "04_30PM",
+    "05_00PM", "05_30PM",
+    "06_00PM", "06_30PM",
+    "07_00PM", "07_30PM",
+    "08_00PM",
+]
+
+
+def fetch_nba_injury_pdf(game_date: str, use_cache: bool = True) -> List[Dict[str, Any]]:
+    """Fetch and parse the official NBA injury report PDF for a date.
+
+    Tries several known timestamp patterns for the given date. Returns parsed
+    injury entries or an empty list when no PDF is available.
+    """
+    if pdfplumber is None:
+        logger.debug("pdfplumber not installed — skipping NBA PDF fetcher")
+        return []
+
+    cached = _get_cached_scrape("nba_pdf", use_cache=use_cache)
+    if cached is not None:
+        return cached
+
+    import io
+    import requests
+
+    date_str = game_date.replace("-", "")
+
+    for time_slot in reversed(_NBA_PDF_TIME_SLOTS):
+        url = (
+            f"https://ak-static.cms.nba.com/referee/injury/"
+            f"Injury-Report_{game_date}_{time_slot}.pdf"
+        )
+        try:
+            resp = requests.get(url, timeout=10, headers={"User-Agent": _UA})
+            if resp.status_code == 200 and resp.content[:5] == b"%PDF-":
+                logger.info("Found NBA injury PDF at %s", url)
+                results = _parse_nba_injury_pdf(io.BytesIO(resp.content))
+                if results:
+                    _set_cached_scrape("nba_pdf", results)
+                    return results
+        except Exception as e:
+            logger.debug("PDF attempt %s failed: %s", time_slot, e)
+            continue
+
+    logger.debug("No NBA injury PDF found for %s", game_date)
+    return []
+
+
+_STATUS_TOKENS = {"Out", "Questionable", "Doubtful", "Probable", "Available"}
+
+# Known NBA team names as they appear (no spaces) in the PDF text.
+_NBA_TEAM_NAMES = {
+    "AtlantaHawks", "BostonCeltics", "BrooklynNets", "CharlotteHornets",
+    "ChicagoBulls", "ClevelandCavaliers", "DallasMavericks", "DenverNuggets",
+    "DetroitPistons", "GoldenStateWarriors", "HoustonRockets", "IndianaPacers",
+    "LAClippers", "LosAngelesClippers", "LosAngelesLakers", "LALakers",
+    "MemphisGrizzlies", "MiamiHeat", "MilwaukeeBucks", "MinnesotaTimberwolves",
+    "NewOrleansPelicans", "NewYorkKnicks", "OklahomaCityThunder",
+    "OrlandoMagic", "Philadelphia76ers", "PhoenixSuns", "PortlandTrailBlazers",
+    "SacramentoKings", "SanAntonioSpurs", "TorontoRaptors", "UtahJazz",
+    "WashingtonWizards",
+}
+
+_TEAM_NAME_RE = re.compile(
+    r"(?:" + "|".join(re.escape(t) for t in _NBA_TEAM_NAMES) + r")"
+)
+
+_PLAYER_LINE_RE = re.compile(
+    r"^([A-Z][a-zA-Z'.,-]+(?:(?:Jr\.|Sr\.|III|II|IV)\s*)?),\s*"
+    r"([A-Z][a-zA-Z'.-]+)"
+    r"\s+(Out|Questionable|Doubtful|Probable|Available)\b"
+    r"\s*(.*)?$"
+)
+
+
+def _parse_nba_injury_pdf(pdf_bytes: "io.BytesIO") -> List[Dict[str, Any]]:
+    """Parse NBA injury report PDF using text extraction.
+
+    The PDF layout packs columns without clear delimiters, but each player
+    entry follows a predictable pattern:
+        LastName,FirstName  Status  Reason
+    Team names appear inline as single camelCase words (e.g. GoldenStateWarriors).
+    """
+    results: List[Dict[str, Any]] = []
+    current_team = ""
+
+    try:
+        with pdfplumber.open(pdf_bytes) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if not text:
+                    continue
+                for line in text.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    # Skip header lines
+                    if line.startswith("Injury Report:") or line.startswith("GameDate"):
+                        continue
+
+                    # Detect team name changes. Team names appear as part of
+                    # a matchup line or standalone before player entries.
+                    team_match = _TEAM_NAME_RE.search(line)
+                    if team_match:
+                        current_team = team_match.group(0)
+                        # The player entry may be on the same line after the
+                        # team name. Strip up to and including the team name.
+                        remainder = line[team_match.end():].strip()
+                        if remainder:
+                            line = remainder
+                        else:
+                            continue
+
+                    # Also skip date/time/matchup prefix fragments
+                    # e.g. "03/20/2026 07:30(ET) GSW@DET"
+                    if re.match(r"^\d{2}/\d{2}/\d{4}", line):
+                        continue
+
+                    # Try to match a player entry
+                    m = _PLAYER_LINE_RE.match(line)
+                    if m:
+                        last_name = m.group(1).strip().rstrip(",")
+                        first_name = m.group(2).strip()
+                        status = m.group(3).strip()
+                        reason = (m.group(4) or "").strip()
+
+                        # Clean up reason — remove leading dashes and
+                        # "Injury/Illness-" prefix for compact display
+                        reason = re.sub(r"^-\s*", "", reason)
+
+                        player_name = f"{first_name} {last_name}"
+                        mapped = _NBA_PDF_STATUS_MAP.get(status.lower(), status)
+                        if mapped:
+                            results.append({
+                                "name": normalize_name(player_name),
+                                "team": current_team,
+                                "status": mapped,
+                                "detail": reason,
+                                "source": "NBA_Official",
+                            })
+    except Exception as e:
+        logger.warning("Failed to parse NBA injury PDF: %s", e)
+
+    logger.info("Parsed %d entries from NBA injury PDF", len(results))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -417,15 +614,23 @@ def save_manual_injury(entry: Dict[str, Any]):
 
 
 def add_manual_injury(player_id: int, player_name: str, team_id: int,
-                      status: str = "Out", reason: str = ""):
-    """Convenience wrapper: add a manual injury by individual fields."""
-    entry = {
+                      status: str = "Out", reason: str = "",
+                      minutes_cap: int | None = None):
+    """Convenience wrapper: add a manual injury by individual fields.
+
+    minutes_cap: optional maximum minutes the player is expected to play
+    (e.g. 24 for a player returning on a minutes restriction). NULL means
+    no restriction.
+    """
+    entry: Dict[str, Any] = {
         "player_id": player_id,
         "name": player_name,
         "team_id": team_id,
         "status": status,
         "reason": reason,
     }
+    if minutes_cap is not None:
+        entry["minutes_cap"] = int(minutes_cap)
     save_manual_injury(entry)
 
 
@@ -443,14 +648,30 @@ def remove_manual_injury(player_id_or_name):
 
 
 def scrape_all_injuries(use_cache: bool = True) -> List[Dict[str, Any]]:
-    """Scrape from all sources and merge (ESPN primary, CBS fills gaps).
+    """Scrape from all sources and merge.
 
-    ESPN is the highest-quality source (has real status like Out/Day-To-Day).
-    CBS provides additional players ESPN might miss but lacks status info.
-    RotoWire is a last-resort fallback.
+    Waterfall: NBA Official PDF → ESPN → CBS → RotoWire.
+    NBA PDF is the canonical source (what sportsbooks use). ESPN has good
+    status granularity. CBS fills players ESPN might miss. RotoWire is last
+    resort.
     """
     combined = []
     seen_names: set = set()
+
+    # Highest authority: NBA Official Injury Report PDF
+    try:
+        from src.utils.timezone_utils import nba_today
+        today = nba_today()
+        pdf = fetch_nba_injury_pdf(today, use_cache=use_cache)
+        if pdf:
+            logger.info("Got %d injuries from NBA Official PDF", len(pdf))
+            for inj in pdf:
+                key = inj["name"].lower()
+                if key not in seen_names:
+                    seen_names.add(key)
+                    combined.append(inj)
+    except Exception as e:
+        logger.debug("NBA PDF fetch skipped: %s", e)
 
     # Primary: ESPN
     espn = scrape_espn_injuries(use_cache=use_cache)
@@ -529,6 +750,71 @@ def _match_player_id(name: str) -> Optional[int]:
     return None
 
 
+def backfill_injury_pdfs(
+    start_date: str,
+    end_date: str,
+    callback=None,
+) -> int:
+    """Backfill past-date NBA injury PDFs into injury_status_log.
+
+    Historical data is immutable — dates with existing status_log rows are
+    skipped entirely. Returns total records inserted.
+    """
+    from datetime import date as _date, timedelta
+
+    current = _date.fromisoformat(start_date)
+    end = _date.fromisoformat(end_date)
+    total = 0
+
+    while current <= end:
+        ds = current.isoformat()
+
+        already = db.fetch_one(
+            "SELECT COUNT(*) AS cnt FROM injury_status_log "
+            "WHERE log_date = ? AND injury_detail LIKE '%NBA_Official%'",
+            (ds,),
+        )
+        if (already or {}).get("cnt", 0) > 0:
+            current += timedelta(days=1)
+            continue
+
+        entries = fetch_nba_injury_pdf(ds, use_cache=False)
+        if entries:
+            for inj in entries:
+                pid = _match_player_id(inj.get("name", ""))
+                if not pid:
+                    continue
+                p_row = db.fetch_one(
+                    "SELECT team_id FROM players WHERE player_id = ?", (pid,)
+                )
+                tid = p_row["team_id"] if p_row else 0
+                status = inj.get("status", "Out")
+                detail = f"{inj.get('detail', '')} [NBA_Official]"
+                keyword = _classify_keyword(inj.get("detail", ""))
+
+                db.execute(
+                    """INSERT INTO injury_status_log
+                           (player_id, team_id, log_date, status_level,
+                            injury_keyword, injury_detail)
+                       VALUES (?,?,?,?,?,?)
+                       ON CONFLICT(player_id, log_date, status_level) DO NOTHING""",
+                    (pid, tid, ds, status, keyword, detail),
+                )
+                total += 1
+
+            if callback:
+                callback(f"  {ds}: {len(entries)} PDF entries -> {total} stored")
+        else:
+            if callback:
+                callback(f"  {ds}: no PDF")
+
+        current += timedelta(days=1)
+
+    if callback:
+        callback(f"PDF backfill complete: {total} records")
+    return total
+
+
 def sync_injuries(callback=None, use_cache: bool = True) -> int:
     """Full injury sync: scrape + manual overrides → update DB."""
     if callback:
@@ -576,12 +862,20 @@ def sync_injuries(callback=None, use_cache: bool = True) -> int:
             if t_row:
                 team_id = t_row["team_id"]
 
+        # Minutes cap from manual entries (scraped sources don't provide this)
+        minutes_cap = inj.get("minutes_cap")
+        if minutes_cap is not None:
+            try:
+                minutes_cap = int(minutes_cap)
+            except (TypeError, ValueError):
+                minutes_cap = None
+
         # Insert into injuries table
         db.execute(
             """INSERT INTO injuries
                (player_id, player_name, team_id, status, reason, expected_return,
-                source, injury_keyword, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?)
+                source, injury_keyword, updated_at, minutes_cap)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(player_id) DO UPDATE SET
                  player_name=excluded.player_name,
                  team_id=excluded.team_id,
@@ -590,8 +884,10 @@ def sync_injuries(callback=None, use_cache: bool = True) -> int:
                  expected_return=excluded.expected_return,
                  source=excluded.source,
                  injury_keyword=excluded.injury_keyword,
-                 updated_at=excluded.updated_at""",
-            (pid, name, team_id, status, detail, expected_return, source, keyword, now)
+                 updated_at=excluded.updated_at,
+                 minutes_cap=excluded.minutes_cap""",
+            (pid, name, team_id, status, detail, expected_return, source, keyword, now,
+             minutes_cap)
         )
 
         # Log to injury_status_log
