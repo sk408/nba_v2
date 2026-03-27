@@ -12,7 +12,8 @@
       "WebFetch(domain:www.underdogchance.com)",
       "Bash(git:*)",
       "Bash(python:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "WebFetch(domain:cloudcli.ai)"
     ]
   }
 }

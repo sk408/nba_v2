@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-03-22T00:27:26+00:00",
+  "generated_at": "2026-03-27T02:42:33+00:00",
   "passed": false,
   "failed_count": 2,
   "checks": [
@@ -7,19 +7,19 @@
       "id": "winner_pct_floor",
       "label": "Winner accuracy floor",
       "passed": true,
-      "actual": 60.4691,
+      "actual": 61.3759,
       "threshold": 60.0,
       "operator": ">=",
-      "detail": "60.47 >= 60.00"
+      "detail": "61.38 >= 60.00"
     },
     {
       "id": "upset_coverage_floor",
       "label": "Upset coverage floor",
       "passed": true,
-      "actual": 34.0864,
+      "actual": 32.6904,
       "threshold": 20.0,
       "operator": ">=",
-      "detail": "34.09 + 0.50 >= 20.00",
+      "detail": "32.69 + 0.50 >= 20.00",
       "threshold_target": 20.0,
       "tolerance_pp": 0.5,
       "effective_threshold": 19.5
@@ -28,19 +28,19 @@
       "id": "tier_a_hit_rate_floor",
       "label": "Tier A hit-rate floor",
       "passed": false,
-      "actual": 48.3193,
+      "actual": 47.0852,
       "threshold": 56.0,
       "operator": ">=",
-      "detail": "48.32 >= 56.00"
+      "detail": "47.09 >= 56.00"
     },
     {
       "id": "ml_roi_floor",
       "label": "Moneyline ROI floor",
       "passed": true,
-      "actual": 1.4527,
+      "actual": 2.0996,
       "threshold": 0.0,
       "operator": ">=",
-      "detail": "1.45 >= 0.00"
+      "detail": "2.10 >= 0.00"
     },
     {
       "id": "fund_drift_alert_budget",
@@ -65,10 +65,10 @@
       "id": "tier_a_hit_rate_floor",
       "label": "Tier A hit-rate floor",
       "passed": false,
-      "actual": 48.3193,
+      "actual": 47.0852,
       "threshold": 56.0,
       "operator": ">=",
-      "detail": "48.32 >= 56.00"
+      "detail": "47.09 >= 56.00"
     },
     {
       "id": "fund_drift_alert_budget",
@@ -80,5 +80,5 @@
       "detail": "3.00 <= 1.00"
     }
   ],
-  "report_date": "2026-03-22"
+  "report_date": "2026-03-27"
 }
