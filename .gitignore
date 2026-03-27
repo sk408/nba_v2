@@ -6,6 +6,9 @@ data/backtest_cache/
 data/snapshots/
 # data/nba_analytics.db
 # data/app_settings.json
+# Interaction model (retrained nightly, machine-specific)
+data/interaction_model.lgb
+data/interaction_model_meta.json
 data/optuna_studies.db
 data/optuna_studies.db-journal
 data/overnight.log
@@ -20,3 +23,27 @@ node_modules/
 tools/lightpanda-node/*_endpoints*.json
 tools/lightpanda-node/*_report.json
 tools/lightpanda-node/[0-9]*
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+# Dependency directories
+# Environment variables
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific
+.DS_Store
+
+# Task files
+# tasks.json
+# tasks/ 

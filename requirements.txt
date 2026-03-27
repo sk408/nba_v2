@@ -15,4 +15,5 @@ requests
 rich
 ruff
 scipy
+lightgbm>=4.0.0
 websocket-client
