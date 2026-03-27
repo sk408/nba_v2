@@ -193,6 +193,8 @@ class Prediction:
     calibrated_away_pts: Optional[float] = None
     score_calibrated: bool = False
     score_calibration_mode: str = ""
+    # Interaction model correction detail (populated when model is active)
+    interaction_detail: Optional[Dict[str, Any]] = None
 
 
 def _moneyline_payout_multiplier(ml_line: int) -> float:
