@@ -485,6 +485,16 @@ def run_train_interaction_model(
         return {"status": "error", "reason": str(e)}
 
     if result["status"] == "trained":
+        # Invalidate score calibration so it retrains on next pipeline run.
+        # The interaction layer changes the game_score distribution that
+        # calibration was fitted against.
+        try:
+            from src.analytics.score_calibration import invalidate_score_calibration_cache
+            invalidate_score_calibration_cache()
+            emit("Score calibration cache invalidated — will retrain on next run.")
+        except Exception:
+            logger.debug("Could not invalidate score calibration cache", exc_info=True)
+
         top = result.get("top_interactions", [])
         top_str = ", ".join(f"{t['feature']}({t['importance']:.0f})" for t in top[:3])
         emit(

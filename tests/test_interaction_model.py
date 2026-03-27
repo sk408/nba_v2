@@ -306,6 +306,87 @@ def test_vectorized_games_excludes_interaction_model():
     assert "prediction.predict(" not in source
 
 
+def test_training_invalidates_calibration_cache(monkeypatch):
+    """Successful training invalidates the score calibration cache."""
+    from src.analytics.interaction_model import run_train_interaction_model, BASE_EDGE_KEYS
+    from src.analytics import score_calibration as sc_mod
+
+    # Pre-populate the calibration cache with a fake payload
+    sc_mod._cache_payload = {"fake": True}
+    sc_mod._cache_signature = "fake_sig"
+    assert sc_mod._cache_payload is not None
+
+    rng = np.random.RandomState(42)
+    n_games = 300
+
+    class FakePred:
+        def __init__(self):
+            self.game_score = rng.randn() * 5
+            self.adjustments = {k: rng.randn() * 2.0 for k in BASE_EDGE_KEYS}
+
+    # Patch config.get (used as local import `get_setting` inside function)
+    from src import config as _config_mod
+    _real_get = _config_mod.get
+
+    def _patched_get(key, default=None):
+        overrides = {
+            "interaction_model_enabled": True,
+            "interaction_model_correction_cap": 3.0,
+            "interaction_model_min_train_games": 200,
+        }
+        if key in overrides:
+            return overrides[key]
+        return _real_get(key, default)
+
+    monkeypatch.setattr("src.config.get", _patched_get)
+
+    # Patch train_model to simulate success without needing LightGBM
+    monkeypatch.setattr(
+        "src.analytics.interaction_model.train_model",
+        lambda **kw: {
+            "status": "trained",
+            "n_train": 240,
+            "n_val": 60,
+            "val_rmse": 1.5,
+            "mean_abs_correction": 0.8,
+            "top_interactions": [],
+        },
+    )
+
+    # Build synthetic game objects with actual results
+    class FakeGame:
+        def __init__(self):
+            self.actual_home_score = rng.randint(80, 130)
+            self.actual_away_score = rng.randint(80, 130)
+
+    fake_games = [FakeGame() for _ in range(n_games)]
+
+    # Patch precompute_all_games (imported inside function from prediction)
+    monkeypatch.setattr(
+        "src.analytics.prediction.precompute_all_games",
+        lambda **kw: fake_games,
+    )
+
+    # Patch predict (imported inside function from prediction)
+    monkeypatch.setattr(
+        "src.analytics.prediction.predict",
+        lambda game, w, include_sharp=False: FakePred(),
+    )
+
+    from src.analytics.weight_config import WeightConfig
+    monkeypatch.setattr(
+        "src.analytics.weight_config.get_weight_config",
+        lambda: WeightConfig(),
+    )
+
+    result = run_train_interaction_model()
+
+    assert result["status"] == "trained"
+    # Calibration cache must have been invalidated
+    assert sc_mod._cache_payload is None
+    assert sc_mod._cache_signature == ""
+
+
 def test_run_train_interaction_model_step():
     """Pipeline step function has correct signature and returns dict."""
     from src.analytics.interaction_model import run_train_interaction_model

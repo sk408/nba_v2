@@ -80,6 +80,27 @@ class _CDWorker(QObject):
             self.error.emit(f"{e}\n{traceback.format_exc()}")
 
 
+class _InteractionModelWorker(QObject):
+    """Runs interaction model training on a background thread."""
+    progress = Signal(str)
+    finished = Signal(object)
+    error = Signal(str)
+
+    def run(self):
+        try:
+            from src.database.db import thread_local_db
+            thread_local_db()
+            from src.analytics.interaction_model import run_train_interaction_model
+
+            result = run_train_interaction_model(
+                callback=lambda msg: self.progress.emit(msg),
+            )
+            self.finished.emit(result)
+        except Exception as e:
+            import traceback
+            self.error.emit(f"{e}\n{traceback.format_exc()}")
+
+
 # ----------------------------------------------------------------
 # SettingsView -- main widget
 # ----------------------------------------------------------------
@@ -134,7 +155,10 @@ class SettingsView(QWidget):
         # ---- Section 7: Coordinate Descent ----
         self._build_cd_section(layout)
 
-        # ---- Section 8: Weight Management ----
+        # ---- Section 8: Interaction Model ----
+        self._build_interaction_model_section(layout)
+
+        # ---- Section 9: Weight Management ----
         self._build_weight_management(layout)
 
         layout.addStretch()
@@ -929,6 +953,195 @@ class SettingsView(QWidget):
         apply_card_shadow(group)
         parent_layout.addWidget(group)
 
+    def _build_interaction_model_section(self, parent_layout: QVBoxLayout):
+        """Build interaction model toggle, status, and retrain button."""
+        group = QGroupBox("Interaction Model")
+        gl = QVBoxLayout(group)
+        gl.setSpacing(10)
+
+        desc = QLabel(
+            "LightGBM residual correction layer that learns feature interactions "
+            "and non-linear scaling the linear model misses. Trains on residuals "
+            "from the linear prediction model."
+        )
+        desc.setProperty("class", "text-secondary")
+        desc.setWordWrap(True)
+        gl.addWidget(desc)
+
+        # Toggle
+        self._im_enabled_chk = QCheckBox("Enable Interaction Model")
+        self._im_enabled_chk.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 13px; font-weight: 600;"
+        )
+        self._im_enabled_chk.setToolTip(
+            "When disabled, predictions use the linear model only."
+        )
+        self._im_enabled_chk.toggled.connect(self._on_interaction_model_toggled)
+        gl.addWidget(self._im_enabled_chk)
+
+        # Status label
+        self._im_status_lbl = QLabel("")
+        self._im_status_lbl.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-size: 12px;"
+        )
+        self._im_status_lbl.setWordWrap(True)
+        gl.addWidget(self._im_status_lbl)
+
+        # Retrain button row
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        self._im_retrain_btn = QPushButton("Retrain Now")
+        self._im_retrain_btn.setProperty("class", "success")
+        self._im_retrain_btn.setFixedHeight(36)
+        self._im_retrain_btn.setMinimumWidth(120)
+        self._im_retrain_btn.clicked.connect(self._on_im_retrain)
+        btn_row.addWidget(self._im_retrain_btn)
+
+        self._im_retrain_status_lbl = QLabel("")
+        self._im_retrain_status_lbl.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-size: 12px;"
+        )
+        btn_row.addWidget(self._im_retrain_status_lbl)
+        btn_row.addStretch()
+        gl.addLayout(btn_row)
+
+        # Worker state
+        self._im_worker = None
+        self._im_thread = None
+
+        apply_card_shadow(group)
+        parent_layout.addWidget(group)
+
+    def _load_interaction_model_status(self):
+        """Refresh the interaction model status label from metadata."""
+        try:
+            from src.analytics.interaction_model import get_model_metadata, is_model_stale
+            meta = get_model_metadata()
+            if meta is None:
+                self._im_status_lbl.setText("No model trained yet.")
+                self._im_status_lbl.setStyleSheet(
+                    f"color: {TEXT_DIM}; font-size: 12px;"
+                )
+                return
+
+            from datetime import datetime
+            parts = []
+
+            trained_at = meta.get("trained_at", "")
+            if trained_at:
+                try:
+                    dt = datetime.fromisoformat(trained_at)
+                    delta = datetime.now() - dt
+                    hours = delta.total_seconds() / 3600
+                    if hours < 1:
+                        age_str = f"{int(delta.total_seconds() / 60)}m ago"
+                    elif hours < 24:
+                        age_str = f"{hours:.0f}h ago"
+                    else:
+                        age_str = f"{hours / 24:.1f}d ago"
+                    parts.append(f"Trained {age_str}")
+                except (ValueError, TypeError):
+                    pass
+
+            n_games = meta.get("n_games", 0)
+            if n_games:
+                parts.append(f"{n_games:,} games")
+
+            rmse = meta.get("val_rmse", 0)
+            if rmse:
+                parts.append(f"RMSE={rmse:.3f}")
+
+            stale = is_model_stale()
+            if stale:
+                parts.append("STALE")
+
+            status_text = " · ".join(parts) if parts else "Model present"
+            self._im_status_lbl.setText(status_text)
+            color = AMBER if stale else TEXT_MUTED
+            self._im_status_lbl.setStyleSheet(
+                f"color: {color}; font-size: 12px;"
+            )
+        except Exception as e:
+            self._im_status_lbl.setText(f"Status unavailable: {e}")
+            self._im_status_lbl.setStyleSheet(
+                f"color: {TEXT_DIM}; font-size: 12px;"
+            )
+
+    def _on_interaction_model_toggled(self, checked: bool):
+        """Persist interaction model enabled/disabled."""
+        from src.config import set_value
+        set_value("interaction_model_enabled", bool(checked))
+        state = "enabled" if checked else "disabled"
+        self._notify(f"Interaction model {state}")
+
+    def _on_im_retrain(self):
+        """Start interaction model retraining on a background thread."""
+        self._im_retrain_btn.setEnabled(False)
+        self._im_retrain_status_lbl.setText("Training...")
+        self._im_retrain_status_lbl.setStyleSheet(
+            f"color: {CYAN}; font-size: 12px;"
+        )
+
+        self._im_worker = _InteractionModelWorker()
+        self._im_thread = QThread()
+        self._im_worker.moveToThread(self._im_thread)
+        self._im_thread.started.connect(self._im_worker.run)
+
+        _QC = Qt.ConnectionType.QueuedConnection
+        self._im_worker.progress.connect(self._on_im_progress, _QC)
+        self._im_worker.finished.connect(self._on_im_finished, _QC)
+        self._im_worker.error.connect(self._on_im_error, _QC)
+        self._im_worker.finished.connect(self._im_thread.quit)
+        self._im_worker.error.connect(self._im_thread.quit)
+        self._im_thread.finished.connect(self._im_cleanup)
+
+        self._im_thread.start()
+
+    def _on_im_progress(self, msg: str):
+        """Update retrain status with progress."""
+        self._im_retrain_status_lbl.setText(msg)
+
+    def _on_im_finished(self, result: dict):
+        """Interaction model training completed."""
+        self._im_retrain_btn.setEnabled(True)
+        status = result.get("status", "unknown")
+        if status == "trained":
+            rmse = result.get("val_rmse", 0)
+            n_train = result.get("n_train", 0)
+            self._im_retrain_status_lbl.setText(
+                f"Trained: {n_train} games, RMSE={rmse:.3f}"
+            )
+            self._im_retrain_status_lbl.setStyleSheet(
+                f"color: {GREEN}; font-size: 12px; font-weight: 600;"
+            )
+            self._notify("Interaction model retrained successfully")
+        else:
+            reason = result.get("reason", status)
+            self._im_retrain_status_lbl.setText(f"Not trained: {reason}")
+            self._im_retrain_status_lbl.setStyleSheet(
+                f"color: {AMBER}; font-size: 12px;"
+            )
+        self._load_interaction_model_status()
+
+    def _on_im_error(self, msg: str):
+        """Interaction model training failed."""
+        self._im_retrain_btn.setEnabled(True)
+        self._im_retrain_status_lbl.setText("Training failed")
+        self._im_retrain_status_lbl.setStyleSheet(
+            f"color: {RED}; font-size: 12px; font-weight: 600;"
+        )
+        logger.error("Interaction model training error: %s", msg)
+
+    def _im_cleanup(self):
+        """Clean up interaction model thread resources."""
+        if self._im_thread:
+            self._im_thread.deleteLater()
+        if self._im_worker:
+            self._im_worker.deleteLater()
+        self._im_thread = None
+        self._im_worker = None
+
     def _build_weight_management(self, parent_layout: QVBoxLayout):
         """Build weight management section with reset button."""
         group = QGroupBox("Weight Management")
@@ -1199,6 +1412,13 @@ class SettingsView(QWidget):
             self._theme_light.setChecked(True)
         else:
             self._theme_dark.setChecked(True)
+
+        # Interaction model
+        im_enabled = self._to_bool(get("interaction_model_enabled", True), True)
+        self._im_enabled_chk.blockSignals(True)
+        self._im_enabled_chk.setChecked(im_enabled)
+        self._im_enabled_chk.blockSignals(False)
+        self._load_interaction_model_status()
 
         # Weight summary
         self._update_weight_summary()
@@ -1511,7 +1731,17 @@ class SettingsView(QWidget):
         self._cd_worker = None
 
     def request_stop(self, timeout_ms: int = 5000) -> bool:
-        """Cancel coordinate descent worker and wait for thread exit."""
+        """Cancel background workers and wait for thread exit."""
+        # Interaction model thread
+        im_thread = self._im_thread
+        if im_thread is not None:
+            try:
+                if im_thread.isRunning():
+                    im_thread.quit()
+                    im_thread.wait(max(0, int(timeout_ms // 2)))
+            except RuntimeError:
+                pass
+
         if self._cd_worker is not None:
             try:
                 self._cd_worker.cancel()
