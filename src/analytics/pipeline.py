@@ -1,8 +1,8 @@
-"""11-step pipeline orchestrator.
+"""12-step pipeline orchestrator.
 
 Steps: backup -> sync -> settle_recommendations -> seed_arenas -> bbref_sync
        -> referee_sync -> elo_compute -> precompute -> optimize_fundamentals
-       -> optimize_sharp -> backtest
+       -> optimize_sharp -> train_interaction_model -> backtest
 
 No disabled steps, no dead code. Each step receives (callback, is_cancelled) and
 returns a result dict. Pipeline state is persisted to data/pipeline_state.json
@@ -452,6 +452,8 @@ def run_weekly_retraining_evaluation(
 
 StepFunc = Callable[[Optional[Callable], Optional[Callable]], Dict]
 
+from src.analytics.interaction_model import run_train_interaction_model  # noqa: E402
+
 PIPELINE_STEPS: List[Tuple[str, StepFunc]] = [
     ("backup", backup_snapshot),
     ("sync", run_data_sync),
@@ -465,6 +467,7 @@ PIPELINE_STEPS: List[Tuple[str, StepFunc]] = [
     ("precompute", run_precompute),
     ("optimize_fundamentals", run_optimize_fundamentals),
     ("optimize_sharp", run_optimize_sharp),
+    ("train_interaction_model", run_train_interaction_model),
     ("backtest", run_backtest_and_compare),
 ]
 

@@ -504,6 +504,23 @@ def predict(game: GameInput, w: WeightConfig, include_sharp: bool = False) -> Pr
         game_score += process_adj
         pred.adjustments["process_stats"] = process_adj
 
+    # ── Interaction model correction (LightGBM residual layer) ──
+    try:
+        from src.analytics.interaction_model import predict_correction as _interaction_correction
+        from src.config import get as _get_config
+        if _get_config("interaction_model_enabled", True):
+            cap = _get_config("interaction_model_correction_cap", 3.0)
+            correction, detail = _interaction_correction(
+                adjustments=pred.adjustments,
+                correction_cap=float(cap),
+            )
+            if correction != 0.0:
+                game_score += correction
+                pred.adjustments["interaction_correction"] = correction
+                pred.interaction_detail = detail
+    except Exception:
+        logger.debug("Interaction model unavailable", exc_info=True)
+
     # Derive projected scores (diagnostic only)
     total = home_base + away_base
     # Defensive disruption total adjustment

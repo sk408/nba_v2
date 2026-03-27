@@ -329,19 +329,21 @@ def _human_label(feature_name: str) -> str:
 
 def predict_correction(
     adjustments: Dict[str, float],
-    model_path: str = _MODEL_PATH,
+    model_path: Optional[str] = None,
     correction_cap: float = 3.0,
 ) -> Tuple[float, Dict[str, Any]]:
     """Predict the residual correction for a single game.
 
     Args:
         adjustments: The pred.adjustments dict from predict().
-        model_path: Path to the trained model file.
+        model_path: Path to the trained model file (defaults to _MODEL_PATH).
         correction_cap: Max absolute correction.
 
     Returns:
         (correction_value, detail_dict). If no model, returns (0.0, {}).
     """
+    if model_path is None:
+        model_path = _MODEL_PATH
     model, feature_names = _load_model(model_path)
     if model is None:
         return 0.0, {}
@@ -394,6 +396,108 @@ def get_model_metadata() -> Optional[Dict[str, Any]]:
             return json.load(f)
     except Exception:
         return None
+
+
+# ──────────────────────────────────────────────────────────────
+# Pipeline step
+# ──────────────────────────────────────────────────────────────
+
+def run_train_interaction_model(
+    callback=None, is_cancelled=None
+) -> Dict[str, Any]:
+    """Pipeline step: train the interaction model on linear model residuals.
+
+    Loads all precomputed games, runs the linear model to get game_score,
+    computes residuals vs actual margins, and trains LightGBM.
+
+    Args:
+        callback: Optional progress message function.
+        is_cancelled: Optional cancellation check function.
+
+    Returns:
+        Dict with training results.
+    """
+    from src.analytics.prediction import predict, precompute_all_games  # noqa: I001
+    from src.analytics.weight_config import get_weight_config
+    from src.config import get as get_setting
+
+    def emit(msg: str):
+        if callback:
+            callback(msg)
+        logger.info(msg)
+
+    if not get_setting("interaction_model_enabled", True):
+        emit("Interaction model disabled in settings — skipping.")
+        return {"status": "disabled"}
+
+    w = get_weight_config()
+    cap = float(get_setting("interaction_model_correction_cap", 3.0))
+    min_games = int(get_setting("interaction_model_min_train_games", 200))
+
+    # Load precomputed games (same function used by optimizer and backtester)
+    games = precompute_all_games()
+    if not games:
+        emit("No precomputed games available — skipping interaction model training.")
+        return {"status": "skipped", "reason": "no precomputed games"}
+
+    emit(f"Building residuals from {len(games)} precomputed games...")
+
+    # Run linear model (without interaction layer) to get residuals
+    all_adjustments = []
+    residuals = []
+    for game in games:
+        if is_cancelled and is_cancelled():
+            return {"status": "cancelled"}
+
+        # Skip games without actual results
+        if game.actual_home_score == 0 and game.actual_away_score == 0:
+            continue
+
+        actual_margin = game.actual_home_score - game.actual_away_score
+
+        pred = predict(game, w, include_sharp=False)
+        linear_score = pred.game_score
+        # Remove interaction correction if it was applied, to get pure linear score
+        if "interaction_correction" in pred.adjustments:
+            linear_score -= pred.adjustments["interaction_correction"]
+            del pred.adjustments["interaction_correction"]
+
+        all_adjustments.append(dict(pred.adjustments))
+        residuals.append(actual_margin - linear_score)
+
+    if not residuals:
+        emit("No games with actual results — skipping interaction model training.")
+        return {"status": "skipped", "reason": "no games with results"}
+
+    emit(f"Computed {len(residuals)} residuals. Training LightGBM...")
+
+    try:
+        result = train_model(
+            all_adjustments=all_adjustments,
+            residuals=residuals,
+            correction_cap=cap,
+            min_train_games=min_games,
+            weight_config=w,
+        )
+    except Exception as e:
+        logger.exception("Interaction model training failed")
+        emit(f"Interaction model training failed: {e}")
+        return {"status": "error", "reason": str(e)}
+
+    if result["status"] == "trained":
+        top = result.get("top_interactions", [])
+        top_str = ", ".join(f"{t['feature']}({t['importance']:.0f})" for t in top[:3])
+        emit(
+            f"Interaction model trained: {result['n_train']} train / "
+            f"{result['n_val']} val, RMSE={result['val_rmse']:.3f}, "
+            f"avg |correction|={result['mean_abs_correction']:.2f}"
+        )
+        if top_str:
+            emit(f"Top interactions: {top_str}")
+    else:
+        emit(f"Interaction model training: {result.get('status')} — {result.get('reason', '')}")
+
+    return result
 
 
 def is_model_stale(current_weights=None) -> bool:

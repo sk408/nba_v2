@@ -236,3 +236,81 @@ def test_invalidate_model_cache():
     )
     # Just verify it doesn't error
     invalidate_model_cache()
+
+
+def test_predict_applies_interaction_correction(tmp_path, monkeypatch):
+    """predict() applies interaction correction when model exists and is enabled."""
+    from src.analytics.prediction import predict, GameInput
+    from src.analytics.interaction_model import train_model, BASE_EDGE_KEYS, invalidate_model_cache
+
+    rng = np.random.RandomState(42)
+    n_games = 300
+    all_adj = [{k: rng.randn() * 2.0 for k in BASE_EDGE_KEYS} for _ in range(n_games)]
+    residuals = [rng.randn() * 2.0 for _ in range(n_games)]
+
+    model_path = str(tmp_path / "model.lgb")
+    meta_path = str(tmp_path / "meta.json")
+    train_model(all_adj, residuals, model_path=model_path, meta_path=meta_path)
+
+    # Patch the model path and enable setting
+    monkeypatch.setattr("src.analytics.interaction_model._MODEL_PATH", model_path)
+    monkeypatch.setattr("src.analytics.interaction_model._META_PATH", meta_path)
+    invalidate_model_cache()
+
+    # Enable interaction model — use targeted patching that passes through
+    # to the real config.get for all other keys
+    from src import config as _config_mod
+    _real_get = _config_mod.get
+    def _patched_get(key, default=None):
+        overrides = {
+            "interaction_model_enabled": True,
+            "interaction_model_correction_cap": 3.0,
+        }
+        if key in overrides:
+            return overrides[key]
+        return _real_get(key, default)
+    monkeypatch.setattr("src.config.get", _patched_get)
+
+    game = GameInput()
+    from src.analytics.weight_config import WeightConfig
+    w = WeightConfig()
+    pred = predict(game, w)
+
+    # The interaction correction should be in adjustments
+    assert "interaction_correction" in pred.adjustments
+    assert abs(pred.adjustments["interaction_correction"]) <= 3.0
+    # interaction_detail should be populated
+    assert pred.interaction_detail is not None
+
+
+def test_vectorized_games_excludes_interaction_model():
+    """VectorizedGames.evaluate() does NOT use the interaction model.
+
+    The optimizer calls evaluate() with candidate weight configs — the interaction
+    layer must be excluded to avoid corrupting the optimizer's loss signal.
+    """
+    import inspect
+    from src.analytics.optimizer import VectorizedGames
+
+    # Get the source of VectorizedGames.evaluate
+    source = inspect.getsource(VectorizedGames.evaluate)
+
+    # It must NOT reference interaction_model or predict_correction
+    assert "interaction_model" not in source
+    assert "predict_correction" not in source
+    assert "_interaction_correction" not in source
+
+    # It must NOT call the scalar predict() function
+    # (VectorizedGames uses vectorized NumPy, not per-game predict())
+    assert "from src.analytics.prediction import predict" not in source
+    assert "prediction.predict(" not in source
+
+
+def test_run_train_interaction_model_step():
+    """Pipeline step function has correct signature and returns dict."""
+    from src.analytics.interaction_model import run_train_interaction_model
+
+    import inspect
+    sig = inspect.signature(run_train_interaction_model)
+    assert "callback" in sig.parameters
+    assert "is_cancelled" in sig.parameters
