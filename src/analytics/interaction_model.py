@@ -524,3 +524,19 @@ def is_model_stale(current_weights=None) -> bool:
             return True
 
     return False
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+    from src.bootstrap import bootstrap, setup_logging
+
+    setup_logging()
+    bootstrap(enable_daily_automation=False)
+
+    result = run_train_interaction_model(callback=lambda msg: print(msg))
+    status = result.get("status", "unknown") if isinstance(result, dict) else "unknown"
+    print(f"\nDone — status: {status}")
+    sys.exit(0 if status in ("trained", "skipped", "disabled") else 1)

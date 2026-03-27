@@ -101,6 +101,7 @@ class RichOvernightConsole:
         "precompute": "Precompute",
         "optimize_fundamentals": "Optimize Fundamentals",
         "optimize_sharp": "Optimize Sharp",
+        "train_interaction_model": "Interaction Model",
         "backtest": "Backtest",
     }
 
@@ -304,6 +305,7 @@ class RichOvernightConsole:
                 if step_name in (
                     "optimize_fundamentals",
                     "optimize_sharp",
+                    "train_interaction_model",
                     "backtest",
                 ):
                     self.in_pipeline = False

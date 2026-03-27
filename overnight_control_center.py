@@ -207,6 +207,26 @@ class _OnOffRepairWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class _InteractionRetrainWorker(QObject):
+    """Background interaction model retrain worker."""
+
+    progress = Signal(str)
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def run(self):
+        try:
+            from src.analytics.interaction_model import run_train_interaction_model
+
+            result = run_train_interaction_model(
+                callback=lambda msg: self.progress.emit(msg),
+            )
+            self.finished.emit(result)
+        except Exception as exc:
+            logger.error("Interaction model retrain failed: %s", exc, exc_info=True)
+            self.failed.emit(str(exc))
+
+
 class OvernightControlCenter(QMainWindow):
     """Dedicated UI for configuring and running overnight sessions."""
 
@@ -221,6 +241,9 @@ class OvernightControlCenter(QMainWindow):
         self._repair_worker: Optional[_OnOffRepairWorker] = None
         self._repair_thread: Optional[QThread] = None
         self._repair_running = False
+        self._retrain_worker: Optional[_InteractionRetrainWorker] = None
+        self._retrain_thread: Optional[QThread] = None
+        self._retrain_running = False
         self._progress_parser: Optional[RichOvernightConsole] = None
         self._blocked_playoff: Dict[str, Dict[str, Any]] = {}
         self._blocked_playoff_mode_context: str = "fundamentals"
@@ -260,6 +283,7 @@ class OvernightControlCenter(QMainWindow):
         controls_layout.addWidget(self._build_blocked_card())
         controls_layout.addWidget(self._build_objective_card())
         controls_layout.addWidget(self._build_ml_gate_card())
+        controls_layout.addWidget(self._build_interaction_model_card())
         controls_layout.addWidget(self._build_save_gate_card())
         controls_layout.addWidget(self._build_advanced_overrides_card())
         controls_layout.addStretch()
@@ -904,6 +928,139 @@ class OvernightControlCenter(QMainWindow):
 
         box.layout().addLayout(form)
         return box
+
+    def _build_interaction_model_card(self) -> QWidget:
+        box = self._group("Interaction Model")
+        form = QFormLayout()
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(8)
+
+        self._add_bool(
+            form,
+            "interaction_model_enabled",
+            "Enable Interaction Model",
+            "Enable the LightGBM residual correction layer in predictions.",
+        )
+        self._add_float(
+            form,
+            "interaction_model_correction_cap",
+            "Correction Cap",
+            0.5,
+            10.0,
+            0.5,
+            1,
+            "Max absolute correction from the interaction model (points).",
+        )
+        self._add_int(
+            form,
+            "interaction_model_min_train_games",
+            "Min Training Games",
+            50,
+            2000,
+            "Minimum games in training split before model will train.",
+        )
+
+        self._interaction_model_status_lbl = QLabel("Loading...")
+        self._interaction_model_status_lbl.setWordWrap(True)
+        self._interaction_model_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
+        form.addRow(self._label("Model Status"), self._interaction_model_status_lbl)
+
+        box.layout().addLayout(form)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self._retrain_btn = QPushButton("RETRAIN NOW")
+        self._retrain_btn.setProperty("class", "outline")
+        self._retrain_btn.clicked.connect(self._on_retrain_interaction_model)
+        row.addWidget(self._retrain_btn)
+        row.addStretch()
+        box.layout().addLayout(row)
+
+        QTimer.singleShot(500, self._refresh_interaction_model_status)
+        return box
+
+    def _refresh_interaction_model_status(self):
+        try:
+            from src.analytics.interaction_model import get_model_metadata, is_model_stale
+
+            meta = get_model_metadata()
+            if meta is None:
+                self._interaction_model_status_lbl.setText("No model trained yet.")
+                self._interaction_model_status_lbl.setStyleSheet(f"color: {MUTED}; font-size: 12px;")
+                return
+
+            from datetime import datetime
+
+            trained_at = meta.get("trained_at", "")
+            n_games = meta.get("n_games", 0)
+            val_rmse = meta.get("val_rmse", 0.0)
+            stale = is_model_stale()
+
+            age_str = ""
+            try:
+                dt = datetime.fromisoformat(trained_at)
+                delta = datetime.now() - dt
+                hours = delta.total_seconds() / 3600
+                if hours < 1:
+                    age_str = f"{int(delta.total_seconds() / 60)}m ago"
+                elif hours < 24:
+                    age_str = f"{hours:.1f}h ago"
+                else:
+                    age_str = f"{hours / 24:.1f}d ago"
+            except (ValueError, TypeError):
+                age_str = "unknown"
+
+            staleness = " (STALE)" if stale else ""
+            color = AMBER if stale else GREEN
+            self._interaction_model_status_lbl.setText(
+                f"Trained {age_str}, {n_games:,} games, RMSE={val_rmse:.4f}{staleness}"
+            )
+            self._interaction_model_status_lbl.setStyleSheet(f"color: {color}; font-size: 12px;")
+        except Exception:
+            self._interaction_model_status_lbl.setText("Error reading model status.")
+            self._interaction_model_status_lbl.setStyleSheet(f"color: {RED}; font-size: 12px;")
+
+    def _on_retrain_interaction_model(self):
+        if self._running or self._repair_running or self._retrain_running:
+            return
+
+        self._retrain_running = True
+        self._retrain_btn.setEnabled(False)
+        self._interaction_model_status_lbl.setText("Retraining...")
+        self._interaction_model_status_lbl.setStyleSheet(f"color: {AMBER}; font-size: 12px;")
+        self._append_log("Starting interaction model retrain...")
+
+        self._retrain_worker = _InteractionRetrainWorker()
+        self._retrain_thread = QThread(self)
+        self._retrain_worker.moveToThread(self._retrain_thread)
+
+        self._retrain_thread.started.connect(self._retrain_worker.run)
+        self._retrain_worker.progress.connect(lambda msg: self._append_log(f"[retrain] {msg}"))
+        self._retrain_worker.finished.connect(self._on_retrain_finished)
+        self._retrain_worker.failed.connect(self._on_retrain_failed)
+        self._retrain_worker.finished.connect(self._retrain_thread.quit)
+        self._retrain_worker.failed.connect(lambda _msg: self._retrain_thread.quit())
+        self._retrain_worker.finished.connect(self._retrain_worker.deleteLater)
+        self._retrain_thread.finished.connect(self._retrain_thread.deleteLater)
+        self._retrain_thread.start()
+
+    def _on_retrain_finished(self, result: object):
+        self._retrain_running = False
+        self._retrain_btn.setEnabled(True)
+        self._retrain_worker = None
+        self._retrain_thread = None
+        status = result.get("status", "unknown") if isinstance(result, dict) else "unknown"
+        self._append_log(f"Interaction model retrain complete: {status}")
+        self._refresh_interaction_model_status()
+
+    def _on_retrain_failed(self, message: str):
+        self._retrain_running = False
+        self._retrain_btn.setEnabled(True)
+        self._retrain_worker = None
+        self._retrain_thread = None
+        self._append_log(f"Interaction model retrain failed: {message}")
+        self._interaction_model_status_lbl.setText(f"Retrain failed: {message}")
+        self._interaction_model_status_lbl.setStyleSheet(f"color: {RED}; font-size: 12px;")
 
     def _build_save_gate_card(self) -> QWidget:
         box = self._group("Save Gate")
