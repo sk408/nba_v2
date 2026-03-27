@@ -213,6 +213,10 @@ _DEFAULTS: Dict[str, Any] = {
     "optimizer_ml_underdog_scorer_min_train_samples": 140,
     "optimizer_ml_underdog_scorer_min_val_samples": 60,
     "optimizer_ml_underdog_scorer_min_brier_lift": 0.0025,
+    # Interaction model (LightGBM residual correction layer)
+    "interaction_model_enabled": True,
+    "interaction_model_correction_cap": 3.0,
+    "interaction_model_min_train_games": 200,
     # Overnight loop controls
     "overnight_max_no_save_passes": 3,  # 0 = disabled
     # Weekly frontier/drift reporting
