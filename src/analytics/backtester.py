@@ -265,6 +265,7 @@ def _build_per_game_result(
         "long_dog_onepos": long_dog_onepos,
         "ml_payout": ml_payout,
         "ml_profit": ml_profit,
+        "interaction_correction": pred.adjustments.get("interaction_correction", 0.0),
     }
 
 
@@ -303,6 +304,10 @@ def _aggregate_from_per_game(per_game: List[Dict]) -> Dict[str, Any]:
                 "hit_rate_quality_observation",
                 "",
             ),
+            "interaction_model": {
+                "games_with_correction": 0,
+                "avg_abs_correction": 0.0,
+            },
         }
 
     total = len(per_game)
@@ -353,6 +358,14 @@ def _aggregate_from_per_game(per_game: List[Dict]) -> Dict[str, Any]:
         errors.append(abs(g["game_score"] - actual_spread))
     spread_mae = sum(errors) / max(1, len(errors))
 
+    # Interaction model stats
+    corrections = [g.get("interaction_correction", 0.0) for g in per_game]
+    games_with_correction = sum(1 for c in corrections if abs(c) > 0.001)
+    avg_abs_correction = (
+        sum(abs(c) for c in corrections) / max(1, games_with_correction)
+        if games_with_correction > 0 else 0.0
+    )
+
     upset_samples = [
         {
             "confidence": g.get("confidence", 0.0),
@@ -393,6 +406,10 @@ def _aggregate_from_per_game(per_game: List[Dict]) -> Dict[str, Any]:
             "hit_rate_quality_observation",
             "",
         ),
+        "interaction_model": {
+            "games_with_correction": games_with_correction,
+            "avg_abs_correction": avg_abs_correction,
+        },
     }
 
 

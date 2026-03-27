@@ -253,6 +253,7 @@ class InfoPanelWidget(QWidget):
         self._pred_home = self.pred_card.add_row("Home", "\u2014", bold=True)
         self._pred_away = self.pred_card.add_row("Away", "\u2014", bold=True)
         self._pred_winner = self.pred_card.add_row("Pick", "\u2014", "#22c55e", bold=True)
+        self._pred_interaction = self.pred_card.add_row("Interaction", "\u2014")
         self._cards_layout.addWidget(self.pred_card)
 
         # Odds card
@@ -324,6 +325,8 @@ class InfoPanelWidget(QWidget):
             self._pred_home.setText("\u2014")
             self._pred_away.setText("\u2014")
             self._pred_winner.setText("\u2014")
+            self._pred_interaction.setText("\u2014")
+            self._pred_interaction.setToolTip("")
             return
 
         spread = pred.get(
@@ -370,6 +373,27 @@ class InfoPanelWidget(QWidget):
         self._pred_winner.setStyleSheet(
             f"color: #22c55e; font-size: 13px; font-weight: 700;"
         )
+
+        # Interaction model correction
+        adjustments = pred.get("adjustments") or {}
+        correction = adjustments.get("interaction_correction", 0.0)
+        if abs(correction) > 0.001:
+            color = "#00E676" if correction > 0 else "#FF5252"
+            self._pred_interaction.setText(f"{correction:+.1f}")
+            self._pred_interaction.setStyleSheet(f"color: {color}; font-size: 13px;")
+            # Tooltip with top drivers
+            detail = pred.get("interaction_detail") or {}
+            drivers = detail.get("top_drivers", [])
+            if drivers:
+                lines = [f"{d.get('label', d.get('feature', ''))}: {d['contribution']:+.2f}"
+                         for d in drivers]
+                self._pred_interaction.setToolTip("\n".join(lines))
+            else:
+                self._pred_interaction.setToolTip("Interaction model correction")
+        else:
+            self._pred_interaction.setText("\u2014")
+            self._pred_interaction.setStyleSheet("")
+            self._pred_interaction.setToolTip("")
 
     @staticmethod
     def _time_ago(iso_str: str) -> tuple:

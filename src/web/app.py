@@ -107,6 +107,7 @@ _ADJUSTMENT_DISPLAY_NAMES = {
     "pace": "Pace Differential",
     "sharp_money": "Sharp Money",
     "sharp_ml": "Sharp Money",
+    "interaction_correction": "Interaction Model",
 }
 
 
@@ -1453,11 +1454,16 @@ def matchup_by_abbr(home_abbr, away_abbr, date):
 
     live_score = _fetch_live_score(home_abbr.upper(), away_abbr.upper(), date)
 
+    interaction_detail = None
+    if fund_pred:
+        interaction_detail = fund_pred.get("interaction_detail")
+
     return render_template(
         "matchup.html",
         fund=fund_pred,
         sharp=sharp_pred,
         sorted_adjustments=sorted_adj,
+        interaction_detail=interaction_detail,
         date=date,
         home_id=home_id,
         away_id=away_id,
@@ -1515,11 +1521,16 @@ def matchup_detail(home_id, away_id, date):
             date,
         )
 
+    interaction_detail = None
+    if fund_pred:
+        interaction_detail = fund_pred.get("interaction_detail")
+
     return render_template(
         "matchup.html",
         fund=fund_pred,
         sharp=sharp_pred,
         sorted_adjustments=sorted_adj,
+        interaction_detail=interaction_detail,
         date=date,
         home_id=home_id,
         away_id=away_id,

@@ -208,6 +208,33 @@
                 {% endif %}
             </tbody>
         </table>
+
+        {# ── Interaction Model Detail (expandable) ── #}
+        {% if interaction_detail and interaction_detail.top_drivers %}
+        <details class="interaction-detail" style="margin-top: 10px;">
+            <summary style="cursor: pointer; font-size: 0.85em; color: #94a3b8;">
+                Interaction Model Drivers
+            </summary>
+            <table class="breakdown-table" style="margin-top: 6px; font-size: 0.85em;">
+                <thead>
+                    <tr>
+                        <th>Interaction</th>
+                        <th>Contribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for driver in interaction_detail.top_drivers %}
+                    <tr>
+                        <td>{{ driver.label }}</td>
+                        <td class="contribution {% if driver.contribution > 0 %}positive{% elif driver.contribution < 0 %}negative{% endif %}">
+                            {{ "{:+.2f}"|format(driver.contribution) }}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </details>
+        {% endif %}
     </div>
 </div>
 
